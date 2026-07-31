@@ -22,6 +22,7 @@ import {
 const STORAGE_KEY = "arduino-gate-game-stats:v1";
 const STORAGE_VERSION = 1;
 const MAX_REMEMBERED_RUN_IDS = 100;
+const REQUEST_TIMEOUT_MS = 12_000;
 
 export type GameStatsSyncStatus =
   | "loading"
@@ -292,23 +293,44 @@ async function readResponseBody(response: Response) {
   }
 }
 
-async function postProfile(request: GameStatsRequest): Promise<ProfileResponse> {
-  let response: Response;
+async function fetchGameStats(
+  operation: GameStatsOperation,
+  init: RequestInit,
+) {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(
+    () => controller.abort(),
+    REQUEST_TIMEOUT_MS,
+  );
+
   try {
-    response = await fetch(GAME_STATS_API_PATH, {
-      body: JSON.stringify(request),
+    return await fetch(GAME_STATS_API_PATH, {
+      ...init,
       cache: "no-store",
       credentials: "omit",
-      headers: { "content-type": "application/json" },
-      method: "POST",
+      signal: controller.signal,
     });
   } catch (error) {
     throw new GameStatsClientError(
-      request.action,
-      "network_error",
-      error instanceof Error ? error.message : "Network request failed.",
+      operation,
+      controller.signal.aborted ? "request_timeout" : "network_error",
+      controller.signal.aborted
+        ? "The statistics service took too long to respond."
+        : error instanceof Error
+          ? error.message
+          : "Network request failed.",
     );
+  } finally {
+    globalThis.clearTimeout(timeout);
   }
+}
+
+async function postProfile(request: GameStatsRequest): Promise<ProfileResponse> {
+  const response = await fetchGameStats(request.action, {
+    body: JSON.stringify(request),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
 
   const body = await readResponseBody(response);
   if (!response.ok) {
@@ -332,20 +354,7 @@ async function postProfile(request: GameStatsRequest): Promise<ProfileResponse> 
 }
 
 async function getLeaderboard(): Promise<LeaderboardEntry[]> {
-  let response: Response;
-  try {
-    response = await fetch(GAME_STATS_API_PATH, {
-      cache: "no-store",
-      credentials: "omit",
-      method: "GET",
-    });
-  } catch (error) {
-    throw new GameStatsClientError(
-      "leaderboard",
-      "network_error",
-      error instanceof Error ? error.message : "Network request failed.",
-    );
-  }
+  const response = await fetchGameStats("leaderboard", { method: "GET" });
 
   const body = await readResponseBody(response);
   if (!response.ok) {
