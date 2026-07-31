@@ -79,6 +79,10 @@ export type ValidatedRun = {
 
 type RandomBytes = (length: number) => Uint8Array;
 
+type RandomValuesProvider = {
+  getRandomValues<T extends Uint8Array>(array: T): T;
+};
+
 const ACCESS_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const ACCESS_CODE_LENGTH = 20;
 const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
@@ -96,11 +100,12 @@ const RANDOM_NICKNAME_ADJECTIVES: Record<
 };
 
 function defaultRandomBytes(length: number) {
-  if (!globalThis.crypto?.getRandomValues) {
+  const secureCrypto = (globalThis as { crypto?: RandomValuesProvider }).crypto;
+  if (!secureCrypto?.getRandomValues) {
     throw new Error("Secure random values are unavailable in this environment.");
   }
 
-  return globalThis.crypto.getRandomValues(new Uint8Array(length));
+  return secureCrypto.getRandomValues(new Uint8Array(length));
 }
 
 function secureRandomFraction() {

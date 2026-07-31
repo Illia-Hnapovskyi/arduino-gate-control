@@ -1,3 +1,5 @@
+import { createHash, createHmac } from "node:crypto";
+
 import postgres from "postgres";
 
 import {
@@ -83,10 +85,6 @@ let schemaInitialization:
 
 let databaseClient:
   | { connectionString: string; sql: SqlClient }
-  | undefined;
-
-let rateLimitKey:
-  | { secret: string; promise: Promise<CryptoKey> }
   | undefined;
 
 let lastRateLimitCleanup = 0;
@@ -268,47 +266,17 @@ async function getDatabase() {
 }
 
 async function hashAccessCode(accessCode: string) {
-  const bytes = new TextEncoder().encode(accessCode);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+  return createHash("sha256").update(accessCode, "utf8").digest("hex");
 }
 
-async function getRateLimitKey() {
+async function pseudonymizeRateLimitScope(scope: string) {
   const databaseUrl = process.env.SUPABASE_DATABASE_URL?.trim();
   const secret = process.env.RATE_LIMIT_SECRET?.trim() || databaseUrl;
   if (!secret) {
     throw new Error("A rate-limit pseudonymization key is unavailable.");
   }
 
-  if (!rateLimitKey || rateLimitKey.secret !== secret) {
-    const encodedSecret = new TextEncoder().encode(secret);
-    rateLimitKey = {
-      secret,
-      promise: globalThis.crypto.subtle.importKey(
-        "raw",
-        encodedSecret,
-        { hash: "SHA-256", name: "HMAC" },
-        false,
-        ["sign"],
-      ),
-    };
-  }
-
-  return rateLimitKey.promise;
-}
-
-async function pseudonymizeRateLimitScope(scope: string) {
-  const key = await getRateLimitKey();
-  const signature = await globalThis.crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(scope),
-  );
-  return Array.from(new Uint8Array(signature), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+  return createHmac("sha256", secret).update(scope, "utf8").digest("hex");
 }
 
 function clientAddressScope(request: Request) {
