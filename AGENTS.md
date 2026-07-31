@@ -9,6 +9,9 @@ the user-facing setup guide.
 - Active app: Vite/React (`src/main.tsx` → `app/page.tsx`), not Next.js.
 - Active backend: Vercel `api/stats.ts` → Supabase PostgreSQL; shared contract lives in
   `shared/gameStats.ts`.
+- Project-scoped official Supabase skills live under `.agents/skills/`; load
+  `supabase` for any Supabase task and `supabase-postgres-best-practices` before
+  SQL, schema, migration, RLS, pooling, or database-performance work.
 - Start frontend work with `npm ci && npm run dev`; use `npx vercel dev` plus
   `SUPABASE_DATABASE_URL` for real stats API work.
 - Before handoff run `npm run check` and `git diff --check`.
@@ -96,6 +99,8 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `api/stats.ts` | Vercel Web Fetch-style function, Supabase PostgreSQL queries, rate limiting, and stats aggregation. |
 | `db/migrations/0001_game_stats.sql` | Auditable/manual SQL copy of the live stats schema. |
 | `SUPABASE_SETUP.md` | Ukrainian step-by-step Supabase/Vercel provisioning, verification, troubleshooting, and rollback guide. |
+| `.agents/skills/supabase/` | Official Supabase agent workflow, current-docs, tooling, migration, and security guidance. |
+| `.agents/skills/supabase-postgres-best-practices/` | Official Supabase/Postgres schema, SQL, RLS, pooling, locking, indexing, and performance rules. |
 | `public/arduino-smart-gate.ino` | Arduino UNO firmware downloaded from the built site. |
 | `public/README-UK.md` | Hardware wiring and usage instructions in Ukrainian. |
 | `tests/game-stats.test.mjs` | Shared validation/generator regression tests. |
