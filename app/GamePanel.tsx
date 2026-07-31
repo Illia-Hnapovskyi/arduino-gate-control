@@ -11,7 +11,10 @@ import {
   useRef,
   useState,
 } from "react";
+import { generateRunId } from "../shared/gameStats";
 import { GAME_COPY, type Language } from "./i18n";
+import { PlayerStatsPanel } from "./PlayerStatsPanel";
+import { useGameStats } from "./useGameStats";
 
 type ConnectionState =
   | "disconnected"
@@ -441,6 +444,7 @@ export default function GamePanel({
   onStartDemo,
 }: GamePanelProps) {
   const copy = GAME_COPY[language];
+  const gameStats = useGameStats({ language });
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<number | null>(null);
   const [initialWorld] = useState(createWorld);
@@ -471,6 +475,8 @@ export default function GamePanel({
   const resumeMusicAfterGamePauseRef = useRef(false);
   const previousPressRef = useRef(false);
   const commandRef = useRef(onCommand);
+  const recordRunRef = useRef(gameStats.recordRun);
+  const activeRunIdRef = useRef<string | null>(null);
 
   const [status, setStatus] = useState<GameStatus>("ready");
   const [score, setScore] = useState(0);
@@ -495,6 +501,10 @@ export default function GamePanel({
   useEffect(() => {
     commandRef.current = onCommand;
   }, [onCommand]);
+
+  useEffect(() => {
+    recordRunRef.current = gameStats.recordRun;
+  }, [gameStats.recordRun]);
 
   useEffect(() => {
     joystickRef.current = {
@@ -1005,14 +1015,29 @@ export default function GamePanel({
     emitSound("SHOT");
   }, [emitSound]);
 
+  const recordActiveRun = useCallback(() => {
+    const runId = activeRunIdRef.current;
+    if (!runId) return false;
+
+    activeRunIdRef.current = null;
+    const world = worldRef.current;
+    return recordRunRef.current({
+      runId,
+      score: world.score,
+      level: world.level,
+      durationMs: Math.max(0, Math.round(world.elapsed * 1000)),
+    });
+  }, []);
+
   const finishGame = useCallback(() => {
     if (statusRef.current === "over") return;
     statusRef.current = "over";
     setStatus("over");
+    recordActiveRun();
     stopTrackPlayback();
     playBrowserEffect("OVER");
     commandRef.current("GAME:OVER");
-  }, [playBrowserEffect, stopTrackPlayback]);
+  }, [playBrowserEffect, recordActiveRun, stopTrackPlayback]);
 
   const updateWorld = useCallback((now: number) => {
     const world = worldRef.current;
@@ -1205,6 +1230,18 @@ export default function GamePanel({
   }, [drawWorld, updateWorld]);
 
   useEffect(() => {
+    const handlePageHide = (event: PageTransitionEvent) => {
+      if (!event.persisted) recordActiveRun();
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      recordActiveRun();
+    };
+  }, [recordActiveRun]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         statusRef.current !== "playing" ||
@@ -1251,6 +1288,7 @@ export default function GamePanel({
       statusRef.current === "playing" ||
       statusRef.current === "paused"
     ) {
+      recordActiveRun();
       statusRef.current = "ready";
       setStatus("ready");
       worldRef.current = createWorld();
@@ -1267,11 +1305,13 @@ export default function GamePanel({
     }
 
     if (playerStateRef.current !== "stopped") stopTrackPlayback();
-  }, [connection, stopTrackPlayback]);
+  }, [connection, recordActiveRun, stopTrackPlayback]);
 
   const startGame = () => {
+    if (!gameStats.profile) return;
     const world = createWorld();
     worldRef.current = world;
+    activeRunIdRef.current = generateRunId();
     previousPressRef.current = joystickRef.current.pressed;
     statusRef.current = "playing";
     setStatus("playing");
@@ -1307,6 +1347,7 @@ export default function GamePanel({
   };
 
   const stopGame = () => {
+    recordActiveRun();
     statusRef.current = "ready";
     setStatus("ready");
     worldRef.current = createWorld();
@@ -1533,6 +1574,13 @@ export default function GamePanel({
         </div>
       </div>
 
+      <PlayerStatsPanel
+        copy={copy}
+        disabled={status === "playing" || status === "paused"}
+        language={language}
+        stats={gameStats}
+      />
+
       <div className="game-console">
         <div className="game-stage-card">
           <div className="game-hud">
@@ -1617,7 +1665,7 @@ export default function GamePanel({
             {status === "ready" || status === "over" ? (
               <button
                 className="button game-start"
-                disabled={!connected}
+                disabled={!connected || !gameStats.profile}
                 onClick={startGame}
               >
                 {status === "over" ? copy.playAgain : copy.startGame}

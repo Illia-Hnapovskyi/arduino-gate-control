@@ -541,6 +541,80 @@ export const GAME_COPY = {
     lives: "життя",
     score: "РАХУНОК",
     level: "РІВЕНЬ",
+    profileEyebrow: "ПРОФІЛЬ ГРАВЦЯ · СИНХРОНІЗАЦІЯ",
+    profileTitle: "Твоя статистика на кожному пристрої",
+    profileSetupExplanation:
+      "Створи профіль із власним або випадковим ніком. Результати зберігатимуться онлайн, а на іншому пристрої їх можна відкрити за кодом профілю.",
+    nicknameLabel: "Твій нік",
+    nicknamePlaceholder: "Наприклад, AstroIlya",
+    saveNickname: "Зберегти нік",
+    useRandomNickname: "Згенерувати випадковий",
+    nicknameRequiredError: "Введи нік або обери випадковий.",
+    nicknameInvalidError:
+      "Нік має містити від 2 до 20 символів: літери, цифри, пробіли, _, - або .",
+    nicknameTakenError: "Цей нік уже зайнятий. Спробуй інший.",
+    nicknameSaveError: "Не вдалося зберегти твій нік. Спробуй ще раз.",
+    randomNicknameError:
+      "Не вдалося створити випадковий нік. Спробуй ще раз.",
+    existingProfilePrompt: "Уже маєш профіль? Введи його код.",
+    profileCodePlaceholder: "Код профілю",
+    connectProfile: "Під’єднати профіль",
+    profileCodeInvalidError: "Перевір код профілю та спробуй ще раз.",
+    profileNotFoundError: "Профіль із таким кодом не знайдено.",
+    profileConnectError:
+      "Не вдалося під’єднати профіль. Перевір з’єднання й спробуй ще раз.",
+    publicNicknameNotice:
+      "Нік і результати будуть видимі в загальній таблиці. Не використовуй у ніку особисті дані.",
+    syncSynced: "Синхронізовано",
+    syncSyncing: "Синхронізація…",
+    syncOffline: "Офлайн",
+    syncLocalOnly: "Лише на цьому пристрої",
+    syncError: "Помилка синхронізації",
+    syncRetry: "Спробувати ще раз",
+    changeNickname: "Змінити нік",
+    editNickname: "Редагувати",
+    saveNicknameChanges: "Зберегти",
+    cancelNicknameEdit: "Скасувати",
+    profileCodeLabel: "Код профілю",
+    showProfileCode: "Показати код",
+    hideProfileCode: "Сховати код",
+    copyProfileCode: "Копіювати код",
+    profileCodeCopied: "Код скопійовано",
+    profileCodeExplanation:
+      "Збережи цей код, щоб відкрити профіль на іншому пристрої. Він дає доступ до твоєї статистики — не публікуй його.",
+    forgetProfile: "Забути профіль на цьому пристрої",
+    forgetProfileConfirm:
+      "Забути цей профіль на пристрої? Онлайн-статистика не видалиться, але для повернення знадобиться код профілю.",
+    statBestScore: "Найкращий результат",
+    statGamesPlayed: "Зіграно ігор",
+    statTotalScore: "Усього очок",
+    statHighestLevel: "Найвищий рівень",
+    statPlayTime: "Час у грі",
+    leaderboardTitle: "Глобальна таблиця лідерів",
+    leaderboardEmpty: "Тут ще немає результатів. Стань першим!",
+    leaderboardLoading: "Завантажуємо таблицю…",
+    leaderboardRowGames: (games: number) => {
+      const mod10 = games % 10;
+      const mod100 = games % 100;
+      const word =
+        mod10 === 1 && mod100 !== 11
+          ? "гра"
+          : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+            ? "гри"
+            : "ігор";
+      return `${games} ${word}`;
+    },
+    resultSaved: "Результат збережено в профілі",
+    resultPending: "Результат очікує синхронізації",
+    formatPlayTime: (seconds: number) => {
+      const totalSeconds = Math.max(0, Math.floor(seconds));
+      if (totalSeconds < 60) return `${totalSeconds} с`;
+      const totalMinutes = Math.floor(totalSeconds / 60);
+      if (totalMinutes < 60) return `${totalMinutes} хв`;
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      return minutes ? `${hours} год ${minutes} хв` : `${hours} год`;
+    },
     soundOn: "♪ Космічна погоня",
     soundOff: "× Звук вимкнено",
     playerEyebrow: "ОНЛАЙН-ПЛЕЄР · ПОТІК НОТ",
@@ -648,6 +722,76 @@ export const GAME_COPY = {
     lives: "Leben",
     score: "PUNKTE",
     level: "LEVEL",
+    profileEyebrow: "SPIELERPROFIL · SYNCHRONISIERUNG",
+    profileTitle: "Deine Statistik auf jedem Gerät",
+    profileSetupExplanation:
+      "Erstelle ein Profil mit deinem eigenen oder einem zufälligen Namen. Deine Ergebnisse werden online gespeichert und lassen sich auf einem anderen Gerät mit dem Profilcode öffnen.",
+    nicknameLabel: "Dein Spielername",
+    nicknamePlaceholder: "Zum Beispiel AstroIlya",
+    saveNickname: "Spielernamen speichern",
+    useRandomNickname: "Zufälligen Namen wählen",
+    nicknameRequiredError:
+      "Gib einen Spielernamen ein oder wähle einen zufälligen.",
+    nicknameInvalidError:
+      "Der Spielername muss 2 bis 20 Zeichen lang sein und darf Buchstaben, Zahlen, Leerzeichen, _, - oder . enthalten.",
+    nicknameTakenError:
+      "Dieser Spielername ist bereits vergeben. Wähle einen anderen.",
+    nicknameSaveError:
+      "Dein Spielername konnte nicht gespeichert werden. Versuche es noch einmal.",
+    randomNicknameError:
+      "Es konnte kein zufälliger Spielername erstellt werden. Versuche es noch einmal.",
+    existingProfilePrompt:
+      "Du hast bereits ein Profil? Gib den Profilcode ein.",
+    profileCodePlaceholder: "Profilcode",
+    connectProfile: "Profil verbinden",
+    profileCodeInvalidError:
+      "Überprüfe den Profilcode und versuche es noch einmal.",
+    profileNotFoundError: "Unter diesem Code wurde kein Profil gefunden.",
+    profileConnectError:
+      "Das Profil konnte nicht verbunden werden. Prüfe die Verbindung und versuche es noch einmal.",
+    publicNicknameNotice:
+      "Spielername und Ergebnisse sind in der öffentlichen Bestenliste sichtbar. Verwende im Namen keine persönlichen Daten.",
+    syncSynced: "Synchronisiert",
+    syncSyncing: "Wird synchronisiert…",
+    syncOffline: "Offline",
+    syncLocalOnly: "Nur auf diesem Gerät",
+    syncError: "Synchronisierungsfehler",
+    syncRetry: "Erneut versuchen",
+    changeNickname: "Spielernamen ändern",
+    editNickname: "Bearbeiten",
+    saveNicknameChanges: "Speichern",
+    cancelNicknameEdit: "Abbrechen",
+    profileCodeLabel: "Profilcode",
+    showProfileCode: "Code anzeigen",
+    hideProfileCode: "Code ausblenden",
+    copyProfileCode: "Code kopieren",
+    profileCodeCopied: "Code kopiert",
+    profileCodeExplanation:
+      "Bewahre diesen Code auf, um dein Profil auf einem anderen Gerät zu öffnen. Er gewährt Zugriff auf deine Statistik — veröffentliche ihn nicht.",
+    forgetProfile: "Profil auf diesem Gerät vergessen",
+    forgetProfileConfirm:
+      "Dieses Profil auf dem Gerät vergessen? Die Online-Statistik bleibt erhalten, aber du brauchst den Profilcode, um zurückzukehren.",
+    statBestScore: "Bestpunktzahl",
+    statGamesPlayed: "Gespielte Partien",
+    statTotalScore: "Gesamtpunktzahl",
+    statHighestLevel: "Höchstes Level",
+    statPlayTime: "Spielzeit",
+    leaderboardTitle: "Globale Bestenliste",
+    leaderboardEmpty: "Noch keine Ergebnisse. Sei der Erste!",
+    leaderboardLoading: "Bestenliste wird geladen…",
+    leaderboardRowGames: (games: number) =>
+      `${games} ${games === 1 ? "Spiel" : "Spiele"}`,
+    resultSaved: "Ergebnis im Profil gespeichert",
+    resultPending: "Ergebnis wartet auf die Synchronisierung",
+    formatPlayTime: (seconds: number) => {
+      const totalSeconds = Math.max(0, Math.floor(seconds));
+      if (totalSeconds < 60) return `${totalSeconds} s`;
+      const totalMinutes = Math.floor(totalSeconds / 60);
+      if (totalMinutes < 60) return `${totalMinutes} Min.`;
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      return minutes ? `${hours} Std. ${minutes} Min.` : `${hours} Std.`;
+    },
     soundOn: "♪ Weltraumjagd",
     soundOff: "× Ton ausgeschaltet",
     playerEyebrow: "ONLINE-PLAYER · NOTENSTREAM",
@@ -755,6 +899,74 @@ export const GAME_COPY = {
     lives: "lives",
     score: "SCORE",
     level: "LEVEL",
+    profileEyebrow: "PLAYER PROFILE · SYNC",
+    profileTitle: "Your stats on every device",
+    profileSetupExplanation:
+      "Create a profile with your own nickname or a random one. Your results will be saved online, and you can open them on another device with your profile code.",
+    nicknameLabel: "Your nickname",
+    nicknamePlaceholder: "For example, AstroIlya",
+    saveNickname: "Save nickname",
+    useRandomNickname: "Use a random nickname",
+    nicknameRequiredError: "Enter a nickname or choose a random one.",
+    nicknameInvalidError:
+      "Your nickname must be 2–20 characters and may contain letters, numbers, spaces, _, - or .",
+    nicknameTakenError: "That nickname is already taken. Try another one.",
+    nicknameSaveError:
+      "We couldn’t save your nickname. Please try again.",
+    randomNicknameError:
+      "We couldn’t create a random nickname. Please try again.",
+    existingProfilePrompt:
+      "Already have a profile? Enter its profile code.",
+    profileCodePlaceholder: "Profile code",
+    connectProfile: "Connect profile",
+    profileCodeInvalidError:
+      "Check the profile code and try again.",
+    profileNotFoundError: "No profile was found with that code.",
+    profileConnectError:
+      "We couldn’t connect the profile. Check your connection and try again.",
+    publicNicknameNotice:
+      "Your nickname and results will appear on the public leaderboard. Don’t include personal information in your nickname.",
+    syncSynced: "Synced",
+    syncSyncing: "Syncing…",
+    syncOffline: "Offline",
+    syncLocalOnly: "This device only",
+    syncError: "Sync error",
+    syncRetry: "Try again",
+    changeNickname: "Change nickname",
+    editNickname: "Edit",
+    saveNicknameChanges: "Save",
+    cancelNicknameEdit: "Cancel",
+    profileCodeLabel: "Profile code",
+    showProfileCode: "Show code",
+    hideProfileCode: "Hide code",
+    copyProfileCode: "Copy code",
+    profileCodeCopied: "Code copied",
+    profileCodeExplanation:
+      "Keep this code to open your profile on another device. It gives access to your stats, so don’t share it publicly.",
+    forgetProfile: "Forget profile on this device",
+    forgetProfileConfirm:
+      "Forget this profile on this device? Your online stats won’t be deleted, but you’ll need the profile code to return.",
+    statBestScore: "Best score",
+    statGamesPlayed: "Games played",
+    statTotalScore: "Total score",
+    statHighestLevel: "Highest level",
+    statPlayTime: "Play time",
+    leaderboardTitle: "Global leaderboard",
+    leaderboardEmpty: "No results yet. Be the first!",
+    leaderboardLoading: "Loading leaderboard…",
+    leaderboardRowGames: (games: number) =>
+      `${games} ${games === 1 ? "game" : "games"}`,
+    resultSaved: "Result saved to your profile",
+    resultPending: "Result waiting to sync",
+    formatPlayTime: (seconds: number) => {
+      const totalSeconds = Math.max(0, Math.floor(seconds));
+      if (totalSeconds < 60) return `${totalSeconds}s`;
+      const totalMinutes = Math.floor(totalSeconds / 60);
+      if (totalMinutes < 60) return `${totalMinutes}m`;
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+    },
     soundOn: "♪ Space Chase",
     soundOff: "× Sound off",
     playerEyebrow: "ONLINE PLAYER · NOTE STREAM",
