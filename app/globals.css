@@ -1920,7 +1920,7 @@ footer > p {
 }
 
 .game-intro,
-.game-console,
+.game-dashboard,
 .game-wiring-section,
 .game-update-note {
   margin-left: auto;
@@ -1962,12 +1962,7 @@ footer > p {
 }
 
 .player-stats-section {
-  align-items: start;
-  display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(0, 1.22fr) minmax(310px, 0.78fr);
-  margin: 0 auto 18px;
-  max-width: 1320px;
+  min-width: 0;
 }
 
 .player-profile-card,
@@ -2493,14 +2488,28 @@ kbd {
   padding: 3px 5px;
 }
 
-.game-console {
+.game-dashboard {
   align-items: start;
   display: grid;
   gap: 18px;
-  grid-template-columns: minmax(0, 1fr) 330px;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 420px);
+}
+
+.game-primary-column,
+.game-secondary-column,
+.game-side-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.game-primary-column,
+.game-secondary-column {
+  gap: 18px;
 }
 
 .game-stage-card,
+.touch-controller,
 .game-side-panel > div,
 .game-wiring-section,
 .game-update-note {
@@ -2674,8 +2683,6 @@ kbd {
 }
 
 .game-side-panel {
-  display: flex;
-  flex-direction: column;
   gap: 14px;
 }
 
@@ -3622,11 +3629,7 @@ kbd {
     grid-template-columns: 1fr;
   }
 
-  .game-console {
-    grid-template-columns: 1fr;
-  }
-
-  .player-stats-section {
+  .game-dashboard {
     grid-template-columns: 1fr;
   }
 

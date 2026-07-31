@@ -13,7 +13,7 @@ import {
 } from "react";
 import { generateRunId } from "../shared/gameStats";
 import { GAME_COPY, type Language } from "./i18n";
-import { PlayerStatsPanel } from "./PlayerStatsPanel";
+import { LeaderboardPanel, PlayerStatsPanel } from "./PlayerStatsPanel";
 import { useGameStats } from "./useGameStats";
 
 type ConnectionState =
@@ -1574,15 +1574,16 @@ export default function GamePanel({
         </div>
       </div>
 
-      <PlayerStatsPanel
-        copy={copy}
-        disabled={status === "playing" || status === "paused"}
-        language={language}
-        stats={gameStats}
-      />
+      <div className="game-dashboard">
+        <div className="game-primary-column">
+          <PlayerStatsPanel
+            copy={copy}
+            disabled={status === "playing" || status === "paused"}
+            language={language}
+            stats={gameStats}
+          />
 
-      <div className="game-console">
-        <div className="game-stage-card">
+          <div className="game-stage-card">
           <div className="game-hud">
             <div>
               <small>{copy.score}</small>
@@ -1685,9 +1686,81 @@ export default function GamePanel({
           </div>
 
           {error && <p className="error-message game-error">{error}</p>}
+          </div>
+
+          <div className="touch-controller">
+            <div className="touch-dpad">
+              {[
+                ["up", "↑", copy.directionUp],
+                ["left", "←", copy.directionLeft],
+                ["down", "↓", copy.directionDown],
+                ["right", "→", copy.directionRight],
+              ].map(([control, label, ariaLabel]) => (
+                <button
+                  aria-label={ariaLabel}
+                  className={control}
+                  key={control}
+                  onBlur={() => touchRef.current.delete(control)}
+                  onClick={(event) => {
+                    if (event.detail === 0) pulseAccessibleControl(control);
+                  }}
+                  onKeyDown={(event) =>
+                    setKeyboardControl(control, true, event)
+                  }
+                  onKeyUp={(event) =>
+                    setKeyboardControl(control, false, event)
+                  }
+                  onPointerCancel={(event) =>
+                    setTouchControl(control, false, event)
+                  }
+                  onPointerDown={(event) =>
+                    setTouchControl(control, true, event)
+                  }
+                  onPointerUp={(event) =>
+                    setTouchControl(control, false, event)
+                  }
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button
+              aria-label={copy.fire}
+              className="touch-fire"
+              onBlur={() => touchRef.current.delete("fire")}
+              onClick={(event) => {
+                if (event.detail === 0) shoot(performance.now());
+              }}
+              onKeyDown={(event) =>
+                setKeyboardControl("fire", true, event)
+              }
+              onKeyUp={(event) =>
+                setKeyboardControl("fire", false, event)
+              }
+              onPointerCancel={(event) => setTouchControl("fire", false, event)}
+              onPointerDown={(event) => setTouchControl("fire", true, event)}
+              onPointerUp={(event) => setTouchControl("fire", false, event)}
+              type="button"
+            >
+              FIRE
+              <small>{copy.fire}</small>
+            </button>
+          </div>
+          <p className="keyboard-hint">
+            {copy.keyboardPrefix} <kbd>WASD</kbd> / <kbd>{copy.keyboardArrows}</kbd>
+            {" + "}<kbd>{copy.keyboardSpace}</kbd>.
+          </p>
         </div>
 
-        <aside className="game-side-panel">
+        <div className="game-secondary-column">
+          <LeaderboardPanel
+            copy={copy}
+            language={language}
+            stats={gameStats}
+          />
+
+          <aside className="game-side-panel">
           <div className="joystick-card">
             <div className="game-card-heading">
               <div>
@@ -1855,70 +1928,8 @@ export default function GamePanel({
             </div>
           </div>
 
-          <div className="touch-controller">
-            <div className="touch-dpad">
-              {[
-                ["up", "↑", copy.directionUp],
-                ["left", "←", copy.directionLeft],
-                ["down", "↓", copy.directionDown],
-                ["right", "→", copy.directionRight],
-              ].map(([control, label, ariaLabel]) => (
-                <button
-                  aria-label={ariaLabel}
-                  className={control}
-                  key={control}
-                  onBlur={() => touchRef.current.delete(control)}
-                  onClick={(event) => {
-                    if (event.detail === 0) pulseAccessibleControl(control);
-                  }}
-                  onKeyDown={(event) =>
-                    setKeyboardControl(control, true, event)
-                  }
-                  onKeyUp={(event) =>
-                    setKeyboardControl(control, false, event)
-                  }
-                  onPointerCancel={(event) =>
-                    setTouchControl(control, false, event)
-                  }
-                  onPointerDown={(event) =>
-                    setTouchControl(control, true, event)
-                  }
-                  onPointerUp={(event) =>
-                    setTouchControl(control, false, event)
-                  }
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <button
-              aria-label={copy.fire}
-              className="touch-fire"
-              onBlur={() => touchRef.current.delete("fire")}
-              onClick={(event) => {
-                if (event.detail === 0) shoot(performance.now());
-              }}
-              onKeyDown={(event) =>
-                setKeyboardControl("fire", true, event)
-              }
-              onKeyUp={(event) =>
-                setKeyboardControl("fire", false, event)
-              }
-              onPointerCancel={(event) => setTouchControl("fire", false, event)}
-              onPointerDown={(event) => setTouchControl("fire", true, event)}
-              onPointerUp={(event) => setTouchControl("fire", false, event)}
-              type="button"
-            >
-              FIRE
-              <small>{copy.fire}</small>
-            </button>
-          </div>
-          <p className="keyboard-hint">
-            {copy.keyboardPrefix} <kbd>WASD</kbd> / <kbd>{copy.keyboardArrows}</kbd>
-            {" + "}<kbd>{copy.keyboardSpace}</kbd>.
-          </p>
-        </aside>
+          </aside>
+        </div>
       </div>
 
       <div className="game-wiring-section">

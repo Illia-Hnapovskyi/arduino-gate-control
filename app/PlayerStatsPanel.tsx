@@ -79,6 +79,11 @@ export type PlayerStatsPanelProps = {
   stats: UseGameStatsResult;
 };
 
+export type LeaderboardPanelProps = Pick<
+  PlayerStatsPanelProps,
+  "copy" | "language" | "stats"
+>;
+
 type FormError = string | null;
 
 function localizedError(error: GameStatsError, copy: PlayerStatsCopy) {
@@ -130,6 +135,62 @@ function localeFor(language: GameStatsLanguage) {
   if (language === "uk") return "uk-UA";
   if (language === "de") return "de-DE";
   return "en-GB";
+}
+
+export function LeaderboardPanel({
+  copy,
+  language,
+  stats,
+}: LeaderboardPanelProps) {
+  const numberFormatter = useMemo(
+    () => new Intl.NumberFormat(localeFor(language)),
+    [language],
+  );
+  const profile = stats.profile;
+
+  return (
+    <article className="leaderboard-card">
+      <div className="leaderboard-heading">
+        <span aria-hidden="true">★</span>
+        <h2>{copy.leaderboardTitle}</h2>
+      </div>
+
+      {stats.leaderboard.length === 0 &&
+      (stats.status === "loading" || stats.status === "syncing") ? (
+        <p aria-live="polite" className="leaderboard-state" role="status">
+          {copy.leaderboardLoading}
+        </p>
+      ) : stats.leaderboard.length === 0 ? (
+        <p className="leaderboard-state">{copy.leaderboardEmpty}</p>
+      ) : (
+        <ol className="leaderboard-list">
+          {stats.leaderboard.map((entry) => {
+            const isCurrentPlayer =
+              stats.status === "synced" && entry.nickname === profile?.nickname;
+            return (
+              <li
+                aria-current={isCurrentPlayer ? "true" : undefined}
+                className={isCurrentPlayer ? "is-current-player" : undefined}
+                key={`${entry.rank}-${entry.nickname}`}
+              >
+                <span className="leaderboard-rank">{entry.rank}</span>
+                <div className="leaderboard-player">
+                  <strong>{entry.nickname}</strong>
+                  <small>{copy.leaderboardRowGames(entry.gamesPlayed)}</small>
+                </div>
+                <div className="leaderboard-score">
+                  <strong>{numberFormatter.format(entry.highScore)}</strong>
+                  <small>
+                    {copy.statHighestLevel} {entry.highestLevel}
+                  </small>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </article>
+  );
 }
 
 export function PlayerStatsPanel({
@@ -526,47 +587,6 @@ export function PlayerStatsPanel({
         )}
       </article>
 
-      <article className="leaderboard-card">
-        <div className="leaderboard-heading">
-          <span aria-hidden="true">★</span>
-          <h2>{copy.leaderboardTitle}</h2>
-        </div>
-
-        {stats.leaderboard.length === 0 &&
-        (stats.status === "loading" || stats.status === "syncing") ? (
-          <p aria-live="polite" className="leaderboard-state" role="status">
-            {copy.leaderboardLoading}
-          </p>
-        ) : stats.leaderboard.length === 0 ? (
-          <p className="leaderboard-state">{copy.leaderboardEmpty}</p>
-        ) : (
-          <ol className="leaderboard-list">
-            {stats.leaderboard.map((entry) => {
-              const isCurrentPlayer =
-                stats.status === "synced" && entry.nickname === profile?.nickname;
-              return (
-                <li
-                  aria-current={isCurrentPlayer ? "true" : undefined}
-                  className={isCurrentPlayer ? "is-current-player" : undefined}
-                  key={`${entry.rank}-${entry.nickname}`}
-                >
-                  <span className="leaderboard-rank">{entry.rank}</span>
-                  <div className="leaderboard-player">
-                    <strong>{entry.nickname}</strong>
-                    <small>{copy.leaderboardRowGames(entry.gamesPlayed)}</small>
-                  </div>
-                  <div className="leaderboard-score">
-                    <strong>{numberFormatter.format(entry.highScore)}</strong>
-                    <small>
-                      {copy.statHighestLevel} {entry.highestLevel}
-                    </small>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-        )}
-      </article>
     </section>
   );
 }
