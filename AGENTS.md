@@ -461,6 +461,151 @@ empty disposable Supabase project:
 7. verify invalid data and rate limiting;
 8. ensure no connection string, access code, raw IP, or claim URL reaches logs or Git.
 
+### Production statistics incident and proven baseline (2026-07-31)
+
+The first Supabase rollout exposed several independent deployment problems. Keep
+this history because the final symptom ("sync error") was too generic to reveal
+which layer had failed:
+
+1. Vercel initially failed to load `shared/gameStats` from the function bundle.
+   The server import must remain `../shared/gameStats.js`; TypeScript resolves it
+   to the `.ts` source and emits a runtime-valid ESM specifier. The API test is
+   deliberately compiled to JavaScript before execution for this reason.
+2. Vercel's isolated API compilation did not expose `globalThis.crypto` with the
+   same types as the browser build. Server hashing/HMAC now uses `node:crypto`;
+   the shared browser generator accesses Web Crypto through a small structural
+   type instead of assuming DOM globals in every compiler context.
+3. Supabase returned SQLSTATE `28P01` until the database password in the
+   transaction-pooler URI was corrected. After resetting a database password,
+   replace the entire `SUPABASE_DATABASE_URL` value in Vercel and redeploy. Use
+   port `6543`, and URL-encode special password characters (or use a long
+   alphanumeric password).
+4. Request-time `CREATE TABLE`/`ALTER TABLE` work made cold requests slow and was
+   removed. Production schema changes are manual migrations and must complete
+   before the matching code deploy.
+5. The critical POST-only outage came from mixing Vercel's two handler models.
+   A default function was treated as a legacy Node `(request, response)`
+   handler. Vercel's Node helpers had already consumed/parsed JSON into
+   `request.body`; wrapping that `IncomingMessage` again with
+   `Readable.toWeb()` attempted to read a disturbed stream. GET had no body and
+   worked, while every `application/json` POST hung or failed before SQL.
+6. The correct fix was commit `7ffcec9`: the function again exports the official
+   Web-standard `{ fetch(request: Request) }` object. The earlier Fetch handler
+   itself had not been the cause of the crash; the unresolved shared-module
+   import had been. Do not restore the Node adapter from `fef3ff1`.
+7. Client requests have a 12-second abort timeout since `e76d217`, so a future
+   backend regression becomes a visible retryable error instead of an endless
+   loading label.
+
+Primary platform references: [Vercel Node.js runtime and request-body
+helpers](https://vercel.com/docs/functions/runtimes/node-js) and the Vercel
+runtime implementations of
+[`helpers.ts`](https://github.com/vercel/vercel/blob/main/packages/node/src/serverless-functions/helpers.ts)
+and
+[`serverless-handler.mts`](https://github.com/vercel/vercel/blob/main/packages/node/src/serverless-functions/serverless-handler.mts).
+
+The observed differential diagnosis was decisive:
+
+```text
+GET /api/stats                         -> 200, leaderboard JSON
+DELETE or POST with text/plain         -> prompt 405/415
+POST with application/json (broken)    -> no bytes until timeout
+POST {} after the Web-handler fix      -> prompt 400 INVALID_ACTION
+```
+
+That combination means the connection/read/response paths work and the failure
+is specifically in JSON-body handling before action SQL. Do not diagnose it as
+a Supabase outage merely because the profile card says "sync error".
+
+The live production baseline after `7ffcec9` was verified without exposing a
+credential or profile code:
+
+- `GET` returned `200 {"leaderboard":[]}`;
+- malformed JSON returned `400 INVALID_JSON`;
+- `{}` returned `400 INVALID_ACTION` in about 0.45 seconds;
+- read-only connect with a synthetic valid-format code returned
+  `404 PROFILE_NOT_FOUND`;
+- one generated zero-game diagnostic profile passed create (`200`), connect
+  (`200`), and identical create retry (`200`), with consistent zeroed totals;
+- the diagnostic profile remains invisible because leaderboard SQL filters on
+  `games_played > 0`; no diagnostic run/score was inserted.
+
+An empty leaderboard therefore does **not** prove that `game_players` is empty:
+zero-game profiles are intentionally excluded. Conversely, a successful GET
+proves database connectivity and the leaderboard SELECT, but not the mutation
+or JSON-body paths.
+
+### Browser synchronization failure model
+
+For a local profile with `remoteConfirmed: false` and queued runs,
+`useGameStats` performs this strict sequence:
+
+```text
+POST create with the existing access code
+  -> optional queued rename
+  -> POST each pending run in order
+  -> GET leaderboard
+```
+
+If `create` fails or times out, no run and no leaderboard request is attempted
+in that pass. The access code, optimistic totals, and pending runs remain in
+`localStorage`; status becomes `error`. Retry/remount/online events resend the
+same create. This is a recoverable retry trap, not an autonomous React loop.
+
+Never tell a user in this state to forget the profile: that can destroy the only
+copy of an unconfirmed access code and queued result. Deploy/fix the API, then
+hard-refresh if an old fetch is still pending and press the existing retry
+control once. Same-code create is an upsert, and pending runs keep their original
+`runId`, so response-loss retries do not normally duplicate the profile or a
+retained run.
+
+The profile and leaderboard currently share one hook-level status. A create
+failure can therefore make an unrequested empty leaderboard look authoritative.
+Inspect the failing Network request and `stats.error.operation`; do not infer the
+failed operation from the leaderboard card alone.
+
+### Safe production probes
+
+These two probes do not create a player or run. Run them after every Vercel
+handler/runtime change:
+
+```bash
+curl --max-time 10 -i \
+  -H 'Content-Type: application/json' \
+  --data '{}' \
+  https://arduino-gate-game.vercel.app/api/stats
+
+curl --max-time 10 -i \
+  -H 'Content-Type: application/json' \
+  --data '{"action":"connect","accessCode":"00000-00000-00000-00000"}' \
+  https://arduino-gate-game.vercel.app/api/stats
+```
+
+Expect `400 INVALID_ACTION` and `404 PROFILE_NOT_FOUND`, respectively. The
+second request is a read-only SELECT. A real create or record also changes rate
+limit rows and may leave persistent user data, so prefer a disposable Supabase
+project for the full integration flow.
+
+Useful Vercel/Postgres evidence codes:
+
+- `FUNCTION_INVOCATION_FAILED`: import or top-level handler crash; inspect the
+  runtime log, not just build output;
+- `28P01`: wrong database password/URI;
+- `42P01`: migration/table missing;
+- `42703`: stale or incompatible columns;
+- `42P10`: missing unique/primary constraint required by `ON CONFLICT`;
+- `42501`: insufficient database privilege/RLS issue;
+- `23505`: unique conflict (normally `NICKNAME_TAKEN` when it is the nickname
+  index);
+- `23514`: database check constraint rejected data;
+- HTTP `429`: mutation limit reached; inspect `Retry-After`;
+- `080xx`, `53300`, or `57P03`: connection/capacity/availability failure.
+
+The server intentionally logs only context plus SQLSTATE, never query values,
+access codes, connection strings, or raw IPs. Ask for the newest runtime log and
+deployment commit; stale logs from an earlier deployment can point to an already
+fixed cause.
+
 ## 13. Legacy and optional infrastructure
 
 Do not mistake these for the active Vercel path:
@@ -493,6 +638,18 @@ Remote rollback references created before that feature:
 - branch: `backup/pre-cross-device-stats-20260731`;
 - target commit: `725492683dd7c5b4ba34ebd59a5cfe36f71cb8dc`.
 
+The rollback point immediately before the Supabase migration is the remote tag
+`pre-supabase-migration-20260731`, targeting `d679cc1`. Relevant recovery/debug
+commits after it are:
+
+- `86b4dc7`: Supabase backend migration;
+- `24a520c`: runtime-safe `.js` shared-module import and compiled API test;
+- `1d62615`: removal of request-time schema DDL;
+- `fef3ff1`: legacy Node response adapter (do not restore without redesign);
+- `e76d217`: browser request timeout;
+- `7ffcec9`: correct Vercel Web Fetch handler and JSON POST fix;
+- `7d93a75`: regression-test/documentation hardening.
+
 For a shared deployed branch, prefer a history-preserving rollback:
 
 ```bash
@@ -519,6 +676,14 @@ results, deployment prerequisites, and any external step you could not perform.
   mode is the fallback.
 - Database migrations are manual and must be applied before deploying code that
   depends on them; there is not yet an automated migration runner.
+- Server run-id deduplication retains only the newest 512 rows per profile. A
+  replay older than that retention window can increment lifetime aggregates
+  again; idempotency is not permanent archival deduplication.
+- Same-code create retries preserve identity and statistics, but currently
+  consume mutation-rate counters and can update `updated_at`. Avoid aggressive
+  blind retry loops; the create/profile-rename limit is 30 per hour.
+- Profile sync and leaderboard loading still share one hook status; a future UI
+  refactor should separate those states and display the failing operation/code.
 - Automated tests currently do not execute React hooks/UI interactions, physical
   Web Serial, or a live Supabase database. Use the manual/real integration
   checks in this guide for changes in those areas.
