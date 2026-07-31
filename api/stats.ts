@@ -1,6 +1,4 @@
 import { createHash, createHmac } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { Readable } from "node:stream";
 
 import postgres from "postgres";
 
@@ -769,50 +767,10 @@ async function handleRequest(request: Request): Promise<Response> {
   }
 }
 
-function webRequestFromNode(request: IncomingMessage) {
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(request.headers)) {
-    if (Array.isArray(value)) {
-      for (const item of value) headers.append(name, item);
-    } else if (value !== undefined) {
-      headers.set(name, value);
-    }
-  }
+const statsFunction = {
+  fetch(request: Request) {
+    return handleRequest(request);
+  },
+};
 
-  const method = request.method || "GET";
-  const path = request.url?.startsWith("/") ? request.url : "/api/stats";
-  const init: RequestInit & { duplex?: "half" } = { headers, method };
-  if (method !== "GET" && method !== "HEAD") {
-    init.body = Readable.toWeb(request) as ReadableStream<Uint8Array>;
-    init.duplex = "half";
-  }
-
-  return new Request(new URL(path || "/api/stats", "https://vercel.invalid"), init);
-}
-
-async function writeNodeResponse(
-  response: ServerResponse,
-  webResponse: Response,
-) {
-  response.statusCode = webResponse.status;
-  webResponse.headers.forEach((value, name) => response.setHeader(name, value));
-  response.end(Buffer.from(await webResponse.arrayBuffer()));
-}
-
-export default async function statsFunction(
-  request: IncomingMessage,
-  response: ServerResponse,
-) {
-  try {
-    await writeNodeResponse(
-      response,
-      await handleRequest(webRequestFromNode(request)),
-    );
-  } catch {
-    console.error("Game statistics adapter failed");
-    await writeNodeResponse(
-      response,
-      errorResponse(500, "INTERNAL_ERROR", "The request could not be processed."),
-    );
-  }
-}
+export default statsFunction;
