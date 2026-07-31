@@ -93,7 +93,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `app/i18n.ts` | All Ukrainian, German, and English page/game copy. |
 | `app/globals.css` | Entire visual system and responsive behavior; there is no component CSS framework. |
 | `shared/gameStats.ts` | Browser-safe API types, generators, normalization, and shared validation. This is the contract source of truth. |
-| `api/stats.ts` | Vercel Fetch-style function, Supabase PostgreSQL queries, schema initialization, rate limiting, and stats aggregation. |
+| `api/stats.ts` | Vercel Web Fetch-style function, Supabase PostgreSQL queries, rate limiting, and stats aggregation. |
 | `db/migrations/0001_game_stats.sql` | Auditable/manual SQL copy of the live stats schema. |
 | `SUPABASE_SETUP.md` | Ukrainian step-by-step Supabase/Vercel provisioning, verification, troubleshooting, and rollback guide. |
 | `public/arduino-smart-gate.ino` | Arduino UNO firmware downloaded from the built site. |
@@ -150,8 +150,9 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm test` intentionally builds first, then uses Node’s built-in test runner
-with TypeScript type stripping. There is currently no jsdom/Playwright hook-test
+`npm test` intentionally builds the frontend and a Node-compatible JavaScript
+copy of the API first, then uses Node’s built-in test runner (with type stripping
+for the shared-source tests). There is currently no jsdom/Playwright hook-test
 stack in the repository.
 
 ## 5. Frontend state and browser behavior
@@ -442,6 +443,11 @@ outputDirectory: dist
 ```
 
 Files under `api/` are deployed as Vercel Functions alongside the Vite output.
+`api/stats.ts` intentionally exports an object with a Web-standard
+`fetch(request: Request)` method. Do not replace it with a default
+`(request, response)` Node handler unless the entire request/response path is
+converted too: Vercel's Node helpers parse `request.body`, and wrapping that
+already-consumed stream as a second Web `Request` makes JSON POSTs fail.
 
 For database/API changes, perform at least one real integration pass against an
 empty disposable Supabase project:

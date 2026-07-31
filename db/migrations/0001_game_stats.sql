@@ -1,6 +1,6 @@
--- Safe to run repeatedly in the Supabase SQL Editor. The Vercel function
--- applies the same additive schema automatically, but running this migration
--- first makes setup failures visible before the production deploy.
+-- Safe to run repeatedly in the Supabase SQL Editor. The Vercel function does
+-- not run DDL during requests, so apply this migration before deploying code
+-- that depends on these tables or constraints.
 BEGIN;
 
 SELECT pg_advisory_xact_lock(7182736401948572::BIGINT);
