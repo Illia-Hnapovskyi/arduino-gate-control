@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import statsFunction from "../api/stats.ts";
+import statsFunction from "../dist/api-test/api/stats.js";
 
 test("stats API exports a Vercel-compatible handler and reports missing Supabase configuration", async () => {
   const previousDatabaseUrl = process.env.SUPABASE_DATABASE_URL;

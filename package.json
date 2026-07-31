@@ -8,10 +8,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:api-test": "tsc --project tsconfig.api-test.json",
     "preview": "vite preview",
     "lint": "eslint . --ignore-pattern dist",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "npm run build && node --experimental-strip-types --test",
+    "test": "npm run build && npm run build:api-test && node --experimental-strip-types --test",
     "check": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {

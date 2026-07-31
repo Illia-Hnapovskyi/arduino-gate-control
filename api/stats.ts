@@ -13,7 +13,7 @@ import {
   validateLanguage,
   validateNickname,
   validateRun,
-} from "../shared/gameStats.ts";
+} from "../shared/gameStats.js";
 
 const MAX_REQUEST_BYTES = 8_192;
 const MAX_SAFE_DATABASE_INTEGER = Number.MAX_SAFE_INTEGER;
