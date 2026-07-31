@@ -79,10 +79,6 @@ type RateLimitRow = {
   retryAfter: unknown;
 };
 
-let schemaInitialization:
-  | { connectionString: string; promise: Promise<void> }
-  | undefined;
-
 let databaseClient:
   | { connectionString: string; sql: SqlClient }
   | undefined;
@@ -142,89 +138,6 @@ function playerFromRow(row: DatabaseRow): PlayerStats {
   };
 }
 
-async function initializeSchema(sql: SqlClient) {
-  await sql.begin(async (transaction) => {
-    await transaction`
-      SELECT pg_advisory_xact_lock(7182736401948572::BIGINT)
-    `;
-    await transaction`
-      CREATE TABLE IF NOT EXISTS game_players (
-        id BIGSERIAL PRIMARY KEY,
-        access_code_hash CHAR(64) NOT NULL UNIQUE,
-        nickname VARCHAR(20) NOT NULL,
-        language VARCHAR(2) NOT NULL DEFAULT 'en',
-        games_played BIGINT NOT NULL DEFAULT 0 CHECK (games_played >= 0),
-        total_score BIGINT NOT NULL DEFAULT 0 CHECK (total_score >= 0),
-        high_score BIGINT NOT NULL DEFAULT 0 CHECK (
-          high_score >= 0 AND high_score <= 100000000
-        ),
-        highest_level INTEGER NOT NULL DEFAULT 0 CHECK (
-          highest_level >= 0 AND highest_level <= 9
-        ),
-        total_duration_ms BIGINT NOT NULL DEFAULT 0 CHECK (total_duration_ms >= 0),
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CHECK (language IN ('uk', 'de', 'en'))
-      )
-    `;
-    await transaction`
-      CREATE UNIQUE INDEX IF NOT EXISTS game_players_nickname_unique
-      ON game_players (LOWER(nickname))
-    `;
-    await transaction`
-      CREATE INDEX IF NOT EXISTS game_players_leaderboard_idx
-      ON game_players (high_score DESC, total_score DESC, highest_level DESC)
-    `;
-    await transaction`
-      CREATE TABLE IF NOT EXISTS game_runs (
-        id BIGSERIAL PRIMARY KEY,
-        player_id BIGINT NOT NULL REFERENCES game_players(id) ON DELETE CASCADE,
-        run_id VARCHAR(64) NOT NULL,
-        score BIGINT NOT NULL CHECK (score >= 0 AND score <= 100000000),
-        level INTEGER NOT NULL CHECK (level >= 1 AND level <= 9),
-        duration_ms BIGINT NOT NULL CHECK (
-          duration_ms >= 0 AND duration_ms <= 21600000
-        ),
-        recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CHECK (MOD(score, 10) = 0),
-        CHECK (level <= LEAST(9, 1 + duration_ms / 22000)),
-        UNIQUE (player_id, run_id)
-      )
-    `;
-    await transaction`
-      CREATE INDEX IF NOT EXISTS game_runs_retention_idx
-      ON game_runs (player_id, recorded_at DESC, id DESC)
-    `;
-    await transaction`
-      CREATE TABLE IF NOT EXISTS game_rate_limits (
-        scope_hash CHAR(64) NOT NULL,
-        bucket VARCHAR(24) NOT NULL,
-        window_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        request_count INTEGER NOT NULL DEFAULT 1 CHECK (request_count > 0),
-        PRIMARY KEY (scope_hash, bucket),
-        CHECK (
-          bucket IN (
-            'ip_create',
-            'ip_write',
-            'profile_record',
-            'profile_rename'
-          )
-        )
-      )
-    `;
-    await transaction`
-      CREATE INDEX IF NOT EXISTS game_rate_limits_cleanup_idx
-      ON game_rate_limits (window_started_at)
-    `;
-
-    // Supabase exposes the public schema through its Data API. With RLS enabled
-    // and no policies, browser clients cannot bypass this server-side endpoint.
-    await transaction`ALTER TABLE game_players ENABLE ROW LEVEL SECURITY`;
-    await transaction`ALTER TABLE game_runs ENABLE ROW LEVEL SECURITY`;
-    await transaction`ALTER TABLE game_rate_limits ENABLE ROW LEVEL SECURITY`;
-  });
-}
-
 async function getDatabase() {
   const connectionString = process.env.SUPABASE_DATABASE_URL?.trim();
   if (!connectionString) return null;
@@ -236,7 +149,7 @@ async function getDatabase() {
     databaseClient = {
       connectionString,
       sql: postgres(connectionString, {
-        connect_timeout: 10,
+        connect_timeout: 5,
         idle_timeout: 20,
         max: 1,
         prepare: false,
@@ -244,25 +157,7 @@ async function getDatabase() {
       }),
     };
   }
-  const sql = databaseClient.sql;
-  if (
-    !schemaInitialization ||
-    schemaInitialization.connectionString !== connectionString
-  ) {
-    const promise = initializeSchema(sql);
-    schemaInitialization = { connectionString, promise };
-  }
-
-  try {
-    await schemaInitialization.promise;
-  } catch (error) {
-    if (schemaInitialization?.connectionString === connectionString) {
-      schemaInitialization = undefined;
-    }
-    throw error;
-  }
-
-  return sql;
+  return databaseClient.sql;
 }
 
 async function hashAccessCode(accessCode: string) {

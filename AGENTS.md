@@ -72,8 +72,8 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
   game clocks. Firing uses wall-clock animation timestamps while recorded active
   duration uses a capped physics delta; a shot-rate ceiling rejected legitimate
   low-FPS runs in the past.
-- Whenever the Postgres schema changes, update both the runtime schema in
-  `api/stats.ts` and `db/migrations/0001_game_stats.sql`.
+- Whenever the Postgres schema changes, add/update the checked-in SQL migration
+  and document the required production migration step.
 - Keep all three UI languages (`uk`, `de`, `en`) at key parity.
 - Preserve unrelated user changes and inspect `git status` before editing.
 - Do not rewrite shared Git history or use destructive Git commands for normal
@@ -266,12 +266,11 @@ Active tables:
 
 `api/stats.ts` connects through the Supabase transaction pooler on port 6543
 with Postgres.js prepared statements disabled, a one-connection client per warm
-Vercel instance, and TLS required. It initializes missing tables/indexes under a
-Postgres advisory lock, so the connection role needs schema creation privileges
-on first request. The checked-in SQL migration is safe for a fresh database,
-but `CREATE IF NOT EXISTS` does not evolve an already-existing incompatible
-schema. For a future schema change, add explicit migration/ALTER logic instead
-of assuming the runtime initializer upgrades old tables.
+Vercel instance, and TLS required. Schema changes are never run during a request:
+apply the checked-in SQL migration in Supabase SQL Editor before deploying. The
+initial migration is safe for a fresh database, but `CREATE IF NOT EXISTS` does
+not evolve an already-existing incompatible schema. For a future schema change,
+add explicit migration/ALTER logic.
 
 All active statistics tables enable Row Level Security without anon or
 authenticated policies. Supabase exposes the public schema through its Data
@@ -512,8 +511,8 @@ results, deployment prerequisites, and any external step you could not perform.
 - Plain Vite development does not run Vercel Functions.
 - Web Serial requires a compatible Chromium browser and a secure context; demo
   mode is the fallback.
-- Runtime `CREATE IF NOT EXISTS` is convenient for a fresh database but is not a
-  complete long-term migration system.
+- Database migrations are manual and must be applied before deploying code that
+  depends on them; there is not yet an automated migration runner.
 - Automated tests currently do not execute React hooks/UI interactions, physical
   Web Serial, or a live Supabase database. Use the manual/real integration
   checks in this guide for changes in those areas.
