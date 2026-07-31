@@ -1,7 +1,4 @@
-import {
-  neon,
-  type NeonQueryFunction,
-} from "@neondatabase/serverless";
+import postgres from "postgres";
 
 import {
   formatAccessCode,
@@ -14,7 +11,7 @@ import {
   validateLanguage,
   validateNickname,
   validateRun,
-} from "../shared/gameStats";
+} from "../shared/gameStats.ts";
 
 const MAX_REQUEST_BYTES = 8_192;
 const MAX_SAFE_DATABASE_INTEGER = Number.MAX_SAFE_INTEGER;
@@ -44,7 +41,7 @@ const JSON_HEADERS = {
   "X-Content-Type-Options": "nosniff",
 } as const;
 
-type SqlClient = NeonQueryFunction<false, false>;
+type SqlClient = ReturnType<typeof postgres>;
 
 type DatabaseRow = {
   nickname: unknown;
@@ -60,6 +57,7 @@ type DatabaseRow = {
 type DatabaseError = {
   code?: unknown;
   constraint?: unknown;
+  constraint_name?: unknown;
 };
 
 type RateLimitBucket =
@@ -81,6 +79,10 @@ type RateLimitRow = {
 
 let schemaInitialization:
   | { connectionString: string; promise: Promise<void> }
+  | undefined;
+
+let databaseClient:
+  | { connectionString: string; sql: SqlClient }
   | undefined;
 
 let rateLimitKey:
@@ -143,11 +145,11 @@ function playerFromRow(row: DatabaseRow): PlayerStats {
 }
 
 async function initializeSchema(sql: SqlClient) {
-  await sql.transaction((transaction) => [
-    transaction`
+  await sql.begin(async (transaction) => {
+    await transaction`
       SELECT pg_advisory_xact_lock(7182736401948572::BIGINT)
-    `,
-    transaction`
+    `;
+    await transaction`
       CREATE TABLE IF NOT EXISTS game_players (
         id BIGSERIAL PRIMARY KEY,
         access_code_hash CHAR(64) NOT NULL UNIQUE,
@@ -166,16 +168,16 @@ async function initializeSchema(sql: SqlClient) {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CHECK (language IN ('uk', 'de', 'en'))
       )
-    `,
-    transaction`
+    `;
+    await transaction`
       CREATE UNIQUE INDEX IF NOT EXISTS game_players_nickname_unique
       ON game_players (LOWER(nickname))
-    `,
-    transaction`
+    `;
+    await transaction`
       CREATE INDEX IF NOT EXISTS game_players_leaderboard_idx
       ON game_players (high_score DESC, total_score DESC, highest_level DESC)
-    `,
-    transaction`
+    `;
+    await transaction`
       CREATE TABLE IF NOT EXISTS game_runs (
         id BIGSERIAL PRIMARY KEY,
         player_id BIGINT NOT NULL REFERENCES game_players(id) ON DELETE CASCADE,
@@ -190,12 +192,12 @@ async function initializeSchema(sql: SqlClient) {
         CHECK (level <= LEAST(9, 1 + duration_ms / 22000)),
         UNIQUE (player_id, run_id)
       )
-    `,
-    transaction`
+    `;
+    await transaction`
       CREATE INDEX IF NOT EXISTS game_runs_retention_idx
       ON game_runs (player_id, recorded_at DESC, id DESC)
-    `,
-    transaction`
+    `;
+    await transaction`
       CREATE TABLE IF NOT EXISTS game_rate_limits (
         scope_hash CHAR(64) NOT NULL,
         bucket VARCHAR(24) NOT NULL,
@@ -211,19 +213,40 @@ async function initializeSchema(sql: SqlClient) {
           )
         )
       )
-    `,
-    transaction`
+    `;
+    await transaction`
       CREATE INDEX IF NOT EXISTS game_rate_limits_cleanup_idx
       ON game_rate_limits (window_started_at)
-    `,
-  ]);
+    `;
+
+    // Supabase exposes the public schema through its Data API. With RLS enabled
+    // and no policies, browser clients cannot bypass this server-side endpoint.
+    await transaction`ALTER TABLE game_players ENABLE ROW LEVEL SECURITY`;
+    await transaction`ALTER TABLE game_runs ENABLE ROW LEVEL SECURITY`;
+    await transaction`ALTER TABLE game_rate_limits ENABLE ROW LEVEL SECURITY`;
+  });
 }
 
 async function getDatabase() {
-  const connectionString = process.env.DATABASE_URL?.trim();
+  const connectionString = process.env.SUPABASE_DATABASE_URL?.trim();
   if (!connectionString) return null;
 
-  const sql = neon(connectionString);
+  if (
+    !databaseClient ||
+    databaseClient.connectionString !== connectionString
+  ) {
+    databaseClient = {
+      connectionString,
+      sql: postgres(connectionString, {
+        connect_timeout: 10,
+        idle_timeout: 20,
+        max: 1,
+        prepare: false,
+        ssl: "require",
+      }),
+    };
+  }
+  const sql = databaseClient.sql;
   if (
     !schemaInitialization ||
     schemaInitialization.connectionString !== connectionString
@@ -253,7 +276,7 @@ async function hashAccessCode(accessCode: string) {
 }
 
 async function getRateLimitKey() {
-  const databaseUrl = process.env.DATABASE_URL?.trim();
+  const databaseUrl = process.env.SUPABASE_DATABASE_URL?.trim();
   const secret = process.env.RATE_LIMIT_SECRET?.trim() || databaseUrl;
   if (!secret) {
     throw new Error("A rate-limit pseudonymization key is unavailable.");
@@ -290,7 +313,8 @@ async function pseudonymizeRateLimitScope(scope: string) {
 
 function clientAddressScope(request: Request) {
   const address = request.headers
-    .get("x-vercel-forwarded-for")
+    .get("x-forwarded-for")
+    ?.split(",", 1)[0]
     ?.trim()
     .toLowerCase();
   return `ip:${address?.slice(0, 128) || "local-or-unknown"}`;
@@ -418,7 +442,8 @@ function isUniqueNicknameError(error: unknown) {
   const databaseError = error as DatabaseError;
   return (
     databaseError.code === "23505" &&
-    databaseError.constraint === "game_players_nickname_unique"
+    (databaseError.constraint === "game_players_nickname_unique" ||
+      databaseError.constraint_name === "game_players_nickname_unique")
   );
 }
 
@@ -858,7 +883,7 @@ async function handleRequest(request: Request) {
     return errorResponse(
       503,
       "DATABASE_NOT_CONFIGURED",
-      "Game statistics require DATABASE_URL.",
+      "Game statistics require SUPABASE_DATABASE_URL.",
     );
   }
 
@@ -877,10 +902,6 @@ async function handleRequest(request: Request) {
   }
 }
 
-const statsFunction = {
-  fetch(request: Request) {
-    return handleRequest(request);
-  },
-};
-
-export default statsFunction;
+export default function statsFunction(request: Request) {
+  return handleRequest(request);
+}

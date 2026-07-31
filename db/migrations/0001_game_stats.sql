@@ -1,5 +1,6 @@
--- Safe to run repeatedly. The Vercel function applies the same additive schema
--- automatically, so this file is primarily useful for inspection/manual setup.
+-- Safe to run repeatedly in the Supabase SQL Editor. The Vercel function
+-- applies the same additive schema automatically, but running this migration
+-- first makes setup failures visible before the production deploy.
 BEGIN;
 
 SELECT pg_advisory_xact_lock(7182736401948572::BIGINT);
@@ -61,6 +62,12 @@ CREATE TABLE IF NOT EXISTS game_rate_limits (
 
 CREATE INDEX IF NOT EXISTS game_rate_limits_cleanup_idx
   ON game_rate_limits (window_started_at);
+
+-- Supabase exposes tables in the public schema through its Data API. No RLS
+-- policies are created: anon/authenticated clients must use /api/stats instead.
+ALTER TABLE game_players ENABLE ROW LEVEL SECURITY;
+ALTER TABLE game_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE game_rate_limits ENABLE ROW LEVEL SECURITY;
 
 DELETE FROM game_rate_limits
   WHERE window_started_at < NOW() - INTERVAL '2 days';

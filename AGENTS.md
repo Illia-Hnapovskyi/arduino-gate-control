@@ -7,10 +7,10 @@ the user-facing setup guide.
 ## 0. Sixty-second orientation
 
 - Active app: Vite/React (`src/main.tsx` → `app/page.tsx`), not Next.js.
-- Active backend: Vercel `api/stats.ts` → Neon Postgres; shared contract lives in
+- Active backend: Vercel `api/stats.ts` → Supabase PostgreSQL; shared contract lives in
   `shared/gameStats.ts`.
 - Start frontend work with `npm ci && npm run dev`; use `npx vercel dev` plus
-  `DATABASE_URL` for real stats API work.
+  `SUPABASE_DATABASE_URL` for real stats API work.
 - Before handoff run `npm run check` and `git diff --check`.
 - Keep firmware, serial parsing, translations, validation, and both Postgres
   schema copies synchronized when their contracts change.
@@ -35,7 +35,8 @@ Browser (React 19 + Vite)
   ├─ Web Serial at 115200 baud ── Arduino UNO firmware
   ├─ localStorage ─────────────── language, profile secret, offline run queue
   └─ /api/stats ───────────────── Vercel Function
-                                      └─ Neon Postgres via DATABASE_URL
+                                      └─ Supabase PostgreSQL via Supavisor
+                                                       and SUPABASE_DATABASE_URL
 ```
 
 Vercel builds the frontend into `dist/` with `npm run build`. The server-side
@@ -48,7 +49,8 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 - React `19.2.8` and React DOM `19.2.8`;
 - Vite `8.2.0` with `@vitejs/plugin-react`;
 - TypeScript `5.9.3` in strict/no-emit mode;
-- `@neondatabase/serverless` `^1.1.0` for the active Postgres path;
+- Postgres.js `^3.4.9` through the Supabase transaction pooler for the active
+  database path;
 - hand-written global CSS processed by Tailwind/PostCSS, browser
   Canvas/Web Audio/Web Serial, and Node's built-in tests.
 
@@ -60,8 +62,8 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
   cookie-consent/help UI is added at the same time. The current implementation
   intentionally uses no cookies and sends stats requests with
   `credentials: "omit"`.
-- Never commit database URLs, access codes, `RATE_LIMIT_SECRET`, temporary Neon
-  claim URLs, user data, or other credentials.
+- Never commit database URLs, access codes, `RATE_LIMIT_SECRET`, Supabase keys,
+  project credentials, user data, or other secrets.
 - Treat a profile access code as a password. Never log it. The database stores
   only its SHA-256 digest.
 - Keep browser validation, API validation, and database constraints compatible.
@@ -91,8 +93,9 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `app/i18n.ts` | All Ukrainian, German, and English page/game copy. |
 | `app/globals.css` | Entire visual system and responsive behavior; there is no component CSS framework. |
 | `shared/gameStats.ts` | Browser-safe API types, generators, normalization, and shared validation. This is the contract source of truth. |
-| `api/stats.ts` | Vercel Fetch-style function, Neon queries, schema initialization, rate limiting, and stats aggregation. |
+| `api/stats.ts` | Vercel Fetch-style function, Supabase PostgreSQL queries, schema initialization, rate limiting, and stats aggregation. |
 | `db/migrations/0001_game_stats.sql` | Auditable/manual SQL copy of the live stats schema. |
+| `SUPABASE_SETUP.md` | Ukrainian step-by-step Supabase/Vercel provisioning, verification, troubleshooting, and rollback guide. |
 | `public/arduino-smart-gate.ino` | Arduino UNO firmware downloaded from the built site. |
 | `public/README-UK.md` | Hardware wiring and usage instructions in Ukrainian. |
 | `tests/game-stats.test.mjs` | Shared validation/generator regression tests. |
@@ -110,7 +113,8 @@ Requirements:
 - Node.js `>=22.13.0` (see `package.json`);
 - npm and the committed `package-lock.json`;
 - Chrome or Edge for physical Web Serial testing;
-- a Postgres/Neon `DATABASE_URL` only when testing cloud statistics.
+- a Supabase transaction-pooler `SUPABASE_DATABASE_URL` only when testing cloud
+  statistics.
 
 Install and run the frontend only:
 
@@ -126,13 +130,14 @@ full API is available.
 Run the Vercel frontend and API together:
 
 ```bash
-DATABASE_URL='postgresql://...' RATE_LIMIT_SECRET='a-long-random-secret' npx vercel dev
+SUPABASE_DATABASE_URL='postgresql://...:6543/postgres' \
+RATE_LIMIT_SECRET='a-long-random-secret' npx vercel dev
 ```
 
 Prefer environment files or the Vercel CLI environment store over putting
 secrets directly in shell history. `RATE_LIMIT_SECRET` is recommended to be at
-least 32 random characters. If omitted, the API uses `DATABASE_URL` as the HMAC
-key without storing or returning that URL.
+least 32 random characters. If omitted, the API uses
+`SUPABASE_DATABASE_URL` as the HMAC key without storing or returning that URL.
 
 Useful commands:
 
@@ -259,12 +264,20 @@ Active tables:
 - `game_runs`: recent idempotency records linked to a player;
 - `game_rate_limits`: HMAC-pseudonymized fixed-window counters.
 
-`api/stats.ts` initializes missing tables/indexes under a Postgres advisory lock.
-The Neon role therefore needs schema creation privileges on first request. The
-checked-in SQL migration is safe for a fresh database, but `CREATE IF NOT
-EXISTS` does not evolve an already-existing incompatible schema. For a future
-schema change, add explicit migration/ALTER logic instead of assuming the
-runtime initializer upgrades old tables.
+`api/stats.ts` connects through the Supabase transaction pooler on port 6543
+with Postgres.js prepared statements disabled, a one-connection client per warm
+Vercel instance, and TLS required. It initializes missing tables/indexes under a
+Postgres advisory lock, so the connection role needs schema creation privileges
+on first request. The checked-in SQL migration is safe for a fresh database,
+but `CREATE IF NOT EXISTS` does not evolve an already-existing incompatible
+schema. For a future schema change, add explicit migration/ALTER logic instead
+of assuming the runtime initializer upgrades old tables.
+
+All active statistics tables enable Row Level Security without anon or
+authenticated policies. Supabase exposes the public schema through its Data
+API, so this deny-by-default state prevents browser clients from bypassing the
+validation and rate limiting in `/api/stats`. Do not add public policies without
+a separate security review.
 
 Current fixed one-hour mutation limits:
 
@@ -274,7 +287,8 @@ Current fixed one-hour mutation limits:
 - 30 rename/create-upsert operations per profile.
 
 Rate-limit scopes are HMAC-SHA-256 values. The raw
-`x-vercel-forwarded-for` address is never inserted into Postgres. A blocked
+`x-forwarded-for` address is never inserted into Postgres. Vercel overwrites
+this header to prevent client spoofing. A blocked
 request returns HTTP 429 and `Retry-After`. Counter rows older than two days are
 periodically deleted.
 
@@ -405,14 +419,21 @@ When changing pins, commands, constraints, or hardware behavior, update all of:
 Production prerequisites managed outside Git:
 
 - a Vercel project connected to this repository;
-- a Neon Postgres integration or manually provisioned Neon database;
-- `DATABASE_URL` in every Vercel environment that needs shared statistics;
+- a manually provisioned Supabase project in a region appropriate for the
+  Vercel deployment;
+- `SUPABASE_DATABASE_URL` containing the Supavisor transaction-pooler URI in
+  every Vercel environment that needs shared statistics;
 - preferably `RATE_LIMIT_SECRET` in the same environments;
+- the checked-in migration run once in Supabase SQL Editor before the first
+  production deploy;
 - a redeploy after environment changes.
 
-Without `DATABASE_URL`, `/api/stats` intentionally returns HTTP 503 with
+Without `SUPABASE_DATABASE_URL`, `/api/stats` intentionally returns HTTP 503 with
 `DATABASE_NOT_CONFIGURED`; the browser keeps local profile/runs and shows a sync
 error. Do not silently pretend cross-device persistence is active in that state.
+
+Use `SUPABASE_SETUP.md` as the operator runbook. Never prefix database secrets
+with `VITE_`, and redeploy after changing Vercel environment variables.
 
 The ordinary deployment path is defined by `vercel.json`:
 
@@ -424,7 +445,7 @@ outputDirectory: dist
 Files under `api/` are deployed as Vercel Functions alongside the Vite output.
 
 For database/API changes, perform at least one real integration pass against an
-empty disposable Postgres/Neon database:
+empty disposable Supabase project:
 
 1. GET an empty leaderboard;
 2. create a profile;
@@ -441,7 +462,7 @@ Do not mistake these for the active Vercel path:
 
 - `worker/index.ts`: optional Cloudflare/vinext worker entry;
 - `db/index.ts`, `db/schema.ts`, `drizzle.config.ts`, `examples/d1/`: optional
-  Cloudflare D1/Drizzle example infrastructure, not the Neon stats schema;
+  Cloudflare D1/Drizzle example infrastructure, not the Supabase stats schema;
 - `next.config.ts`, `app/chatgpt-auth.ts`, `build/`, and `scripts/`: retained
   Next.js/OpenAI Sites/vinext support and build tooling;
 - Cloudflare, Next.js, Drizzle, and vinext dependencies remain in
@@ -480,8 +501,9 @@ results, deployment prerequisites, and any external step you could not perform.
 
 ## 15. Known limitations
 
-- Production cross-device sync cannot work until Vercel has a valid
-  `DATABASE_URL`; that secret is intentionally absent from Git.
+- Production cross-device sync cannot work until Vercel has a valid Supabase
+  transaction-pooler `SUPABASE_DATABASE_URL`; that secret is intentionally
+  absent from Git.
 - The leaderboard is based on client-reported browser runs and is not suitable
   for prizes or adversarial competition.
 - There is no email/account recovery. Losing the access code means losing
@@ -493,8 +515,8 @@ results, deployment prerequisites, and any external step you could not perform.
 - Runtime `CREATE IF NOT EXISTS` is convenient for a fresh database but is not a
   complete long-term migration system.
 - Automated tests currently do not execute React hooks/UI interactions, physical
-  Web Serial, or a live Neon database. Use the manual/real integration checks in
-  this guide for changes in those areas.
+  Web Serial, or a live Supabase database. Use the manual/real integration
+  checks in this guide for changes in those areas.
 
 ## 16. Definition of done
 
