@@ -158,6 +158,10 @@ byte activeNoteIndex = 0;
 byte activeNoteCount = 0;
 unsigned long nextNoteMs = 0;
 
+bool deadlineReached(unsigned long deadline) {
+  return (long)(millis() - deadline) >= 0;
+}
+
 void moveServo(int requestedAngle) {
   currentAngle = constrain(requestedAngle, CLOSED_ANGLE, 170);
   mechanismServo.write(currentAngle);
@@ -302,7 +306,7 @@ void startMelody(byte melodyId) {
 
   activeMelody = melodyId;
   activeNoteIndex = 0;
-  nextNoteMs = 0;
+  nextNoteMs = millis();
 }
 
 void updateMusic() {
@@ -310,7 +314,7 @@ void updateMusic() {
     return;
   }
 
-  if (millis() < nextNoteMs) {
+  if (!deadlineReached(nextNoteMs)) {
     return;
   }
 
@@ -345,7 +349,7 @@ void stopDeviceMode() {
     noTone(BUZZER_PIN);
     gamePaused = false;
     gameNoteIndex = 0;
-    nextGameNoteMs = 0;
+    nextGameNoteMs = millis();
   }
 
   deviceMode = GATE_DEVICE;
@@ -360,7 +364,7 @@ void startGame() {
   gamePaused = false;
   gameLiveTrackEnabled = false;
   gameNoteIndex = 0;
-  nextGameNoteMs = 0;
+  nextGameNoteMs = millis();
   moveServo(CLOSED_ANGLE);
 }
 
@@ -400,7 +404,7 @@ void playGameEffect(String effect) {
 }
 
 void updateActiveBuzzer() {
-  if (activeBuzzerPlaying && millis() >= activeBuzzerOffMs) {
+  if (activeBuzzerPlaying && deadlineReached(activeBuzzerOffMs)) {
     analogWrite(ACTIVE_BUZZER_PIN, 0);
     activeBuzzerPlaying = false;
   }
@@ -412,7 +416,7 @@ void updateGameAudio() {
     gamePaused ||
     !gameSoundEnabled ||
     gameLiveTrackEnabled ||
-    millis() < nextGameNoteMs
+    !deadlineReached(nextGameNoteMs)
   ) {
     return;
   }
@@ -579,7 +583,7 @@ void handleCommand(String command) {
   } else if (command == "GAME:RESUME") {
     if (deviceMode == GAME_DEVICE) {
       gamePaused = false;
-      nextGameNoteMs = 0;
+      nextGameNoteMs = millis();
     }
   } else if (command == "GAME:OVER") {
     if (deviceMode == GAME_DEVICE) {
@@ -595,7 +599,7 @@ void handleCommand(String command) {
       analogWrite(ACTIVE_BUZZER_PIN, 0);
       activeBuzzerPlaying = false;
     } else {
-      nextGameNoteMs = 0;
+      nextGameNoteMs = millis();
     }
   } else if (command == "TRACK:START") {
     stopMusic();

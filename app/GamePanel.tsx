@@ -4,6 +4,7 @@
    keeps mutable simulation objects in refs so it can run without 60 React renders/s */
 
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
@@ -404,6 +405,17 @@ function circlesTouch(
   return dx * dx + dy * dy <= distance * distance;
 }
 
+function isNativeKeyboardControl(target: EventTarget | null) {
+  return (
+    target instanceof Element &&
+    Boolean(
+      target.closest(
+        "button, input, select, textarea, a[href], [contenteditable='true']",
+      ),
+    )
+  );
+}
+
 function roundedRect(
   context: CanvasRenderingContext2D,
   x: number,
@@ -431,12 +443,14 @@ export default function GamePanel({
   const copy = GAME_COPY[language];
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<number | null>(null);
-  const worldRef = useRef<GameWorld>(createWorld());
+  const [initialWorld] = useState(createWorld);
+  const worldRef = useRef<GameWorld>(initialWorld);
   const statusRef = useRef<GameStatus>("ready");
   const joystickRef = useRef({ x: joystickX, y: joystickY, pressed: false });
   const centerRef = useRef({ x: 512, y: 512 });
   const invertYRef = useRef(true);
   const soundRef = useRef(true);
+  const effectsVolumeRef = useRef(28);
   const keyboardRef = useRef(new Set<string>());
   const touchRef = useRef(new Set<string>());
   const virtualJoystickRef = useRef<VirtualJoystickState>({
@@ -661,6 +675,12 @@ export default function GamePanel({
         setTrackStep(0);
       }
 
+      if (!soundRef.current) {
+        playerStateRef.current = "paused";
+        setPlayerState("paused");
+        return;
+      }
+
       playerStateRef.current = "playing";
       setPlayerState("playing");
 
@@ -698,11 +718,20 @@ export default function GamePanel({
 
   const playBrowserEffect = useCallback(
     (effect: "SHOT" | "SCORE" | "CRASH" | "OVER") => {
-      if (connection !== "demo" || !soundRef.current) return;
+      if (
+        connection !== "demo" ||
+        !soundRef.current ||
+        effectsVolumeRef.current <= 0
+      ) {
+        return;
+      }
       const context = ensureAudioContext();
       if (!context) return;
       void context.resume();
       const now = context.currentTime + 0.005;
+      const volumeScale = effectsVolumeRef.current / 28;
+      const scaledVolume = (baseVolume: number) =>
+        Math.min(0.35, baseVolume * volumeScale);
 
       if (effect === "SHOT") {
         scheduleBrowserTone(
@@ -712,7 +741,7 @@ export default function GamePanel({
           now,
           0.055,
           "square",
-          0.07,
+          scaledVolume(0.07),
         );
       } else if (effect === "SCORE") {
         scheduleBrowserTone(
@@ -722,7 +751,7 @@ export default function GamePanel({
           now,
           0.08,
           "square",
-          0.075,
+          scaledVolume(0.075),
         );
         scheduleBrowserTone(
           context,
@@ -731,7 +760,7 @@ export default function GamePanel({
           now + 0.075,
           0.11,
           "square",
-          0.075,
+          scaledVolume(0.075),
         );
       } else if (effect === "CRASH") {
         scheduleBrowserTone(
@@ -741,7 +770,7 @@ export default function GamePanel({
           now,
           0.22,
           "sawtooth",
-          0.09,
+          scaledVolume(0.09),
         );
       } else {
         [330, 247, 196, 123].forEach((frequency, index) => {
@@ -752,7 +781,7 @@ export default function GamePanel({
             now + index * 0.13,
             0.16,
             "square",
-            0.065,
+            scaledVolume(0.065),
           );
         });
       }
@@ -977,6 +1006,7 @@ export default function GamePanel({
   }, [emitSound]);
 
   const finishGame = useCallback(() => {
+    if (statusRef.current === "over") return;
     statusRef.current = "over";
     setStatus("over");
     stopTrackPlayback();
@@ -1136,10 +1166,13 @@ export default function GamePanel({
         )
       ) {
         removedAsteroids.add(asteroid);
-        world.lives--;
+        world.lives = Math.max(0, world.lives - 1);
         setLives(world.lives);
         emitSound("CRASH");
-        if (world.lives <= 0) finishGame();
+        if (world.lives === 0) {
+          finishGame();
+          break;
+        }
       } else if (asteroid.y - asteroid.radius > GAME_HEIGHT) {
         removedAsteroids.add(asteroid);
       }
@@ -1174,6 +1207,12 @@ export default function GamePanel({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
+        statusRef.current !== "playing" ||
+        isNativeKeyboardControl(event.target)
+      ) {
+        return;
+      }
+      if (
         [
           "ArrowUp",
           "ArrowDown",
@@ -1206,17 +1245,29 @@ export default function GamePanel({
   }, []);
 
   useEffect(() => {
-    if (connection === "disconnected" && statusRef.current === "playing") {
-      statusRef.current = "paused";
-      setStatus("paused");
-    }
+    if (connection !== "disconnected") return;
+
     if (
-      connection === "disconnected" &&
-      playerStateRef.current === "playing"
+      statusRef.current === "playing" ||
+      statusRef.current === "paused"
     ) {
-      pauseTrackPlayback();
+      statusRef.current = "ready";
+      setStatus("ready");
+      worldRef.current = createWorld();
+      setScore(0);
+      setLives(3);
+      setLevel(1);
+      keyboardRef.current.clear();
+      touchRef.current.clear();
+      const centredJoystick = { x: 0, y: 0, active: false };
+      virtualJoystickRef.current = centredJoystick;
+      virtualJoystickPointerRef.current = null;
+      setVirtualJoystick(centredJoystick);
+      resumeMusicAfterGamePauseRef.current = false;
     }
-  }, [connection, pauseTrackPlayback]);
+
+    if (playerStateRef.current !== "stopped") stopTrackPlayback();
+  }, [connection, stopTrackPlayback]);
 
   const startGame = () => {
     const world = createWorld();
@@ -1231,6 +1282,7 @@ export default function GamePanel({
     onCommand(`GAME:SOUND:${soundRef.current ? 1 : 0}`);
     onCommand(`SFX:VOLUME:${effectsVolume}`);
     startTrackPlayback(true);
+    window.requestAnimationFrame(() => canvasRef.current?.focus());
   };
 
   const togglePause = () => {
@@ -1250,6 +1302,7 @@ export default function GamePanel({
         startTrackPlayback(false);
       }
       resumeMusicAfterGamePauseRef.current = false;
+      window.requestAnimationFrame(() => canvasRef.current?.focus());
     }
   };
 
@@ -1283,6 +1336,7 @@ export default function GamePanel({
   };
 
   const changeEffectsVolume = (volume: number) => {
+    effectsVolumeRef.current = volume;
     setEffectsVolume(volume);
     if (connection === "connected" || connection === "demo") {
       onCommand(`SFX:VOLUME:${volume}`);
@@ -1335,6 +1389,22 @@ export default function GamePanel({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
+  };
+
+  const setKeyboardControl = (
+    control: string,
+    active: boolean,
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (event.key !== " " && event.key !== "Enter") return;
+    event.preventDefault();
+    if (active) touchRef.current.add(control);
+    else touchRef.current.delete(control);
+  };
+
+  const pulseAccessibleControl = (control: string) => {
+    touchRef.current.add(control);
+    window.setTimeout(() => touchRef.current.delete(control), 180);
   };
 
   const updateVirtualJoystick = (
@@ -1495,26 +1565,43 @@ export default function GamePanel({
               aria-label={copy.canvasAria}
               className="game-canvas"
               height={GAME_HEIGHT}
+              onPointerDown={() => canvasRef.current?.focus()}
               ref={canvasRef}
+              tabIndex={0}
               width={GAME_WIDTH}
             />
 
             {!connected && (
-              <div className="game-connect-overlay">
+              <div
+                aria-busy={connection === "connecting"}
+                className="game-connect-overlay"
+              >
                 <strong>{copy.connectFirst}</strong>
                 <p>{copy.demoHint}</p>
                 <div>
                   {isSupported ? (
-                    <button className="button primary" onClick={onConnect}>
+                    <button
+                      className="button primary"
+                      disabled={connection === "connecting"}
+                      onClick={onConnect}
+                    >
                       {copy.connectArduino}
                     </button>
                   ) : (
-                    <button className="button primary" onClick={onStartDemo}>
+                    <button
+                      className="button primary"
+                      disabled={connection === "connecting"}
+                      onClick={onStartDemo}
+                    >
                       {copy.startDemo}
                     </button>
                   )}
                   {isSupported && (
-                    <button className="button secondary" onClick={onStartDemo}>
+                    <button
+                      className="button secondary"
+                      disabled={connection === "connecting"}
+                      onClick={onStartDemo}
+                    >
                       {copy.demoWithoutBoard}
                     </button>
                   )}
@@ -1732,6 +1819,16 @@ export default function GamePanel({
                   aria-label={ariaLabel}
                   className={control}
                   key={control}
+                  onBlur={() => touchRef.current.delete(control)}
+                  onClick={(event) => {
+                    if (event.detail === 0) pulseAccessibleControl(control);
+                  }}
+                  onKeyDown={(event) =>
+                    setKeyboardControl(control, true, event)
+                  }
+                  onKeyUp={(event) =>
+                    setKeyboardControl(control, false, event)
+                  }
                   onPointerCancel={(event) =>
                     setTouchControl(control, false, event)
                   }
@@ -1748,7 +1845,18 @@ export default function GamePanel({
               ))}
             </div>
             <button
+              aria-label={copy.fire}
               className="touch-fire"
+              onBlur={() => touchRef.current.delete("fire")}
+              onClick={(event) => {
+                if (event.detail === 0) shoot(performance.now());
+              }}
+              onKeyDown={(event) =>
+                setKeyboardControl("fire", true, event)
+              }
+              onKeyUp={(event) =>
+                setKeyboardControl("fire", false, event)
+              }
               onPointerCancel={(event) => setTouchControl("fire", false, event)}
               onPointerDown={(event) => setTouchControl("fire", true, event)}
               onPointerUp={(event) => setTouchControl("fire", false, event)}

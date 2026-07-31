@@ -60,6 +60,15 @@ type GateMessage = {
   joystickPressed?: boolean;
 };
 
+function isGateStatusMessage(message: GateMessage) {
+  return (
+    (message.device === "gate" ||
+      message.device === "radar" ||
+      message.device === "game") &&
+    typeof message.angle === "number"
+  );
+}
+
 const CLOSED_ANGLE = 10;
 const OPEN_ANGLE = 90;
 const RADAR_MIN_ANGLE = 15;
@@ -109,7 +118,7 @@ function nowLabel(language: Language) {
 }
 
 export default function Home() {
-  const language = useSyncExternalStore(
+  const language = useSyncExternalStore<Language>(
     subscribeToLanguage,
     readLanguage,
     () => "uk",
@@ -141,6 +150,10 @@ export default function Home() {
     useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const writerRef =
     useRef<WritableStreamDefaultWriter<Uint8Array> | null>(null);
+  const connectionAttemptRef = useRef(0);
+  const closingPortRef = useRef(false);
+  const statusMessageVersionRef = useRef(0);
+  const latestStatusMessageRef = useRef<GateMessage | null>(null);
   const isSupported =
     typeof navigator !== "undefined" && "serial" in navigator;
 
@@ -149,6 +162,21 @@ export default function Home() {
       [`${nowLabel(language)} · ${message}`, ...current].slice(0, 6),
     );
   }, [language]);
+
+  const resetConnectedState = useCallback(() => {
+    setDistance(null);
+    setTemperature(null);
+    setHumidity(null);
+    setDhtOk(false);
+    setJoystickX(512);
+    setJoystickY(512);
+    setJoystickPressed(false);
+    setMode("manual");
+    setDeviceMode("gate");
+    setMelody(0);
+    setRadarPoints([]);
+    setAngle(CLOSED_ANGLE);
+  }, []);
 
   useEffect(() => {
     document.documentElement.lang = language;
@@ -227,6 +255,51 @@ export default function Home() {
     }
   }, []);
 
+  const closePortResources = useCallback(
+    async (requestedPort: SerialPortLike | null) => {
+      if (requestedPort && portRef.current && portRef.current !== requestedPort) {
+        try {
+          await requestedPort.close();
+        } catch {
+          // This is an old port from a superseded connection attempt.
+        }
+        return;
+      }
+
+      const port = requestedPort ?? portRef.current;
+      const reader = readerRef.current;
+      readerRef.current = null;
+      if (reader) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The USB device may already be gone.
+        }
+        try {
+          reader.releaseLock();
+        } catch {
+          // The read loop may already have released the lock.
+        }
+      }
+
+      const writer = writerRef.current;
+      writerRef.current = null;
+      try {
+        writer?.releaseLock();
+      } catch {
+        // The writer may already have been released after a port failure.
+      }
+
+      if (portRef.current === port) portRef.current = null;
+      try {
+        await port?.close();
+      } catch {
+        // Closing an unplugged or already closed port is safe to ignore.
+      }
+    },
+    [],
+  );
+
   const readFromPort = useCallback(
     async (port: SerialPortLike) => {
       if (!port.readable) return;
@@ -234,11 +307,15 @@ export default function Home() {
       readerRef.current = reader;
       const decoder = new TextDecoder();
       let buffer = "";
+      let readFailure: unknown = null;
 
       try {
         while (true) {
           const { value, done } = await reader.read();
-          if (done) break;
+          if (done) {
+            readFailure = new Error(copy.logConnectionInterrupted);
+            break;
+          }
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split(/\r?\n/);
           buffer = lines.pop() ?? "";
@@ -247,21 +324,19 @@ export default function Home() {
             const trimmed = line.trim();
             if (!trimmed) continue;
             try {
-              applyMessage(JSON.parse(trimmed) as GateMessage);
+              const message = JSON.parse(trimmed) as GateMessage;
+              applyMessage(message);
+              if (isGateStatusMessage(message)) {
+                latestStatusMessageRef.current = message;
+                statusMessageVersionRef.current++;
+              }
             } catch {
               addLog(trimmed);
             }
           }
         }
       } catch (readError) {
-        if (connection === "connected") {
-          addLog(copy.logConnectionInterrupted);
-          setError(
-            readError instanceof Error
-              ? readError.message
-              : copy.errorRead,
-          );
-        }
+        readFailure = readError;
       } finally {
         try {
           reader.releaseLock();
@@ -270,13 +345,35 @@ export default function Home() {
         }
         if (readerRef.current === reader) readerRef.current = null;
       }
+
+      if (!closingPortRef.current && portRef.current === port) {
+        connectionAttemptRef.current++;
+        closingPortRef.current = true;
+        await closePortResources(port);
+        resetConnectedState();
+        setConnection("disconnected");
+        addLog(copy.logConnectionInterrupted);
+        setError(
+          readFailure instanceof Error
+            ? readFailure.message
+            : copy.errorRead,
+        );
+        closingPortRef.current = false;
+      }
     },
-    [addLog, applyMessage, connection, copy.errorRead, copy.logConnectionInterrupted],
+    [
+      addLog,
+      applyMessage,
+      closePortResources,
+      copy.errorRead,
+      copy.logConnectionInterrupted,
+      resetConnectedState,
+    ],
   );
 
   const writeLine = useCallback(async (command: string) => {
     const writer = writerRef.current;
-    if (!writer) return;
+    if (!writer) throw new Error("Serial writer is unavailable");
     await writer.write(new TextEncoder().encode(`${command}\n`));
   }, []);
 
@@ -285,118 +382,200 @@ export default function Home() {
       setError("");
       if (connection === "demo") {
         if (friendlyMessage) addLog(`${friendlyMessage} (${copy.demoSuffix})`);
-        return;
+        return true;
       }
       if (connection !== "connected") {
         setError(copy.errorConnectFirst);
-        return;
+        return false;
       }
       try {
         await writeLine(command);
         if (friendlyMessage) addLog(friendlyMessage);
+        return true;
       } catch {
         setError(copy.errorCommand);
+        if (!closingPortRef.current && portRef.current) {
+          connectionAttemptRef.current++;
+          closingPortRef.current = true;
+          await closePortResources(portRef.current);
+          resetConnectedState();
+          setConnection("disconnected");
+          addLog(copy.logConnectionInterrupted);
+          closingPortRef.current = false;
+        }
+        return false;
       }
     },
     [
       addLog,
+      closePortResources,
       connection,
       copy.demoSuffix,
       copy.errorCommand,
       copy.errorConnectFirst,
+      copy.logConnectionInterrupted,
+      resetConnectedState,
       writeLine,
     ],
   );
 
   const connect = async () => {
+    if (connection === "connecting") return;
     setError("");
     if (!isSupported) {
       setError(copy.errorSerial);
       return;
     }
 
+    const connectionAttempt = ++connectionAttemptRef.current;
+    let port: SerialPortLike | null = null;
+    closingPortRef.current = false;
     setConnection("connecting");
     try {
       const serial = (navigator as SerialNavigator).serial;
       if (!serial) throw new Error(copy.errorSerialUnavailable);
-      const port = await serial.requestPort();
+      port = await serial.requestPort();
+      if (connectionAttempt !== connectionAttemptRef.current) return;
       await port.open({ baudRate: 115200 });
+      if (connectionAttempt !== connectionAttemptRef.current) {
+        await closePortResources(port);
+        return;
+      }
       portRef.current = port;
+      if (!port.readable) throw new Error(copy.errorRead);
       if (!port.writable) throw new Error(copy.errorPortWrite);
       writerRef.current = port.writable.getWriter();
-      setConnection("connected");
-      addLog(copy.logConnected);
       void readFromPort(port);
+
+      const waitForStatus = async (
+        afterVersion: number,
+        matches: (message: GateMessage) => boolean,
+        retries: number,
+      ) => {
+        for (let retry = 0; retry < retries; retry++) {
+          if (connectionAttempt !== connectionAttemptRef.current) return false;
+          const latestStatus = latestStatusMessageRef.current;
+          if (
+            statusMessageVersionRef.current > afterVersion &&
+            latestStatus &&
+            matches(latestStatus)
+          ) {
+            return true;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 50));
+        }
+        return false;
+      };
 
       // Arduino Uno usually resets when a serial port is opened.
       await new Promise((resolve) => window.setTimeout(resolve, 1700));
+      if (
+        connectionAttempt !== connectionAttemptRef.current ||
+        portRef.current !== port ||
+        !writerRef.current
+      ) {
+        return;
+      }
+
+      // Wait until the sketch itself is responding, not merely until the USB
+      // port has opened. Slow bootloaders may need longer than the usual reset.
+      const readyVersion = statusMessageVersionRef.current;
+      await writeLine("STATUS");
+      const boardReady = await waitForStatus(readyVersion, () => true, 80);
+      if (!boardReady) throw new Error(copy.errorRead);
+
+      const configurationVersion = statusMessageVersionRef.current;
       await writeLine(`LIMIT:${threshold}`);
       await writeLine(`HOLD:${Math.round(holdSeconds * 1000)}`);
-      await writeLine(`AUTO:${mode === "auto" ? 1 : 0}`);
       await writeLine(`SCAN:${scanSpeed}`);
       await writeLine(`RADAR:${deviceMode === "radar" ? 1 : 0}`);
+      await writeLine(`AUTO:${mode === "auto" ? 1 : 0}`);
       await writeLine("STATUS");
+
+      if (connectionAttempt !== connectionAttemptRef.current) return;
+      const expectedHold = Math.round(holdSeconds * 1000);
+      const expectedDevice =
+        deviceMode === "radar" && mode !== "auto" ? "radar" : "gate";
+      const configurationApplied = await waitForStatus(
+        configurationVersion,
+        (message) =>
+          message.limit === threshold &&
+          message.hold === expectedHold &&
+          message.scanSpeed === scanSpeed &&
+          message.device === expectedDevice &&
+          message.mode === mode,
+        40,
+      );
+      if (!configurationApplied) {
+        throw new Error(copy.errorRead);
+      }
+      setConnection("connected");
+      addLog(copy.logConnected);
     } catch (connectError) {
+      if (connectionAttempt !== connectionAttemptRef.current) return;
+      closingPortRef.current = true;
+      await closePortResources(port);
+      resetConnectedState();
       setConnection("disconnected");
       setError(
         connectError instanceof Error && connectError.name === "NotFoundError"
           ? copy.errorNoBoard
           : copy.errorOpenPort,
       );
+      closingPortRef.current = false;
     }
   };
 
   const disconnect = useCallback(async () => {
-    try {
-      if (readerRef.current) {
-        await readerRef.current.cancel();
+    connectionAttemptRef.current++;
+    closingPortRef.current = true;
+    if (writerRef.current) {
+      for (const command of ["MUSIC:STOP", "GAME:0", "RADAR:0"]) {
+        try {
+          await writeLine(command);
+        } catch {
+          break;
+        }
       }
-    } catch {
-      // Ignore cancellation errors.
     }
-    try {
-      writerRef.current?.releaseLock();
-    } catch {
-      // Ignore an already released writer.
-    }
-    writerRef.current = null;
-    try {
-      await portRef.current?.close();
-    } catch {
-      // The USB cable may already be disconnected.
-    }
-    portRef.current = null;
+    await closePortResources(portRef.current);
+    resetConnectedState();
     setConnection("disconnected");
-    setDistance(null);
-    setTemperature(null);
-    setHumidity(null);
-    setDhtOk(false);
-    setJoystickX(512);
-    setJoystickY(512);
-    setJoystickPressed(false);
+    setError("");
     addLog(copy.logDisconnected);
-  }, [addLog, copy.logDisconnected]);
+    closingPortRef.current = false;
+  }, [
+    addLog,
+    closePortResources,
+    copy.logDisconnected,
+    resetConnectedState,
+    writeLine,
+  ]);
+
+  const disposePort = useCallback(() => {
+    connectionAttemptRef.current++;
+    closingPortRef.current = true;
+    void closePortResources(portRef.current);
+  }, [closePortResources]);
 
   useEffect(() => {
-    return () => {
-      if (readerRef.current) void readerRef.current.cancel();
-      try {
-        writerRef.current?.releaseLock();
-      } catch {
-        // The page is already closing.
-      }
-    };
-  }, []);
+    return disposePort;
+  }, [disposePort]);
 
   useEffect(() => {
     if (connection !== "demo") return;
     let demoAngle = RADAR_MIN_ANGLE;
     let demoDirection = 1;
+    let lastDemoObjectSeenMs = Date.now();
     const interval = window.setInterval(() => {
       if (deviceMode === "radar") {
-        demoAngle += demoDirection * 4;
-        if (demoAngle >= RADAR_MAX_ANGLE || demoAngle <= RADAR_MIN_ANGLE) {
-          demoDirection *= -1;
+        demoAngle += demoDirection * 2;
+        if (demoAngle >= RADAR_MAX_ANGLE) {
+          demoAngle = RADAR_MAX_ANGLE;
+          demoDirection = -1;
+        } else if (demoAngle <= RADAR_MIN_ANGLE) {
+          demoAngle = RADAR_MIN_ANGLE;
+          demoDirection = 1;
         }
         const simulated =
           34 +
@@ -428,7 +607,14 @@ export default function Home() {
         );
         setDistance(Math.round(simulated * 10) / 10);
         if (mode === "auto") {
-          setAngle(simulated <= threshold ? OPEN_ANGLE : CLOSED_ANGLE);
+          if (simulated <= threshold) {
+            lastDemoObjectSeenMs = Date.now();
+            setAngle(OPEN_ANGLE);
+          } else if (
+            Date.now() - lastDemoObjectSeenMs >= holdSeconds * 1000
+          ) {
+            setAngle(CLOSED_ANGLE);
+          }
         }
       }
 
@@ -440,11 +626,29 @@ export default function Home() {
         Math.round((48 + Math.cos(climatePhase * 0.8) * 7) * 10) / 10,
       );
       setDhtOk(true);
-    }, deviceMode === "radar" ? 90 : 350);
+    }, deviceMode === "radar" ? scanSpeed : 350);
     return () => window.clearInterval(interval);
-  }, [connection, deviceMode, mode, threshold]);
+  }, [connection, deviceMode, holdSeconds, mode, scanSpeed, threshold]);
+
+  useEffect(() => {
+    if (deviceMode !== "radar") return;
+
+    const pruneExpiredPoints = () => {
+      const cutoff = Date.now() - 4200;
+      setRadarPoints((points) => {
+        const recentPoints = points.filter(
+          (point) => point.recordedAt >= cutoff,
+        );
+        return recentPoints.length === points.length ? points : recentPoints;
+      });
+    };
+
+    const interval = window.setInterval(pruneExpiredPoints, 500);
+    return () => window.clearInterval(interval);
+  }, [deviceMode]);
 
   const startDemo = () => {
+    if (connection === "connecting") return;
     setError("");
     setConnection("demo");
     setDistance(48);
@@ -458,100 +662,125 @@ export default function Home() {
   };
 
   const stopDemo = () => {
+    resetConnectedState();
     setConnection("disconnected");
-    setDistance(null);
-    setTemperature(null);
-    setHumidity(null);
-    setDhtOk(false);
-    setJoystickX(512);
-    setJoystickY(512);
-    setJoystickPressed(false);
-    setMode("manual");
-    setDeviceMode("gate");
-    setMelody(0);
-    setRadarPoints([]);
-    setAngle(CLOSED_ANGLE);
     addLog(copy.logDemoStopped);
   };
 
   const setGateAngle = async (nextAngle: number) => {
-    if (deviceMode === "radar") {
-      setDeviceMode("gate");
-      await sendCommand("RADAR:0");
-    } else if (deviceMode === "game") {
-      setDeviceMode("gate");
-      await sendCommand("GAME:0");
+    if (connection !== "connected" && connection !== "demo") {
+      setError(copy.errorConnectFirst);
+      return;
     }
+    if (deviceMode === "radar") {
+      if (!(await sendCommand("RADAR:0"))) return;
+    } else if (deviceMode === "game") {
+      if (!(await sendCommand("GAME:0"))) return;
+    }
+    if (!(await sendCommand("AUTO:0"))) return;
+    if (
+      !(await sendCommand(
+        `ANGLE:${nextAngle}`,
+        copy.gateAngleLog(nextAngle),
+      ))
+    ) {
+      return;
+    }
+    setDeviceMode("gate");
     setAngle(nextAngle);
     setMode("manual");
-    await sendCommand("AUTO:0");
-    await sendCommand(
-      `ANGLE:${nextAngle}`,
-      copy.gateAngleLog(nextAngle),
-    );
   };
 
   const setAutomaticMode = async (automatic: boolean) => {
+    if (connection !== "connected" && connection !== "demo") {
+      setError(copy.errorConnectFirst);
+      return;
+    }
     if (deviceMode === "radar") {
-      setDeviceMode("gate");
-      await sendCommand("RADAR:0");
+      if (!(await sendCommand("RADAR:0"))) return;
     } else if (deviceMode === "game") {
-      setDeviceMode("gate");
-      await sendCommand("GAME:0");
+      if (!(await sendCommand("GAME:0"))) return;
     }
     const nextMode: GateMode = automatic ? "auto" : "manual";
+    if (
+      !(await sendCommand(
+        `AUTO:${automatic ? 1 : 0}`,
+        automatic ? copy.autoOnLog : copy.autoOffLog,
+      ))
+    ) {
+      return;
+    }
+    setDeviceMode("gate");
     setMode(nextMode);
-    await sendCommand(
-      `AUTO:${automatic ? 1 : 0}`,
-      automatic ? copy.autoOnLog : copy.autoOffLog,
-    );
   };
 
   const changeThreshold = async (value: number) => {
     setThreshold(value);
-    await sendCommand(`LIMIT:${value}`);
+    setError("");
+    if (connection === "connected" || connection === "demo") {
+      await sendCommand(`LIMIT:${value}`);
+    }
   };
 
   const changeHold = async (value: number) => {
     setHoldSeconds(value);
-    await sendCommand(`HOLD:${Math.round(value * 1000)}`);
+    setError("");
+    if (connection === "connected" || connection === "demo") {
+      await sendCommand(`HOLD:${Math.round(value * 1000)}`);
+    }
   };
 
   const startRadar = async () => {
-    if (deviceMode === "game") {
-      await sendCommand("GAME:0");
+    if (connection !== "connected" && connection !== "demo") {
+      setError(copy.errorConnectFirst);
+      return;
     }
+    if (deviceMode === "game") {
+      if (!(await sendCommand("GAME:0"))) return;
+    }
+    if (!(await sendCommand("AUTO:0"))) return;
+    if (!(await sendCommand("RADAR:1", copy.radarStartLog))) return;
     setDeviceMode("radar");
     setMode("manual");
     setRadarPoints([]);
     setAngle(RADAR_MIN_ANGLE);
-    await sendCommand("AUTO:0");
-    await sendCommand(
-      "RADAR:1",
-      copy.radarStartLog,
-    );
   };
 
   const stopRadar = async () => {
+    if (connection !== "connected" && connection !== "demo") {
+      setError(copy.errorConnectFirst);
+      return;
+    }
+    if (!(await sendCommand("RADAR:0", copy.radarStopLog))) return;
     setDeviceMode("gate");
     setMode("manual");
     setAngle(CLOSED_ANGLE);
-    await sendCommand("RADAR:0", copy.radarStopLog);
   };
 
   const changeScanSpeed = async (value: number) => {
     setScanSpeed(value);
-    await sendCommand(`SCAN:${value}`);
+    setError("");
+    if (connection === "connected" || connection === "demo") {
+      await sendCommand(`SCAN:${value}`);
+    }
   };
 
   const playMelody = async (id: MelodyId, title: string) => {
+    if (connection !== "connected" && connection !== "demo") {
+      setError(copy.errorConnectFirst);
+      return;
+    }
+    if (!(await sendCommand(`MUSIC:${id}`, copy.melodyLog(title)))) return;
     setMelody(id);
-    await sendCommand(`MUSIC:${id}`, copy.melodyLog(title));
   };
 
   const stopMusic = async () => {
+    if (connection !== "connected" && connection !== "demo") {
+      setError(copy.errorConnectFirst);
+      return;
+    }
+    if (!(await sendCommand("MUSIC:STOP", copy.musicStopLog))) return;
     setMelody(0);
-    await sendCommand("MUSIC:STOP", copy.musicStopLog);
   };
 
   const selectTab = async (nextTab: SiteTab) => {
@@ -559,8 +788,8 @@ export default function Home() {
 
     if (nextTab === "game") {
       if (connection === "connected" || connection === "demo") {
-        await sendCommand("AUTO:0");
-        await sendCommand("RADAR:0");
+        const autoStopped = await sendCommand("AUTO:0");
+        if (autoStopped) await sendCommand("RADAR:0");
       }
       setMode("manual");
       setDeviceMode("gate");

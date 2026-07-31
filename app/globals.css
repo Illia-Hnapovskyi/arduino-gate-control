@@ -1986,6 +1986,7 @@ kbd {
 }
 
 .game-console {
+  align-items: start;
   display: grid;
   gap: 18px;
   grid-template-columns: minmax(0, 1fr) 330px;
@@ -2079,6 +2080,11 @@ kbd {
   display: block;
   height: 100%;
   width: 100%;
+}
+
+.game-canvas:focus-visible {
+  outline: 3px solid var(--acid);
+  outline-offset: -4px;
 }
 
 .game-connect-overlay {
@@ -3613,10 +3619,6 @@ kbd {
     flex: 0 0 auto;
   }
 
-  .game-canvas-wrap {
-    min-height: 205px;
-  }
-
   .game-hud {
     gap: 5px;
   }
@@ -3644,6 +3646,32 @@ kbd {
 
   .joystick-wire-list > div {
     grid-template-columns: minmax(62px, 0.8fr) 12px 32px minmax(0, 1.2fr);
+  }
+}
+
+@media (max-width: 430px) {
+  .game-connect-overlay {
+    padding: 8px;
+  }
+
+  .game-connect-overlay strong {
+    font-size: 17px;
+  }
+
+  .game-connect-overlay p,
+  .game-connect-overlay small {
+    display: none;
+  }
+
+  .game-connect-overlay > div {
+    gap: 5px;
+    margin-top: 8px;
+  }
+
+  .game-connect-overlay .button {
+    font-size: 10px;
+    min-height: 36px;
+    padding: 0 8px;
   }
 }
 
