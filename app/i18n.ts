@@ -532,10 +532,10 @@ export const GAME_COPY = {
     canvasResult: (score: number) => `Твій результат: ${score}`,
     canvasContinue: "Натисни «Продовжити»",
     canvasInstructions: "Рухай джойстик і натискай його для пострілу",
-    introEyebrow: "НОВА ВКЛАДКА · ДЖОЙСТИК · PASSIVE BUZZER",
+    introEyebrow: "9 СЕКТОРІВ · 3 БОСИ · ARDUINO-ДЖОЙСТИК",
     title: "Космічний захисник",
     intro:
-      "Веди корабель між астероїдами, знищуй їх і набирай очки. Нахили джойстик для руху, а сам джойстик натисни для пострілу. Онлайн-плеєр надсилає вибрану 8-бітну мелодію на Passive Buzzer D3 наживо.",
+      "Пройди хвилі різних космічних секторів, збирай суперсили, розвивай корабель і перемагай багатофазних босів. Кожен забіг працює з Arduino-джойстиком, клавіатурою або touch-керуванням, а музика секторів звучить через Passive Buzzer D3 чи браузер у деморежимі.",
     move: "рух",
     fire: "постріл",
     lives: "життя",
@@ -665,10 +665,9 @@ export const GAME_COPY = {
     calibrate: "◎ Калібрувати центр",
     calibration: (x: number, y: number) =>
       `Відпусти джойстик і натисни цю кнопку. Поточний центр: X ${x} · Y ${y}.`,
-    touchJoystickAria:
-      "Екранний джойстик: тягни для руху, коротко торкнися для пострілу",
+    touchJoystickAria: "Екранний джойстик для руху корабля",
     touchJoystickHint:
-      "На телефоні тягни чорну ручку пальцем для руху. Коротко торкнися ручки, щоб вистрілити.",
+      "На телефоні тягни чорну ручку пальцем для руху, а стріляй і активуй суперсилу окремими кнопками.",
     verticalDirection: "Звичайний напрямок по вертикалі",
     directionUp: "Угору",
     directionLeft: "Ліворуч",
@@ -713,10 +712,10 @@ export const GAME_COPY = {
     canvasResult: (score: number) => `Dein Ergebnis: ${score}`,
     canvasContinue: "Drücke „Weiter“",
     canvasInstructions: "Bewege den Joystick und drücke ihn zum Schießen",
-    introEyebrow: "NEUER TAB · JOYSTICK · PASSIVER BUZZER",
+    introEyebrow: "9 SEKTOREN · 3 BOSSE · ARDUINO-JOYSTICK",
     title: "Weltraum-Verteidiger",
     intro:
-      "Steuere dein Raumschiff zwischen Asteroiden, zerstöre sie und sammle Punkte. Neige den Joystick für die Bewegung und drücke ihn zum Schießen. Der Online-Player sendet die gewählte 8-Bit-Melodie live an den passiven Buzzer an D3.",
+      "Durchquere Wellen unterschiedlicher Weltraumsektoren, sammle Superkräfte, entwickle dein Schiff und besiege mehrphasige Bosse. Jeder Run funktioniert mit Arduino-Joystick, Tastatur oder Touch; die Sektormusik läuft über den passiven Buzzer an D3 oder im Demomodus über den Browser.",
     move: "Bewegen",
     fire: "Schuss",
     lives: "Leben",
@@ -842,10 +841,9 @@ export const GAME_COPY = {
     calibrate: "◎ Mitte kalibrieren",
     calibration: (x: number, y: number) =>
       `Lass den Joystick los und drücke diese Taste. Aktuelle Mitte: X ${x} · Y ${y}.`,
-    touchJoystickAria:
-      "Bildschirm-Joystick: zum Bewegen ziehen, zum Schießen kurz antippen",
+    touchJoystickAria: "Bildschirm-Joystick zum Steuern des Schiffs",
     touchJoystickHint:
-      "Ziehe den schwarzen Knopf auf dem Handy mit dem Finger, um das Schiff zu bewegen. Tippe kurz darauf, um zu schießen.",
+      "Ziehe den schwarzen Knopf zum Bewegen; Schießen und Superkraft haben eigene Tasten.",
     verticalDirection: "Normale vertikale Richtung",
     directionUp: "Nach oben",
     directionLeft: "Nach links",
@@ -890,10 +888,10 @@ export const GAME_COPY = {
     canvasResult: (score: number) => `Your score: ${score}`,
     canvasContinue: "Press “Continue”",
     canvasInstructions: "Move the joystick and press it to shoot",
-    introEyebrow: "NEW TAB · JOYSTICK · PASSIVE BUZZER",
+    introEyebrow: "9 SECTORS · 3 BOSSES · ARDUINO JOYSTICK",
     title: "Space Defender",
     intro:
-      "Guide your ship between asteroids, destroy them and earn points. Tilt the joystick to move and press it to shoot. The online player streams the selected 8-bit melody live to the passive buzzer on D3.",
+      "Cross waves of distinct space sectors, collect superpowers, evolve your ship, and defeat multi-phase bosses. Every run supports the Arduino joystick, keyboard, or touch; sector music plays through the passive buzzer on D3 or the browser in demo mode.",
     move: "move",
     fire: "fire",
     lives: "lives",
@@ -1017,10 +1015,9 @@ export const GAME_COPY = {
     calibrate: "◎ Calibrate centre",
     calibration: (x: number, y: number) =>
       `Release the joystick and press this button. Current centre: X ${x} · Y ${y}.`,
-    touchJoystickAria:
-      "On-screen joystick: drag to move, tap briefly to fire",
+    touchJoystickAria: "On-screen joystick for moving the ship",
     touchJoystickHint:
-      "On your phone, drag the black knob with your finger to move the ship. Tap it briefly to fire.",
+      "Drag the black knob to move; use the separate fire and superpower buttons to attack.",
     verticalDirection: "Normal vertical direction",
     directionUp: "Up",
     directionLeft: "Left",
@@ -1058,3 +1055,390 @@ export const GAME_COPY = {
     firmwareButton: "↓ New firmware",
   },
 } as const;
+
+const SPACE_DEFENDER_LOCALES: Record<Language, string> = {
+  uk: "uk-UA",
+  de: "de-DE",
+  en: "en-US",
+};
+
+function formatSpaceNumber(language: Language, value: number) {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  return new Intl.NumberFormat(SPACE_DEFENDER_LOCALES[language], {
+    maximumFractionDigits: 0,
+  }).format(safeValue);
+}
+
+function formatSpaceAccuracy(language: Language, value: number) {
+  const safeValue = Number.isFinite(value)
+    ? Math.max(0, Math.min(1, value))
+    : 0;
+  return new Intl.NumberFormat(SPACE_DEFENDER_LOCALES[language], {
+    maximumFractionDigits: 0,
+    style: "percent",
+  }).format(safeValue);
+}
+
+function formatSpaceDuration(language: Language, seconds: number) {
+  const safeSeconds = Number.isFinite(seconds)
+    ? Math.max(0, Math.floor(seconds))
+    : 0;
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainingSeconds = safeSeconds % 60;
+  const minuteFormatter = new Intl.NumberFormat(SPACE_DEFENDER_LOCALES[language], {
+    maximumFractionDigits: 0,
+    useGrouping: false,
+  });
+  const secondFormatter = new Intl.NumberFormat(SPACE_DEFENDER_LOCALES[language], {
+    maximumFractionDigits: 0,
+    minimumIntegerDigits: 2,
+    useGrouping: false,
+  });
+  return `${minuteFormatter.format(minutes)}:${secondFormatter.format(remainingSeconds)}`;
+}
+
+function formatSpaceCooldown(language: Language, seconds: number) {
+  return new Intl.NumberFormat(SPACE_DEFENDER_LOCALES[language], {
+    maximumFractionDigits: 0,
+    style: "unit",
+    unit: "second",
+    unitDisplay: "narrow",
+  }).format(Math.max(0, Math.ceil(Number.isFinite(seconds) ? seconds : 0)));
+}
+
+function formatSpaceDate(language: Language, value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(SPACE_DEFENDER_LOCALES[language], {
+    dateStyle: "medium",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+/**
+ * Copy for the second-generation Space Defender experience. Keeping this
+ * separate from the hardware-oriented GAME_COPY makes the gameplay UI easier
+ * to split into focused components while preserving one localization source.
+ */
+export const SPACE_DEFENDER_COPY = {
+  uk: {
+    menuKicker: "КОСМІЧНИЙ ЗАХИСНИК · СИСТЕМА ПОЛЬОТУ",
+    menuTitle: "Командний місток",
+    menuSubtitle: "Підготуй корабель, обери маршрут і починай виліт.",
+    menuSections: {
+      play: "Грати",
+      profile: "Профіль",
+      achievements: "Досягнення",
+      stats: "Статистика",
+      leaderboard: "Лідери",
+      settings: "Налаштування",
+      controls: "Керування",
+      tutorial: "Навчання",
+      arduino: "Arduino-контролер",
+    },
+    modeLabel: "Режим",
+    modes: {
+      expedition: { name: "Експедиція", description: "9 хвиль, три боси й фінальна перемога." },
+      survival: { name: "Виживання", description: "Нескінченні цикли секторів до останнього життя." },
+      classic: { name: "Класика", description: "Швидкий бій з астероїдами без складних ворогів." },
+    },
+    difficultyLabel: "Складність",
+    difficulties: {
+      cadet: { name: "Кадет", description: "Повільніші загрози та більше часу на реакцію." },
+      pilot: { name: "Пілот", description: "Збалансований темп і повний набір механік." },
+      ace: { name: "Ас", description: "Щільні хвилі, швидкі снаряди й вища нагорода." },
+    },
+    preflightTitle: "Передпольотна перевірка",
+    savedRunTitle: "Збережений забіг",
+    bestScore: "Рекорд",
+    bestWave: "Найвища хвиля",
+    activeUpgrades: "Стартові можливості",
+    controller: "Керування",
+    controllerArduino: "Фізичний джойстик Arduino",
+    controllerDemo: "Клавіатура / touch · деморежим",
+    profileNeeded: "Створи або під’єднай профіль, щоб почати виліт.",
+    connectionNeeded: "Під’єднай Arduino або запусти деморежим.",
+    startRun: "Почати виліт",
+    continueRun: "Продовжити забіг",
+    discardRun: "Відмовитися від збереженого забігу",
+    resumeProfileMismatch: "Цей забіг належить іншому або застарілому профілю. Під’єднай правильний профіль або відмовся від збереження.",
+    pauseTitle: "Політ призупинено",
+    pauseHint: "Годинник і всі cooldown зупинені.",
+    resume: "Продовжити",
+    finishRun: "Завершити забіг",
+    resultTitle: "Підсумок польоту",
+    victoryTitle: "Експедицію завершено",
+    defeatTitle: "Корабель втрачено",
+    durationLimitTitle: "Ліміт польоту досягнуто",
+    runEndedTitle: "Політ завершено",
+    endReasons: {
+      victory: "Фінального вартового переможено, а маршрут експедиції завершено.",
+      defeat: "Корпус не витримав останнього зіткнення.",
+      "duration-limit": "Досягнуто безпечного шестигодинного ліміту забігу.",
+      stopped: "Ти завершив виліт із меню паузи.",
+      disconnected: "Зв’язок із Arduino втрачено; результат зафіксовано до перепідключення.",
+      "profile-changed": "Локальний профіль змінився під час польоту; підсумок прив’язано до профілю, що почав цей забіг.",
+      pagehide: "Сторінку було закрито або переведено в інший стан.",
+      unmount: "Ігровий екран було залишено.",
+      unknown: "Забіг завершено, а його підсумок підготовлено.",
+    },
+    newRecord: "Новий рекорд!",
+    bossDefeated: "Боса переможено",
+    achievementUnlocked: "Досягнення відкрито",
+    powerUnlocked: "Нову суперсилу відкрито",
+    powerCollected: "Суперсилу отримано",
+    powerActivated: "Суперсилу активовано",
+    powerCooldown: "Суперсила відновлюється",
+    powerLowEnergy: "Недостатньо енергії",
+    powerNotNeeded: "Корпус і щит уже повні",
+    sectorCleared: "Сектор очищено",
+    playAgain: "Зіграти ще раз",
+    backToMenu: "До меню",
+    runSaved: "Результат збережено локально й буде синхронізовано.",
+    runSaveFailed: "Не вдалося записати результат у локальне сховище. Звіт лишається на цьому екрані, але може зникнути після перезавантаження.",
+    runSaveProfileMismatch: "Профіль змінився під час забігу. Відкрий відновлення, під’єднай початковий профіль і повтори запис.",
+    runSaveStorageError: "Локальне сховище зараз недоступне. Не закривай сторінку: звільни місце або дозволь storage й повтори запис.",
+    runSaveInvalid: "Внутрішня перевірка відхилила підсумок. Не залишай сторінку; повтори запис і збережи цей екран для діагностики.",
+    retrySave: "Повторити збереження",
+    resolveSave: "Профіль і відновлення",
+    exportRecovery: "Завантажити recovery-файл",
+    discardExportedResult: "Відмовитися після експорту",
+    discardRecoveryConfirm: "Переконайся, що recovery-файл справді збережено на пристрої. Безповоротно відмовитися від цього результату?",
+    unsavedResultTitle: "Результат ще не захищено",
+    unsavedResultRecovery: "Новий виліт і вихід до шлагбаума заблоковано. За потреби відкрий Профіль, під’єднай початковий профіль, а потім повтори запис.",
+    checkpointSaveFailed: "Не вдалося захистити checkpoint між хвилями. Вибір upgrade і вихід заблоковані, доки запис не стане надійним.",
+    checkpointClearFailed: "Результат збережено, але старий checkpoint не вдалося видалити. Повтори видалення збереженого забігу перед новим вильотом.",
+    upgradeStack: "Рівень",
+    playAgainUnavailable: "Новий виліт потребує активного контролера та надійно збереженого поточного результату.",
+    hud: {
+      score: "Очки",
+      lives: "Корпус",
+      wave: "Хвиля",
+      sector: "Сектор",
+      combo: "Серія",
+      energy: "Енергія",
+      shield: "Щит",
+      cooldown: "Відновлення",
+      boss: "Бос",
+      bossIntegrity: "Міцність боса",
+      danger: "НЕБЕЗПЕЧНА ХВИЛЯ",
+      rest: "Перепочинок",
+      telegraph: "Сканування загроз",
+    },
+    sectors: {
+      starfield: "Зоряний рубіж",
+      nebula: "Смарагдова туманність",
+      "meteor-belt": "Метеоритний пояс",
+      ice: "Крижаний сектор",
+      "ion-storm": "Іонна буря",
+      "ship-graveyard": "Цвинтар кораблів",
+      solar: "Сонячна корона",
+      dark: "Темний сектор",
+      boss: "Цитадель варти",
+    },
+    chooseUpgrade: "Обери покращення",
+    upgradeKicker: "ХВИЛЮ ЗАВЕРШЕНО · РОЗВИТОК СИСТЕМ",
+    chooseUpgradeHint: "Час зупинено. Обери один із трьох напрямів розвитку.",
+    powers: {
+      shield: { name: "Фазовий щит", description: "На 10 секунд блокує шкоду й одразу повністю відновлює щит." },
+      spread: { name: "Розсіяний вогонь", description: "Додає два повноцінні бічні постріли." },
+      laser: { name: "Променевий лазер", description: "За 65 енергії дає 2,6 секунди швидкого пробивного вогню." },
+      missiles: { name: "Розумні ракети", description: "Автоматично наводяться на найближчу загрозу." },
+      emp: { name: "EMP-імпульс", description: "Знищує ворожі снаряди, приголомшує й ушкоджує всі загрози та боса." },
+      time: { name: "Часове поле", description: "Ненадовго сповільнює всі загрози." },
+      magnet: { name: "Гравімагніт", description: "Притягує енергію та бонуси здалеку." },
+      drone: { name: "Дрон-помічник", description: "Автоматично стріляє по найближчій цілі." },
+      repair: { name: "Ремонтний модуль", description: "Відновлює одне життя та щонайменше 55% щита; не витрачається при повному кораблі." },
+      pulse: { name: "Ударна хвиля", description: "Відштовхує ворогів від корабля." },
+      invulnerability: { name: "Квантовий стрибок", description: "Дає коротку невразливість після активації." },
+      critical: { name: "Критичний контур", description: "Частина влучань завдає подвійної шкоди." },
+      speed: { name: "Форсаж", description: "Підвищує швидкість і маневреність корабля." },
+      charge: { name: "Надзаряд", description: "Активуй суперсилу для потужного пробивного пострілу." },
+    },
+    upgrades: {
+      "twin-shot": { name: "Паралельні стволи", description: "Кожен stack додає ще один паралельний постріл." },
+      "rapid-fire": { name: "Швидкий затвор", description: "Скорочує паузу між пострілами." },
+      "piercing-rounds": { name: "Пробивні заряди", description: "Снаряди проходять крізь додаткову ціль." },
+      "critical-focus": { name: "Критичний фокус", description: "Підвищує шанс подвійної шкоди." },
+      "reinforced-shield": { name: "Посилений щит", description: "Збільшує запас і швидкість відновлення щита." },
+      "phase-plating": { name: "Фазова броня", description: "Подовжує невразливість після удару." },
+      "repair-nanites": { name: "Ремонтні наніти", description: "Відновлюють корпус після складних хвиль." },
+      "engine-boost": { name: "Покращені двигуни", description: "Підвищують швидкість без втрати точності." },
+      "missile-bay": { name: "Ракетний відсік", description: "Додає автоматичні ракети підтримки." },
+      "emp-capacitor": { name: "EMP-конденсатор", description: "Зменшує вартість і cooldown імпульсу." },
+      "magnet-array": { name: "Магнітна решітка", description: "Розширює радіус збору бонусів." },
+      "escort-drone": { name: "Ескортний дрон", description: "Кожен stack додає одну автономну флангову гармату." },
+    },
+    activatePower: "Суперсила",
+    powerActive: "Активна",
+    powerCost: "Енергія",
+    cooldownReady: "Готово",
+    bossPhaseLabel: "ФАЗА",
+    achievementProgress: "Прогрес",
+    achievementLocked: "Ще не відкрито",
+    achievementUnlockedOn: (date: string) => `Відкрито ${date}`,
+    achievementsEmpty: "Відкривай досягнення майстерністю й дослідженням механік.",
+    achievements: {
+      first_run: { name: "Перший виліт", description: "Заверши свій перший забіг." },
+      first_enemy: { name: "Перший контакт", description: "Знищ першого ворога." },
+      first_boss: { name: "Варта повалена", description: "Переможи першого боса." },
+      survivor_5m: { name: "П’ять хвилин у безодні", description: "Протримайся щонайменше 5 хвилин." },
+      flawless_sector: { name: "Чистий сектор", description: "Пройди сектор без втрати життя." },
+      combo_25: { name: "Точна серія", description: "Досягни combo ×25." },
+      score_10000: { name: "Нова орбіта", description: "Набери 10 000 очок за один забіг." },
+      arduino_pilot: { name: "Фізичний пілот", description: "Заверши забіг з Arduino-джойстиком." },
+      power_explorer: { name: "Майстер систем", description: "Використай усі типи суперсил." },
+      max_level: { name: "Червоний рівень", description: "Досягни максимального рівня загрози." },
+      veteran_10: { name: "Ветеран рубежу", description: "Заверши 10 забігів." },
+      sharpshooter: { name: "Снайпер", description: "Заверши бій із точністю не нижче 70%." },
+    },
+    rarity: { common: "Звичайне", uncommon: "Незвичайне", rare: "Рідкісне", epic: "Епічне", legendary: "Легендарне" },
+    statisticsTitle: "Кар’єра пілота",
+    stats: {
+      enemies: "Знищено ворогів",
+      bosses: "Переможено босів",
+      accuracy: "Точність",
+      combo: "Найдовша серія",
+      favouritePower: "Улюблена суперсила",
+      longestRun: "Найдовший забіг",
+      powerups: "Зібрано бонусів",
+      unlockedAchievements: "Відкрито досягнень",
+      modeRecords: "Рекорди за режимами",
+      games: "Забіги",
+      wins: "Перемоги",
+      noModeRecords: "Заверши перший забіг, щоб відкрити статистику режиму.",
+    },
+    settingsTitle: "Налаштування польоту",
+    musicVolume: "Гучність музики",
+    hardwareMusicNote: "На Passive Buzzer D3 повзунок музики працює як mute/on; точний рівень 0–100% доступний для browser audio. Гучність ефектів D5 регулюється PWM.",
+    effectsVolume: "Гучність ефектів",
+    screenShake: "Тремтіння екрана",
+    reducedMotion: "Зменшити рух і спалахи",
+    invertArduinoY: "Інвертувати вертикальну вісь Arduino",
+    keyBindings: "Клавіші",
+    keyMoveUp: "Рух угору",
+    keyMoveDown: "Рух униз",
+    keyMoveLeft: "Рух ліворуч",
+    keyMoveRight: "Рух праворуч",
+    keyFire: "Вогонь",
+    keyPower: "Суперсила",
+    resetKeys: "Типові клавіші",
+    controlsTitle: "Один корабель — три способи керування",
+    controlsText: "WASD або стрілки рухають корабель; Space стріляє; E активує суперсилу. На телефоні використовуй джойстик і дві кнопки. Arduino A0/A1/D4 працює так само.",
+    tutorialTitle: "Перший виліт за 30 секунд",
+    tutorialSteps: [
+      "Рухайся, щоб тримати дистанцію від телеграфованих загроз.",
+      "Стріляй точно: знищення ворогів підтримують combo й відновлюють енергію.",
+      "Після хвилі обери upgrade, який доповнює твій стиль.",
+      "На босі стеж за фазою, безпечними проходами й cooldown суперсили.",
+    ],
+    arduinoTitle: "Arduino робить політ відчутним",
+    arduinoText: "Джойстик A0/A1 керує рухом, SW на D4 стріляє й активує суперсилу довгим натисканням. Passive Buzzer D3 грає секторну тему, Active Buzzer D5 — короткі події. Піни шлагбаума й радара не змінюються.",
+    offlineNote: "Без мережі забіг і прогрес залишаться в черзі цього браузера.",
+    formatAccuracy: (value: number) => formatSpaceAccuracy("uk", value),
+    formatCooldown: (seconds: number) => formatSpaceCooldown("uk", seconds),
+    formatDate: (value: string) => formatSpaceDate("uk", value),
+    formatDuration: (seconds: number) => formatSpaceDuration("uk", seconds),
+    formatNumber: (value: number) => formatSpaceNumber("uk", value),
+    formatControls: (up: string, down: string, left: string, right: string, fire: string, power: string) =>
+      `${up}/${down}/${left}/${right} рухають корабель; ${fire} стріляє; ${power} активує суперсилу. На телефоні використовуй джойстик і дві кнопки. Arduino A0/A1/D4 працює так само.`,
+  },
+  de: {
+    menuKicker: "SPACE DEFENDER · FLUGSYSTEM",
+    menuTitle: "Kommandobrücke",
+    menuSubtitle: "Rüste dein Schiff aus, wähle die Route und starte.",
+    menuSections: { play: "Spielen", profile: "Profil", achievements: "Erfolge", stats: "Statistik", leaderboard: "Bestenliste", settings: "Einstellungen", controls: "Steuerung", tutorial: "Tutorial", arduino: "Arduino-Controller" },
+    modeLabel: "Modus",
+    modes: {
+      expedition: { name: "Expedition", description: "9 Wellen, drei Bosse und ein klares Finale." },
+      survival: { name: "Überleben", description: "Endlose Sektorzyklen bis zum letzten Leben." },
+      classic: { name: "Klassik", description: "Schneller Asteroidenkampf ohne komplexe Gegner." },
+    },
+    difficultyLabel: "Schwierigkeit",
+    difficulties: {
+      cadet: { name: "Kadett", description: "Langsamere Gefahren und mehr Reaktionszeit." },
+      pilot: { name: "Pilot", description: "Ausgewogenes Tempo mit allen Mechaniken." },
+      ace: { name: "Ass", description: "Dichte Wellen, schnelle Geschosse, höhere Belohnung." },
+    },
+    preflightTitle: "Check vor dem Start", savedRunTitle: "Gespeicherter Run", bestScore: "Rekord", bestWave: "Höchste Welle", activeUpgrades: "Startfähigkeiten", controller: "Steuerung", controllerArduino: "Physischer Arduino-Joystick", controllerDemo: "Tastatur / Touch · Demo", profileNeeded: "Erstelle oder verbinde ein Profil, um zu starten.", connectionNeeded: "Verbinde Arduino oder starte den Demomodus.", startRun: "Mission starten", continueRun: "Run fortsetzen", discardRun: "Gespeicherten Run verwerfen", resumeProfileMismatch: "Dieser Run gehört zu einem anderen oder veralteten Profil. Verbinde das richtige Profil oder verwirf den Spielstand.",
+    pauseTitle: "Flug pausiert", pauseHint: "Uhr und Cooldowns stehen still.", resume: "Fortsetzen", finishRun: "Run beenden", resultTitle: "Flugauswertung", victoryTitle: "Expedition abgeschlossen", defeatTitle: "Schiff verloren", durationLimitTitle: "Fluglimit erreicht", runEndedTitle: "Flug beendet",
+    endReasons: { victory: "Der finale Wächter ist besiegt und die Expeditionsroute abgeschlossen.", defeat: "Die Hülle hielt dem letzten Treffer nicht stand.", "duration-limit": "Das sichere Run-Limit von sechs Stunden wurde erreicht.", stopped: "Du hast den Flug im Pausenmenü beendet.", disconnected: "Die Arduino-Verbindung wurde getrennt; das Ergebnis wurde vor dem erneuten Verbinden erfasst.", "profile-changed": "Das lokale Profil wurde während des Flugs gewechselt; der Bericht bleibt dem ursprünglichen Profil zugeordnet.", pagehide: "Die Seite wurde geschlossen oder in einen anderen Zustand versetzt.", unmount: "Der Spielbildschirm wurde verlassen.", unknown: "Der Run ist beendet und die Auswertung wurde erstellt." },
+    newRecord: "Neuer Rekord!", bossDefeated: "Boss besiegt", achievementUnlocked: "Erfolg freigeschaltet", powerUnlocked: "Neue Superkraft freigeschaltet", powerCollected: "Superkraft aufgenommen", powerActivated: "Superkraft aktiviert", powerCooldown: "Superkraft lädt noch", powerLowEnergy: "Nicht genug Energie", powerNotNeeded: "Hülle und Schild sind bereits voll", sectorCleared: "Sektor gesäubert", playAgain: "Noch einmal", backToMenu: "Zum Menü", runSaved: "Das Ergebnis ist lokal gespeichert und wird synchronisiert.", runSaveFailed: "Das Ergebnis konnte nicht in den lokalen Speicher geschrieben werden. Bleibe auf diesem Bildschirm und versuche es erneut, damit der Run nicht verloren geht.", runSaveProfileMismatch: "Das Profil wurde während des Runs gewechselt. Öffne die Wiederherstellung, verbinde das ursprüngliche Profil und versuche erneut zu speichern.", runSaveStorageError: "Der lokale Speicher ist nicht verfügbar. Schließe die Seite nicht; gib Speicher frei oder erlaube ihn und versuche es erneut.", runSaveInvalid: "Die interne Prüfung hat den Bericht abgelehnt. Bleibe auf der Seite, versuche es erneut und bewahre diesen Bildschirm zur Diagnose auf.", retrySave: "Speichern erneut versuchen", resolveSave: "Profil und Wiederherstellung", exportRecovery: "Recovery-Datei herunterladen", discardExportedResult: "Nach Export verwerfen", unsavedResultTitle: "Ergebnis noch nicht gesichert", unsavedResultRecovery: "Ein neuer Flug und der Wechsel zur Schranke sind gesperrt. Verbinde bei Bedarf unter Profil das ursprüngliche Profil und speichere erneut.", checkpointSaveFailed: "Der Zwischenstand konnte nicht sicher gespeichert werden. Upgrade-Auswahl und Verlassen bleiben bis zum erfolgreichen Speichern gesperrt.", upgradeStack: "Stufe", playAgainUnavailable: "Ein neuer Flug benötigt einen aktiven Controller und ein sicher gespeichertes aktuelles Ergebnis.",
+    discardRecoveryConfirm: "Prüfe, dass die Recovery-Datei wirklich auf dem Gerät gespeichert ist. Dieses Ergebnis unwiderruflich verwerfen?",
+    checkpointClearFailed: "Das Ergebnis ist gespeichert, aber der alte Zwischenstand konnte nicht gelöscht werden. Lösche den gespeicherten Run erneut, bevor du neu startest.",
+    hud: { score: "Punkte", lives: "Hülle", wave: "Welle", sector: "Sektor", combo: "Serie", energy: "Energie", shield: "Schild", cooldown: "Abklingzeit", boss: "Boss", bossIntegrity: "Boss-Struktur", danger: "GEFAHRENWELLE", rest: "Atempause", telegraph: "Gefahrenscan" },
+    sectors: { starfield: "Sternengrenze", nebula: "Smaragdnebel", "meteor-belt": "Meteoritenfeld", ice: "Eissektor", "ion-storm": "Ionensturm", "ship-graveyard": "Schiffsfriedhof", solar: "Sonnenkorona", dark: "Dunkler Sektor", boss: "Wächterzitadelle" },
+    chooseUpgrade: "Upgrade wählen", upgradeKicker: "WELLE BEENDET · SYSTEMENTWICKLUNG", chooseUpgradeHint: "Die Zeit steht still. Wähle eine von drei Entwicklungsrichtungen.",
+    powers: {
+      shield: { name: "Phasenschild", description: "Blockiert 10 Sekunden lang Schaden und füllt den Schild sofort vollständig." }, spread: { name: "Streufeuer", description: "Fügt zwei vollwertige Seitenschüsse hinzu." }, laser: { name: "Strahllaser", description: "Kostet 65 Energie und gewährt 2,6 Sekunden schnelles durchdringendes Feuer." }, missiles: { name: "Lenkraketen", description: "Suchen automatisch die nächste Gefahr." }, emp: { name: "EMP-Impuls", description: "Löscht feindliche Geschosse, betäubt und beschädigt alle Gefahren sowie den Boss." }, time: { name: "Zeitfeld", description: "Verlangsamt kurzzeitig alle Gefahren." }, magnet: { name: "Gravimagnet", description: "Zieht Energie und Boni aus der Ferne an." }, drone: { name: "Hilfsdrohne", description: "Feuert automatisch auf das nächste Ziel." }, repair: { name: "Reparaturmodul", description: "Stellt ein Leben und mindestens 55 % Schild wieder her; bei vollem Schiff wird es nicht verbraucht." }, pulse: { name: "Stoßwelle", description: "Drückt Gegner vom Schiff weg." }, invulnerability: { name: "Quantensprung", description: "Gewährt kurzzeitig Unverwundbarkeit." }, critical: { name: "Kritischer Kreis", description: "Ein Teil der Treffer verursacht doppelten Schaden." }, speed: { name: "Nachbrenner", description: "Erhöht Tempo und Wendigkeit." }, charge: { name: "Überladung", description: "Aktiviere die Superkraft für einen starken durchdringenden Schuss." },
+    },
+    upgrades: {
+      "twin-shot": { name: "Parallelläufe", description: "Jeder Stapel fügt einen weiteren parallelen Schuss hinzu." }, "rapid-fire": { name: "Schnellverschluss", description: "Verkürzt die Pause zwischen Schüssen." }, "piercing-rounds": { name: "Durchschlagmunition", description: "Geschosse durchdringen ein weiteres Ziel." }, "critical-focus": { name: "Kritischer Fokus", description: "Erhöht die Chance auf doppelten Schaden." }, "reinforced-shield": { name: "Verstärkter Schild", description: "Erhöht Schildkapazität und Regeneration." }, "phase-plating": { name: "Phasenpanzerung", description: "Verlängert Unverwundbarkeit nach Treffern." }, "repair-nanites": { name: "Reparaturnaniten", description: "Reparieren die Hülle nach schweren Wellen." }, "engine-boost": { name: "Triebwerksboost", description: "Erhöht Tempo ohne Präzisionsverlust." }, "missile-bay": { name: "Raketenbucht", description: "Fügt automatische Unterstützungsraketen hinzu." }, "emp-capacitor": { name: "EMP-Kondensator", description: "Senkt Kosten und Cooldown des Impulses." }, "magnet-array": { name: "Magnetfeld", description: "Vergrößert den Sammelradius für Boni." }, "escort-drone": { name: "Eskortdrohne", description: "Jeder Stapel fügt ein autonomes Flankengeschütz hinzu." },
+    },
+    activatePower: "Superkraft", powerActive: "Aktiv", powerCost: "Energie", cooldownReady: "Bereit", bossPhaseLabel: "PHASE", achievementProgress: "Fortschritt", achievementLocked: "Noch nicht freigeschaltet", achievementUnlockedOn: (date: string) => `Freigeschaltet am ${date}`, achievementsEmpty: "Erfolge belohnen Können und das Erkunden der Mechaniken.",
+    achievements: {
+      first_run: { name: "Erster Flug", description: "Schließe deinen ersten Run ab." }, first_enemy: { name: "Erster Kontakt", description: "Zerstöre den ersten Gegner." }, first_boss: { name: "Wächter gefallen", description: "Besiege den ersten Boss." }, survivor_5m: { name: "Fünf Minuten im All", description: "Überlebe mindestens fünf Minuten." }, flawless_sector: { name: "Sauberer Sektor", description: "Beende einen Sektor ohne Lebensverlust." }, combo_25: { name: "Präzisionsserie", description: "Erreiche Combo ×25." }, score_10000: { name: "Neue Umlaufbahn", description: "Erziele 10.000 Punkte in einem Run." }, arduino_pilot: { name: "Physischer Pilot", description: "Beende einen Run mit dem Arduino-Joystick." }, power_explorer: { name: "Systemmeister", description: "Nutze jede Art von Superkraft." }, max_level: { name: "Alarmstufe Rot", description: "Erreiche die höchste Gefahrenstufe." }, veteran_10: { name: "Grenzveteran", description: "Schließe 10 Runs ab." }, sharpshooter: { name: "Scharfschütze", description: "Beende einen Kampf mit mindestens 70 % Treffern." },
+    },
+    rarity: { common: "Gewöhnlich", uncommon: "Ungewöhnlich", rare: "Selten", epic: "Episch", legendary: "Legendär" }, statisticsTitle: "Pilotenkarriere",
+    stats: { enemies: "Gegner zerstört", bosses: "Bosse besiegt", accuracy: "Trefferquote", combo: "Längste Serie", favouritePower: "Lieblingskraft", longestRun: "Längster Run", powerups: "Boni gesammelt", unlockedAchievements: "Erfolge freigeschaltet", modeRecords: "Rekorde nach Modus", games: "Runs", wins: "Siege", noModeRecords: "Schließe den ersten Run ab, um eine Modusstatistik zu erhalten." },
+    settingsTitle: "Flugeinstellungen", musicVolume: "Musiklautstärke", hardwareMusicNote: "Beim Passive Buzzer D3 wirkt Musiklautstärke als Stumm/An; genaue 0–100 % gelten für Browser-Audio. D5-Effekte nutzen PWM-Lautstärke.", effectsVolume: "Effektlautstärke", screenShake: "Bildschirmwackeln", reducedMotion: "Bewegung und Blitze reduzieren", invertArduinoY: "Vertikale Arduino-Achse umkehren", keyBindings: "Tasten", keyMoveUp: "Nach oben", keyMoveDown: "Nach unten", keyMoveLeft: "Nach links", keyMoveRight: "Nach rechts", keyFire: "Feuer", keyPower: "Superkraft", resetKeys: "Standardtasten",
+    controlsTitle: "Ein Schiff — drei Steuerungen", controlsText: "WASD oder Pfeile bewegen das Schiff; Space feuert; E aktiviert die Superkraft. Auf Mobilgeräten nutzt du Joystick und zwei Tasten. Arduino A0/A1/D4 funktioniert genauso.", tutorialTitle: "Erster Flug in 30 Sekunden", tutorialSteps: ["Halte Abstand zu angekündigten Gefahren.", "Präzise Abschüsse halten Combo und laden Energie.", "Wähle nach der Welle ein Upgrade für deinen Stil.", "Beachte beim Boss Phase, sichere Korridore und Cooldown."], arduinoTitle: "Arduino macht den Flug spürbar", arduinoText: "A0/A1 steuert, SW an D4 feuert und aktiviert bei langem Druck die Superkraft. Passive Buzzer D3 spielt Sektorthemen, Active Buzzer D5 kurze Ereignisse. Gate- und Radar-Pins bleiben unverändert.", offlineNote: "Offline bleiben Run und Fortschritt in der Browser-Warteschlange.",
+    formatAccuracy: (value: number) => formatSpaceAccuracy("de", value),
+    formatCooldown: (seconds: number) => formatSpaceCooldown("de", seconds),
+    formatDate: (value: string) => formatSpaceDate("de", value),
+    formatDuration: (seconds: number) => formatSpaceDuration("de", seconds),
+    formatNumber: (value: number) => formatSpaceNumber("de", value),
+    formatControls: (up: string, down: string, left: string, right: string, fire: string, power: string) =>
+      `${up}/${down}/${left}/${right} bewegen das Schiff; ${fire} feuert; ${power} aktiviert die Superkraft. Auf Mobilgeräten nutzt du Joystick und zwei Tasten. Arduino A0/A1/D4 funktioniert genauso.`,
+  },
+  en: {
+    menuKicker: "SPACE DEFENDER · FLIGHT SYSTEM",
+    menuTitle: "Command deck",
+    menuSubtitle: "Prepare your ship, choose a route, and launch.",
+    menuSections: { play: "Play", profile: "Profile", achievements: "Achievements", stats: "Statistics", leaderboard: "Leaderboard", settings: "Settings", controls: "Controls", tutorial: "Tutorial", arduino: "Arduino controller" },
+    modeLabel: "Mode",
+    modes: {
+      expedition: { name: "Expedition", description: "9 waves, three bosses, and a decisive finale." },
+      survival: { name: "Survival", description: "Endless sector cycles until your last life." },
+      classic: { name: "Classic", description: "Fast asteroid combat without complex enemies." },
+    },
+    difficultyLabel: "Difficulty",
+    difficulties: {
+      cadet: { name: "Cadet", description: "Slower threats and more time to react." },
+      pilot: { name: "Pilot", description: "Balanced pacing with the full mechanics set." },
+      ace: { name: "Ace", description: "Dense waves, fast projectiles, and higher rewards." },
+    },
+    preflightTitle: "Pre-flight check", savedRunTitle: "Saved run", bestScore: "Best score", bestWave: "Highest wave", activeUpgrades: "Starting abilities", controller: "Controls", controllerArduino: "Physical Arduino joystick", controllerDemo: "Keyboard / touch · demo", profileNeeded: "Create or connect a profile before launch.", connectionNeeded: "Connect Arduino or start demo mode.", startRun: "Launch mission", continueRun: "Continue run", discardRun: "Discard saved run", resumeProfileMismatch: "This run belongs to another or legacy profile. Connect the correct profile or discard the save.",
+    pauseTitle: "Flight paused", pauseHint: "The clock and every cooldown are stopped.", resume: "Continue", finishRun: "Finish run", resultTitle: "Flight report", victoryTitle: "Expedition complete", defeatTitle: "Ship lost", durationLimitTitle: "Flight limit reached", runEndedTitle: "Flight ended",
+    endReasons: { victory: "The final warden is defeated and the expedition route is complete.", defeat: "The hull could not withstand the final impact.", "duration-limit": "The safe six-hour run limit was reached.", stopped: "You ended the flight from the pause menu.", disconnected: "The Arduino connection was lost; the result was captured before reconnecting.", "profile-changed": "The local profile changed during flight; the report remains bound to the profile that started it.", pagehide: "The page was closed or moved into another state.", unmount: "The game screen was left.", unknown: "The run ended and its flight report is ready." },
+    newRecord: "New record!", bossDefeated: "Boss defeated", achievementUnlocked: "Achievement unlocked", powerUnlocked: "New superpower unlocked", powerCollected: "Superpower collected", powerActivated: "Superpower activated", powerCooldown: "Superpower recharging", powerLowEnergy: "Not enough energy", powerNotNeeded: "Hull and shield are already full", sectorCleared: "Sector cleared", playAgain: "Play again", backToMenu: "Back to menu", runSaved: "The result is saved locally and will sync.", runSaveFailed: "The result could not be written to local storage. Stay on this screen and retry so the run is not lost.", runSaveProfileMismatch: "The profile changed during the run. Open recovery, reconnect the original profile, and retry the save.", runSaveStorageError: "Local storage is unavailable. Do not close the page; free space or allow storage, then retry.", runSaveInvalid: "Internal validation rejected the report. Stay on this page, retry, and keep this screen for diagnosis.", retrySave: "Retry save", resolveSave: "Profile and recovery", exportRecovery: "Download recovery file", discardExportedResult: "Discard after export", unsavedResultTitle: "Result not secured yet", unsavedResultRecovery: "A new flight and the gate tab are locked. If needed, reconnect the original profile under Profile, then retry the save.", checkpointSaveFailed: "The between-wave checkpoint could not be secured. Upgrade selection and leaving stay locked until saving succeeds.", upgradeStack: "Level", playAgainUnavailable: "A new flight requires an active controller and a safely stored current result.",
+    discardRecoveryConfirm: "Make sure the recovery file is actually saved on this device. Permanently discard this result?",
+    checkpointClearFailed: "The result is saved, but the old checkpoint could not be removed. Retry discarding the saved run before a new launch.",
+    hud: { score: "Score", lives: "Hull", wave: "Wave", sector: "Sector", combo: "Combo", energy: "Energy", shield: "Shield", cooldown: "Cooldown", boss: "Boss", bossIntegrity: "Boss integrity", danger: "DANGER WAVE", rest: "Breather", telegraph: "Threat scan" },
+    sectors: { starfield: "Starlight frontier", nebula: "Emerald nebula", "meteor-belt": "Meteor belt", ice: "Ice sector", "ion-storm": "Ion storm", "ship-graveyard": "Ship graveyard", solar: "Solar corona", dark: "Dark sector", boss: "Warden citadel" },
+    chooseUpgrade: "Choose an upgrade", upgradeKicker: "WAVE COMPLETE · SYSTEM EVOLUTION", chooseUpgradeHint: "Time is frozen. Pick one of three build directions.",
+    powers: {
+      shield: { name: "Phase shield", description: "Blocks damage for 10 seconds and immediately refills the shield." }, spread: { name: "Spread fire", description: "Adds two full-strength side shots." }, laser: { name: "Beam laser", description: "Costs 65 energy and grants 2.6 seconds of rapid piercing fire." }, missiles: { name: "Smart missiles", description: "Automatically seek the nearest threat." }, emp: { name: "EMP pulse", description: "Clears hostile projectiles, stuns and damages every threat and the boss." }, time: { name: "Time field", description: "Briefly slows every threat." }, magnet: { name: "Grav-magnet", description: "Pulls energy and pickups from farther away." }, drone: { name: "Wing drone", description: "Automatically fires at the nearest target." }, repair: { name: "Repair module", description: "Restores one life and at least 55% shield; it is not consumed when the ship is full." }, pulse: { name: "Repulsor wave", description: "Pushes enemies away from the ship." }, invulnerability: { name: "Quantum dash", description: "Grants brief invulnerability on activation." }, critical: { name: "Critical circuit", description: "Some hits deal double damage." }, speed: { name: "Afterburner", description: "Improves ship speed and handling." }, charge: { name: "Overcharge", description: "Activate the superpower for one heavy piercing shot." },
+    },
+    upgrades: {
+      "twin-shot": { name: "Parallel barrels", description: "Each stack adds one more parallel shot." }, "rapid-fire": { name: "Rapid cycling", description: "Shortens the delay between shots." }, "piercing-rounds": { name: "Piercing rounds", description: "Projectiles pass through one extra target." }, "critical-focus": { name: "Critical focus", description: "Raises the chance of double damage." }, "reinforced-shield": { name: "Reinforced shield", description: "Improves shield capacity and recharge." }, "phase-plating": { name: "Phase plating", description: "Extends invulnerability after a hit." }, "repair-nanites": { name: "Repair nanites", description: "Restore hull after demanding waves." }, "engine-boost": { name: "Engine boost", description: "Increases speed without sacrificing aim." }, "missile-bay": { name: "Missile bay", description: "Adds automatic support missiles." }, "emp-capacitor": { name: "EMP capacitor", description: "Reduces pulse cost and cooldown." }, "magnet-array": { name: "Magnet array", description: "Increases the pickup collection radius." }, "escort-drone": { name: "Escort drone", description: "Each stack adds one autonomous flank cannon." },
+    },
+    activatePower: "Superpower", powerActive: "Active", powerCost: "Energy", cooldownReady: "Ready", bossPhaseLabel: "PHASE", achievementProgress: "Progress", achievementLocked: "Not unlocked yet", achievementUnlockedOn: (date: string) => `Unlocked ${date}`, achievementsEmpty: "Achievements reward skill and exploring every mechanic.",
+    achievements: {
+      first_run: { name: "First flight", description: "Complete your first run." }, first_enemy: { name: "First contact", description: "Destroy your first enemy." }, first_boss: { name: "Warden down", description: "Defeat your first boss." }, survivor_5m: { name: "Five minutes in the void", description: "Survive for at least five minutes." }, flawless_sector: { name: "Clean sector", description: "Clear a sector without losing a life." }, combo_25: { name: "Precision chain", description: "Reach a ×25 combo." }, score_10000: { name: "New orbit", description: "Score 10,000 points in one run." }, arduino_pilot: { name: "Physical pilot", description: "Complete a run with the Arduino joystick." }, power_explorer: { name: "Systems master", description: "Use every kind of superpower." }, max_level: { name: "Threat level red", description: "Reach the maximum threat level." }, veteran_10: { name: "Frontier veteran", description: "Complete 10 runs." }, sharpshooter: { name: "Sharpshooter", description: "Finish a battle with at least 70% accuracy." },
+    },
+    rarity: { common: "Common", uncommon: "Uncommon", rare: "Rare", epic: "Epic", legendary: "Legendary" }, statisticsTitle: "Pilot career",
+    stats: { enemies: "Enemies destroyed", bosses: "Bosses defeated", accuracy: "Accuracy", combo: "Longest combo", favouritePower: "Favourite superpower", longestRun: "Longest run", powerups: "Pickups collected", unlockedAchievements: "Achievements unlocked", modeRecords: "Records by mode", games: "Runs", wins: "Wins", noModeRecords: "Complete your first run to create a mode record." },
+    settingsTitle: "Flight settings", musicVolume: "Music volume", hardwareMusicNote: "On Passive Buzzer D3, music volume is mute/on; precise 0–100% applies to browser audio. D5 effect volume uses PWM.", effectsVolume: "Effects volume", screenShake: "Screen shake", reducedMotion: "Reduce motion and flashes", invertArduinoY: "Invert Arduino vertical axis", keyBindings: "Key bindings", keyMoveUp: "Move up", keyMoveDown: "Move down", keyMoveLeft: "Move left", keyMoveRight: "Move right", keyFire: "Fire", keyPower: "Superpower", resetKeys: "Default keys",
+    controlsTitle: "One ship — three control styles", controlsText: "WASD or arrows move; Space fires; E activates the superpower. On mobile, use the joystick and two buttons. Arduino A0/A1/D4 works the same way.", tutorialTitle: "Your first flight in 30 seconds", tutorialSteps: ["Move to keep distance from telegraphed threats.", "Aim cleanly: kills sustain combo and restore energy.", "After a wave, choose an upgrade that supports your style.", "At a boss, read its phase, safe lanes, and your cooldown."], arduinoTitle: "Arduino makes the flight tangible", arduinoText: "A0/A1 steers; SW on D4 fires and activates the superpower on a long press. Passive Buzzer D3 plays sector themes, Active Buzzer D5 signals short events. Gate and radar pins stay unchanged.", offlineNote: "Offline, the run and progression remain queued in this browser.",
+    formatAccuracy: (value: number) => formatSpaceAccuracy("en", value),
+    formatCooldown: (seconds: number) => formatSpaceCooldown("en", seconds),
+    formatDate: (value: string) => formatSpaceDate("en", value),
+    formatDuration: (seconds: number) => formatSpaceDuration("en", seconds),
+    formatNumber: (value: number) => formatSpaceNumber("en", value),
+    formatControls: (up: string, down: string, left: string, right: string, fire: string, power: string) =>
+      `${up}/${down}/${left}/${right} move the ship; ${fire} fires; ${power} activates the superpower. On mobile, use the joystick and two buttons. Arduino A0/A1/D4 works the same way.`,
+  },
+} as const;
+
+export type SpaceDefenderCopy = (typeof SPACE_DEFENDER_COPY)[Language];

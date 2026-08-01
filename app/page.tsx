@@ -125,6 +125,7 @@ export default function Home() {
   );
   const copy = PAGE_COPY[language];
   const [activeTab, setActiveTab] = useState<SiteTab>("control");
+  const [gameDataAtRisk, setGameDataAtRisk] = useState(false);
   const [connection, setConnection] =
     useState<ConnectionState>("disconnected");
   const [mode, setMode] = useState<GateMode>("manual");
@@ -785,6 +786,9 @@ export default function Home() {
 
   const selectTab = async (nextTab: SiteTab) => {
     if (nextTab === activeTab) return;
+    if (nextTab === "control" && activeTab === "game" && gameDataAtRisk) {
+      return;
+    }
 
     if (nextTab === "game") {
       if (connection === "connected" || connection === "demo") {
@@ -857,6 +861,7 @@ export default function Home() {
           <button
             className={activeTab === "control" ? "active" : ""}
             aria-current={activeTab === "control" ? "page" : undefined}
+            disabled={activeTab === "game" && gameDataAtRisk}
             onClick={() => void selectTab("control")}
           >
             {copy.controlTab}
@@ -1563,6 +1568,7 @@ export default function Home() {
           joystickY={joystickY}
           onCommand={sendGameCommand}
           onConnect={() => void connect()}
+          onDataSafetyChange={setGameDataAtRisk}
           onStartDemo={startDemo}
         />
       )}

@@ -1,103 +1,96 @@
 "use client";
 
-/* eslint-disable react-hooks/immutability -- the canvas physics loop intentionally
-   keeps mutable simulation objects in refs so it can run without 60 React renders/s */
-
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
-import { generateRunId } from "../shared/gameStats";
-import { GAME_COPY, type Language } from "./i18n";
+import {
+  GAME_ACHIEVEMENTS,
+  generateRunId,
+  type GameAchievementId,
+  type PlayerProgression,
+  type PlayerStats,
+} from "../shared/gameStats";
+import { GAME_COPY, SPACE_DEFENDER_COPY, type Language } from "./i18n";
 import { LeaderboardPanel, PlayerStatsPanel } from "./PlayerStatsPanel";
 import { useGameStats } from "./useGameStats";
+import type { GameRunRecordResult } from "./useGameStats";
+import { formatGameControlSummary, GameMenu } from "./game/GameMenu";
+import { POWER_UP_BALANCE } from "./game/balance";
+import {
+  EMPTY_ACHIEVEMENT_STATS,
+  accumulateAchievementStats,
+  evaluateAchievements,
+  previewAchievementStats,
+  type AchievementId,
+  type AchievementProgress,
+  type AchievementRunFacts,
+  type LifetimeAchievementStats,
+} from "./game/achievements";
+import { GameHud } from "./game/GameHud";
+import {
+  GameOverlay,
+  GameToastStack,
+  type GameToast,
+  type RunResultView,
+} from "./game/GameOverlays";
+import {
+  AchievementGallery,
+  CareerStats,
+  type AchievementView,
+} from "./game/ProgressPanels";
+import {
+  effectiveReducedMotion,
+  loadGamePreferences,
+  saveGamePreferences,
+  DEFAULT_GAME_PREFERENCES,
+  type GamePreferences,
+} from "./game/preferences";
+import {
+  isNativeKeyboardControl,
+  resolveGameInput,
+} from "./game/input";
+import {
+  canResumeRun,
+  clearRunSnapshot,
+  loadRunSnapshot,
+  saveRunSnapshot,
+  type RunSnapshot,
+} from "./game/persistence";
+import { renderGameWorld } from "./game/rendering";
+import { checkpointGameWorld, restoreGameWorld } from "./game/resume";
+import {
+  createGameWorld,
+  selectUpgrade,
+  snapshotGameSummary,
+  stepGameWorld,
+  type GameEvent,
+  type GameResultSummary,
+  type GameToastId,
+  type GameWorld,
+} from "./game/runtime";
+import { gameResultToStatsInput } from "./game/statsAdapter";
+import type {
+  DifficultyId,
+  GameModeId,
+  PowerUpId,
+  SectorId,
+  UpgradeId,
+  UpgradeStacks,
+} from "./game/types";
+import { POWER_UP_IDS } from "./game/types";
+import { useGameAudio } from "./game/useGameAudio";
 
 type ConnectionState =
   | "disconnected"
   | "connecting"
   | "connected"
   | "demo";
-
-type GameStatus = "ready" | "playing" | "paused" | "over";
-type TrackId =
-  | "space"
-  | "neon"
-  | "boss"
-  | "joy"
-  | "elise"
-  | "bells"
-  | "anthem";
-type PlayerState = "playing" | "paused" | "stopped";
-
-type ChiptuneTrack = {
-  id: TrackId;
-  bpm: number;
-  notes: readonly number[];
-  bassRoots: readonly number[];
-  sustainedSteps?: readonly number[];
-  stepMultiplier?: number;
-};
-
-type VirtualJoystickState = {
-  x: number;
-  y: number;
-  active: boolean;
-};
-
-type VirtualJoystickPointer = {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  startedOnKnob: boolean;
-} | null;
-
-type WebAudioWindow = Window & {
-  webkitAudioContext?: typeof AudioContext;
-};
-
-type Bullet = {
-  x: number;
-  y: number;
-  speed: number;
-};
-
-type Asteroid = {
-  x: number;
-  y: number;
-  radius: number;
-  speed: number;
-  drift: number;
-  spin: number;
-  rotation: number;
-  health: number;
-};
-
-type Star = {
-  x: number;
-  y: number;
-  size: number;
-  speed: number;
-  alpha: number;
-};
-
-type GameWorld = {
-  shipX: number;
-  shipY: number;
-  bullets: Bullet[];
-  asteroids: Asteroid[];
-  stars: Star[];
-  lastFrame: number;
-  lastShot: number;
-  lastSpawn: number;
-  elapsed: number;
-  score: number;
-  lives: number;
-  level: number;
-};
 
 type GamePanelProps = {
   connection: ConnectionState;
@@ -109,326 +102,221 @@ type GamePanelProps = {
   joystickY: number;
   onCommand: (command: string) => void;
   onConnect: () => void;
+  onDataSafetyChange: (blocked: boolean) => void;
   onStartDemo: () => void;
 };
 
-const GAME_WIDTH = 900;
-const GAME_HEIGHT = 540;
-const SHIP_RADIUS = 21;
-const DEAD_ZONE = 90;
+type GameUiStatus = "menu" | "playing" | "paused" | "upgrade" | "over";
 
-// Original E-minor chiptune lead. Four phrases make a longer, less repetitive
-// loop while remaining light enough for mobile browsers.
-const SPACE_CHASE_NOTES = [
-  659, 784, 988, 1319, 0, 988, 784, 659,
-  587, 740, 880, 1175, 0, 880, 740, 587,
-  523, 659, 784, 1047, 0, 1047, 1175, 1319,
-  494, 622, 740, 988, 0, 1245, 988, 740,
-  659, 988, 1319, 1568, 1319, 988, 784, 659,
-  587, 880, 1175, 1480, 1175, 880, 740, 587,
-  523, 784, 1047, 1319, 1568, 1319, 1047, 784,
-  494, 740, 988, 1245, 0, 988, 1175, 1319,
-] as const;
+type HudSnapshot = {
+  bossHealth?: number;
+  bossMaxHealth?: number;
+  bossPhase?: number;
+  combo: number;
+  energy: number;
+  lives: number;
+  maxLives: number;
+  maxShield: number;
+  phase: "telegraph" | "combat" | "rest" | "boss";
+  powerActiveRemaining: number;
+  powerCooldown: number;
+  powerEnergyCost: number;
+  powerId: PowerUpId;
+  score: number;
+  sector: SectorId;
+  shield: number;
+  upgrades: Array<{ id: UpgradeId; stacks: number }>;
+  wave: number;
+};
 
-const SPACE_CHASE_BASS = [
-  165, 165, 147, 147,
-  131, 131, 123, 123,
-  165, 165, 147, 147,
-  131, 131, 123, 165,
-] as const;
+type VirtualJoystickState = {
+  active: boolean;
+  x: number;
+  y: number;
+};
 
-const NEON_FLIGHT_NOTES = [
-  523, 659, 784, 1047, 784, 659, 523, 0,
-  587, 740, 880, 1175, 880, 740, 587, 0,
-  659, 784, 988, 1319, 988, 784, 659, 0,
-  784, 988, 1175, 1568, 1175, 988, 784, 0,
-  1047, 988, 784, 659, 784, 988, 1047, 1319,
-  1175, 988, 880, 740, 880, 988, 1175, 1480,
-  1319, 1175, 988, 784, 659, 784, 988, 1175,
-  1047, 784, 659, 523, 0, 659, 784, 1047,
-] as const;
+const INITIAL_HUD: HudSnapshot = {
+  combo: 0,
+  energy: 100,
+  lives: 3,
+  maxLives: 3,
+  maxShield: 100,
+  phase: "telegraph",
+  powerActiveRemaining: 0,
+  powerCooldown: 0,
+  powerEnergyCost: 0,
+  powerId: "shield",
+  score: 0,
+  sector: "starfield",
+  shield: 100,
+  upgrades: [],
+  wave: 1,
+};
 
-const NEON_FLIGHT_BASS = [
-  131, 147, 165, 196,
-  131, 147, 165, 196,
-  175, 147, 131, 165,
-  175, 147, 131, 196,
-] as const;
+const ACHIEVEMENT_ICONS: Record<string, string> = {
+  boss: "♛",
+  combo: "×",
+  controller: "⌁",
+  crosshair: "◎",
+  launch: "▲",
+  level: "Ⅸ",
+  medal: "◆",
+  power: "ϟ",
+  shield: "⬡",
+  star: "✦",
+  target: "⊙",
+  timer: "◷",
+};
 
-const BOSS_ALERT_NOTES = [
-  220, 0, 220, 330, 440, 0, 392, 330,
-  196, 0, 196, 294, 392, 0, 349, 294,
-  175, 0, 262, 349, 523, 0, 440, 349,
-  196, 294, 392, 587, 0, 523, 392, 294,
-  220, 330, 440, 659, 440, 330, 220, 0,
-  247, 370, 494, 740, 494, 370, 247, 0,
-  262, 392, 523, 784, 698, 523, 392, 262,
-  247, 370, 494, 740, 0, 587, 494, 330,
-] as const;
+type AchievementBaseline = {
+  progress: Partial<Record<AchievementId, AchievementProgress>>;
+  stats: LifetimeAchievementStats;
+};
 
-const BOSS_ALERT_BASS = [
-  110, 110, 98, 98,
-  87, 87, 98, 98,
-  110, 110, 123, 123,
-  131, 131, 123, 110,
-] as const;
-
-const ODE_TO_JOY_NOTES = [
-  659, 659, 698, 784, 784, 698, 659, 587,
-  523, 523, 587, 659, 659, 587, 587, 0,
-  659, 659, 698, 784, 784, 698, 659, 587,
-  523, 523, 587, 659, 587, 523, 523, 0,
-  587, 587, 659, 523, 587, 659, 698, 659,
-  523, 587, 659, 698, 659, 523, 587, 659,
-  698, 659, 587, 523, 587, 659, 523, 587,
-  659, 698, 659, 587, 523, 523, 0, 0,
-] as const;
-
-const ODE_TO_JOY_BASS = [
-  131, 131, 98, 98,
-  131, 131, 98, 131,
-] as const;
-
-// Familiar public-domain melodies give the small buzzer more variety while
-// keeping the player fully browser-streamed: no new Arduino firmware needed.
-const FUR_ELISE_NOTES = [
-  659, 622, 659, 622, 659, 494, 587, 523,
-  440, 0, 262, 330, 440, 0, 494, 330,
-  415, 0, 494, 523, 0, 659, 622, 659,
-  622, 659, 494, 587, 523, 440, 0, 262,
-  330, 440, 0, 494, 330, 523, 494, 440,
-  0, 494, 523, 587, 659, 0, 698, 659,
-  587, 523, 0, 659, 587, 523, 494, 0,
-  523, 587, 659, 698, 0, 784, 698, 659,
-  587, 0, 698, 659, 587, 523, 0, 659,
-  523, 494, 440, 0, 494, 523, 587, 659,
-  698, 784, 698, 659, 587, 523, 494, 440,
-] as const;
-
-const FUR_ELISE_BASS = [
-  110, 110, 131, 131,
-  110, 110, 98, 98,
-  110, 110, 131, 147,
-  110, 98, 110, 131,
-] as const;
-
-const CAROL_OF_BELLS_NOTES = [
-  659, 622, 659, 622, 659, 622, 659, 622,
-  659, 622, 659, 622, 659, 622, 659, 622,
-  659, 622, 659, 622, 659, 622, 659, 622,
-  784, 740, 698, 659, 622, 659, 740, 698,
-  659, 622, 659, 622, 659, 622, 659, 622,
-  784, 740, 698, 659, 622, 659, 740, 698,
-  659, 622, 659, 622, 659, 622, 659, 622,
-  784, 740, 698, 659, 622, 659, 740, 698,
-  831, 784, 740, 698, 659, 698, 740, 784,
-  831, 784, 740, 698, 659, 622, 659, 0,
-  659, 622, 659, 622, 659, 622, 659, 622,
-  784, 740, 698, 659, 622, 659, 740, 698,
-] as const;
-
-const CAROL_OF_BELLS_BASS = [
-  165, 165, 147, 147,
-  131, 131, 147, 165,
-  165, 147, 131, 147,
-] as const;
-
-// "Shche ne vmerla Ukrainy" — an 8-bit lead arrangement of the State Anthem.
-const UKRAINE_ANTHEM_NOTES = [
-  294, 294, 330, 370, 392, 392, 370, 330,
-  294, 330, 370, 392, 440, 440, 392, 370,
-  330, 330, 370, 392, 440, 494, 440, 392,
-  370, 330, 294, 330, 370, 392, 294, 0,
-  440, 440, 494, 523, 494, 440, 392, 370,
-  440, 494, 523, 587, 523, 494, 440, 392,
-  370, 392, 440, 494, 523, 494, 440, 392,
-  370, 330, 294, 330, 294, 0, 0, 0,
-  294, 330, 370, 392, 440, 392, 370, 330,
-  294, 330, 370, 440, 494, 440, 392, 370,
-  330, 370, 392, 440, 494, 523, 494, 440,
-  392, 370, 330, 294, 330, 370, 294, 0,
-  440, 494, 523, 587, 659, 587, 523, 494,
-  440, 392, 440, 494, 523, 494, 440, 392,
-  370, 330, 294, 330, 370, 392, 370, 330,
-  294, 330, 294, 0, 0, 0, 0, 0,
-] as const;
-
-const UKRAINE_ANTHEM_BASS = [
-  147, 147, 165, 185,
-  196, 196, 185, 165,
-  147, 165, 185, 196,
-  220, 196, 185, 147,
-] as const;
-
-const CHIPTUNE_TRACKS = [
-  {
-    id: "space",
-    bpm: 156,
-    notes: SPACE_CHASE_NOTES,
-    bassRoots: SPACE_CHASE_BASS,
-  },
-  {
-    id: "neon",
-    bpm: 168,
-    notes: NEON_FLIGHT_NOTES,
-    bassRoots: NEON_FLIGHT_BASS,
-  },
-  {
-    id: "boss",
-    bpm: 142,
-    notes: BOSS_ALERT_NOTES,
-    bassRoots: BOSS_ALERT_BASS,
-  },
-  {
-    id: "joy",
-    bpm: 124,
-    notes: ODE_TO_JOY_NOTES,
-    bassRoots: ODE_TO_JOY_BASS,
-    sustainedSteps: [14, 15, 30, 31, 46, 63],
-    stepMultiplier: 1.7,
-  },
-  {
-    id: "elise",
-    bpm: 128,
-    notes: FUR_ELISE_NOTES,
-    bassRoots: FUR_ELISE_BASS,
-    sustainedSteps: [8, 16, 20, 39, 72, 95],
-    stepMultiplier: 1.6,
-  },
-  {
-    id: "bells",
-    bpm: 152,
-    notes: CAROL_OF_BELLS_NOTES,
-    bassRoots: CAROL_OF_BELLS_BASS,
-    sustainedSteps: [31, 47, 63, 79, 95],
-    stepMultiplier: 1.45,
-  },
-  {
-    id: "anthem",
-    bpm: 102,
-    notes: UKRAINE_ANTHEM_NOTES,
-    bassRoots: UKRAINE_ANTHEM_BASS,
-    sustainedSteps: [15, 31, 47, 63, 79, 95, 120, 127],
-    stepMultiplier: 1.7,
-  },
-] as const satisfies readonly ChiptuneTrack[];
-
-function getTrack(trackId: TrackId): ChiptuneTrack {
-  return (
-    CHIPTUNE_TRACKS.find((track) => track.id === trackId) ??
-    CHIPTUNE_TRACKS[0]
-  );
-}
-
-function getTrackStepSeconds(track: ChiptuneTrack, step: number) {
-  const baseStepSeconds =
-    (60 / track.bpm / 2) * (track.stepMultiplier ?? 1);
-  if (track.notes[step] === 0) return baseStepSeconds * 0.55;
-  return track.sustainedSteps?.includes(step)
-    ? baseStepSeconds * 1.9
-    : baseStepSeconds;
-}
-
-function scheduleBrowserTone(
-  context: AudioContext,
-  destination: AudioNode,
-  frequency: number,
-  startsAt: number,
-  duration: number,
-  type: OscillatorType,
-  volume: number,
-) {
-  if (frequency <= 0) return;
-
-  const oscillator = context.createOscillator();
-  const gain = context.createGain();
-  oscillator.type = type;
-  oscillator.frequency.setValueAtTime(frequency, startsAt);
-  gain.gain.setValueAtTime(0.0001, startsAt);
-  gain.gain.exponentialRampToValueAtTime(volume, startsAt + 0.008);
-  gain.gain.exponentialRampToValueAtTime(
-    0.0001,
-    startsAt + Math.max(0.025, duration),
-  );
-  oscillator.connect(gain);
-  gain.connect(destination);
-  oscillator.start(startsAt);
-  oscillator.stop(startsAt + duration + 0.025);
-}
-
-function createStars(): Star[] {
-  return Array.from({ length: 90 }, () => ({
-    x: Math.random() * GAME_WIDTH,
-    y: Math.random() * GAME_HEIGHT,
-    size: 0.7 + Math.random() * 2.2,
-    speed: 18 + Math.random() * 58,
-    alpha: 0.28 + Math.random() * 0.72,
-  }));
-}
-
-function createWorld(): GameWorld {
+function createAchievementBaseline(
+  profile: PlayerStats | null,
+  progression: PlayerProgression | null,
+): AchievementBaseline {
+  const progress: AchievementBaseline["progress"] = {};
+  for (const achievement of progression?.achievements ?? []) {
+    const unlockedAtMs = achievement.unlockedAt
+      ? Date.parse(achievement.unlockedAt)
+      : Number.NaN;
+    progress[achievement.achievementId] = {
+      id: achievement.achievementId,
+      progress: achievement.progress,
+      target:
+        GAME_ACHIEVEMENTS.find((item) => item.id === achievement.achievementId)
+          ?.target ?? 1,
+      unlockedAtMs: Number.isFinite(unlockedAtMs)
+        ? Math.max(0, Math.floor(unlockedAtMs))
+        : null,
+    };
+  }
+  const usedPowers = (progression?.powers ?? [])
+    .filter((power) => power.activatedCount > 0)
+    .map((power) => power.powerId)
+    .filter((id): id is PowerUpId => POWER_UP_IDS.includes(id as PowerUpId));
   return {
-    shipX: GAME_WIDTH / 2,
-    shipY: GAME_HEIGHT - 70,
-    bullets: [],
-    asteroids: [],
-    stars: createStars(),
-    lastFrame: performance.now(),
-    lastShot: 0,
-    lastSpawn: 0,
-    elapsed: 0,
-    score: 0,
-    lives: 3,
-    level: 1,
+    progress,
+    stats: {
+      ...EMPTY_ACHIEVEMENT_STATS,
+      gamesPlayed: profile?.gamesPlayed ?? 0,
+      enemiesDestroyed: progression?.totals.enemiesDestroyed ?? 0,
+      bossesDefeated: progression?.totals.bossesDefeated ?? 0,
+      longestRunMs: progression?.totals.longestRunMs ?? 0,
+      flawlessSectors: progress.flawless_sector?.progress ?? 0,
+      longestCombo: progression?.totals.longestCombo ?? 0,
+      highScore: profile?.highScore ?? 0,
+      arduinoRuns: progression?.totals.arduinoRuns ?? 0,
+      powerUpsUsed: usedPowers,
+      maxThreatLevel: profile?.highestLevel ?? 0,
+      bestAccuracyPermille:
+        progression?.totals.bestAccuracyPermille ?? 0,
+    },
   };
 }
 
-function normalizeAxis(value: number, center: number) {
-  const difference = value - center;
-  if (Math.abs(difference) <= DEAD_ZONE) return 0;
-
-  const availableRange =
-    difference > 0 ? Math.max(1, 1023 - center) : Math.max(1, center);
-  const adjusted = Math.abs(difference) - DEAD_ZONE;
-  const adjustedRange = Math.max(1, availableRange - DEAD_ZONE);
-  return Math.sign(difference) * Math.min(1, adjusted / adjustedRange);
+function achievementFacts(result: GameResultSummary): AchievementRunFacts {
+  return {
+    controller: result.controller,
+    durationMs: result.durationMs,
+    metrics: result.metrics,
+    score: result.score,
+    threatLevel: result.level,
+  };
 }
 
-function circlesTouch(
-  x1: number,
-  y1: number,
-  radius1: number,
-  x2: number,
-  y2: number,
-  radius2: number,
-) {
-  const dx = x1 - x2;
-  const dy = y1 - y2;
-  const distance = radius1 + radius2;
-  return dx * dx + dy * dy <= distance * distance;
+function worldToHud(world: GameWorld): HudSnapshot {
+  const powerState = world.powerStates[world.equippedPowerUp];
+  const capacitorDiscount =
+    world.equippedPowerUp === "emp"
+      ? (world.upgradeStacks["emp-capacitor"] ?? 0) * 8
+      : 0;
+  return {
+    bossHealth: world.boss?.health,
+    bossMaxHealth: world.boss?.maxHealth,
+    bossPhase: world.boss?.phase,
+    combo: world.combo,
+    energy: world.player.energy,
+    lives: world.player.lives,
+    maxLives: world.player.maxLives,
+    maxShield: world.player.maxShield,
+    phase: world.boss ? "boss" : world.wavePhase,
+    powerActiveRemaining: powerState
+      ? Math.max(0, (powerState.activeUntilMs - world.elapsedMs) / 1_000)
+      : 0,
+    powerCooldown: powerState
+      ? Math.max(0, (powerState.cooldownUntilMs - world.elapsedMs) / 1_000)
+      : 0,
+    powerEnergyCost: Math.max(
+      0,
+      POWER_UP_BALANCE[world.equippedPowerUp].energyCost - capacitorDiscount,
+    ),
+    powerId: world.equippedPowerUp,
+    score: world.score,
+    sector: world.sector,
+    shield: world.player.shield,
+    upgrades: (Object.entries(world.upgradeStacks) as Array<[
+      UpgradeId,
+      number,
+    ]>)
+      .filter(([, stacks]) => stacks > 0)
+      .map(([id, stacks]) => ({ id, stacks })),
+    wave: world.wave,
+  };
 }
 
-function isNativeKeyboardControl(target: EventTarget | null) {
-  return (
-    target instanceof Element &&
-    Boolean(
-      target.closest(
-        "button, input, select, textarea, a[href], [contenteditable='true']",
-      ),
-    )
-  );
+function resultToView(
+  result: GameResultSummary,
+  previousHighScore: number,
+  endedReason: string,
+  saveStatus: GameRunRecordResult,
+  unlockedAchievements: readonly GameAchievementId[],
+): RunResultView {
+  const shotsFired = Math.max(0, result.metrics.shotsFired);
+  const saved = saveStatus === "queued" || saveStatus === "duplicate";
+  return {
+    accuracy:
+      shotsFired > 0
+        ? Math.min(1, result.metrics.shotsHit / shotsFired)
+        : 0,
+    bosses: result.metrics.bossesDefeated,
+    durationSeconds: result.durationMs / 1_000,
+    endedReason,
+    enemies: result.metrics.enemiesDestroyed,
+    longestCombo: result.metrics.longestCombo,
+    newRecord: result.score > previousHighScore,
+    recoveryExported: false,
+    score: result.score,
+    saveStatus,
+    saved,
+    unlockedAchievements: [...unlockedAchievements],
+    victory: result.outcome === "victory",
+    wave: result.wave,
+  };
 }
 
-function roundedRect(
-  context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-) {
-  context.beginPath();
-  context.roundRect(x, y, width, height, radius);
+function isPlayableConnection(connection: ConnectionState) {
+  return connection === "connected" || connection === "demo";
+}
+
+function getBrowserLocalStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function displayGameKey(code: string) {
+  if (code === "Space") return "SPACE";
+  return code
+    .replace(/^Key/, "")
+    .replace(/^Digit/, "")
+    .replace(/Left$|Right$/, "")
+    .toUpperCase();
 }
 
 export default function GamePanel({
@@ -441,62 +329,103 @@ export default function GamePanel({
   joystickY,
   onCommand,
   onConnect,
+  onDataSafetyChange,
   onStartDemo,
 }: GamePanelProps) {
-  const copy = GAME_COPY[language];
+  const legacyCopy = GAME_COPY[language];
+  const copy = SPACE_DEFENDER_COPY[language];
   const gameStats = useGameStats({ language });
+  const connected = isPlayableConnection(connection);
+
+  const [uiStatus, setUiStatus] = useState<GameUiStatus>("menu");
+  const [mode, setMode] = useState<GameModeId>("expedition");
+  const [difficulty, setDifficulty] = useState<DifficultyId>("pilot");
+  const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
+  const [result, setResult] = useState<RunResultView | null>(null);
+  const [checkpointError, setCheckpointError] = useState(false);
+  const [toasts, setToasts] = useState<GameToast[]>([]);
+  const [upgradeChoices, setUpgradeChoices] = useState<UpgradeId[]>([]);
+  const [upgradeStacks, setUpgradeStacks] = useState<UpgradeStacks>({});
+  const [resumeSnapshot, setResumeSnapshot] = useState<RunSnapshot | null>(() => {
+    const storage = getBrowserLocalStorage();
+    if (!storage) return null;
+    const stored = loadRunSnapshot(storage, Date.now());
+    return stored && canResumeRun(stored) ? stored : null;
+  });
+  const [preferences, setPreferences] = useState<GamePreferences>(() => {
+    const storage = getBrowserLocalStorage();
+    return storage
+      ? loadGamePreferences(storage)
+      : {
+          ...DEFAULT_GAME_PREFERENCES,
+          keyBindings: { ...DEFAULT_GAME_PREFERENCES.keyBindings },
+        };
+  });
+  const [systemReducedMotion, setSystemReducedMotion] = useState(() =>
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  const [joystickCentre, setJoystickCentre] = useState({ x: 512, y: 512 });
+  const [virtualJoystick, setVirtualJoystick] =
+    useState<VirtualJoystickState>({ active: false, x: 0, y: 0 });
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const worldRef = useRef<GameWorld | null>(null);
+  const statusRef = useRef<GameUiStatus>("menu");
   const animationRef = useRef<number | null>(null);
-  const [initialWorld] = useState(createWorld);
-  const worldRef = useRef<GameWorld>(initialWorld);
-  const statusRef = useRef<GameStatus>("ready");
-  const joystickRef = useRef({ x: joystickX, y: joystickY, pressed: false });
-  const centerRef = useRef({ x: 512, y: 512 });
-  const invertYRef = useRef(true);
-  const soundRef = useRef(true);
-  const effectsVolumeRef = useRef(28);
+  const lastFrameRef = useRef(0);
+  const lastHudUpdateRef = useRef(0);
   const keyboardRef = useRef(new Set<string>());
   const touchRef = useRef(new Set<string>());
   const virtualJoystickRef = useRef<VirtualJoystickState>({
+    active: false,
     x: 0,
     y: 0,
-    active: false,
   });
-  const virtualJoystickPointerRef = useRef<VirtualJoystickPointer>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const musicBusRef = useRef<GainNode | null>(null);
-  const musicTimerRef = useRef<number | null>(null);
-  const musicStepRef = useRef(0);
-  const musicNextTimeRef = useRef(0);
-  const serialMusicTimerRef = useRef<number | null>(null);
-  const serialMusicStepRef = useRef(0);
-  const selectedTrackRef = useRef<TrackId>("space");
-  const playerStateRef = useRef<PlayerState>("stopped");
-  const resumeMusicAfterGamePauseRef = useRef(false);
-  const previousPressRef = useRef(false);
+  const virtualPointerRef = useRef<number | null>(null);
+  const joystickRef = useRef({ pressed: false, x: 512, y: 512 });
+  const joystickCentreRef = useRef({ x: 512, y: 512 });
+  const physicalPressStartedRef = useRef<number | null>(null);
+  const physicalPowerTriggeredRef = useRef(false);
   const commandRef = useRef(onCommand);
   const recordRunRef = useRef(gameStats.recordRun);
-  const activeRunIdRef = useRef<string | null>(null);
+  const previousHighScoreRef = useRef(0);
+  const recordedRunIdsRef = useRef(new Set<string>());
+  const toastTimersRef = useRef(new Map<string, number>());
+  const preferencesRef = useRef(preferences);
+  const reducedMotionRef = useRef(false);
+  const achievementWatchRef = useRef(false);
+  const knownAchievementsRef = useRef(new Set<GameAchievementId>());
+  const runAchievementIdsRef = useRef(new Set<GameAchievementId>());
+  const achievementBaselineRef = useRef<AchievementBaseline>(
+    createAchievementBaseline(null, null),
+  );
+  const previewAchievementsRef = useRef<(world: GameWorld) => void>(
+    () => undefined,
+  );
+  const activeProfileOwnerRef = useRef<string | null>(null);
+  const unmountingRef = useRef(false);
+  const finishActiveRunRef = useRef<(reason: string, updateUi?: boolean) => void>(
+    () => undefined,
+  );
+  const saveSafeCheckpointRef = useRef<(updateUi?: boolean) => boolean>(
+    () => false,
+  );
 
-  const [status, setStatus] = useState<GameStatus>("ready");
-  const [score, setScore] = useState(0);
-  const [lives, setLives] = useState(3);
-  const [level, setLevel] = useState(1);
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [effectsVolume, setEffectsVolume] = useState(28);
-  const [selectedTrackId, setSelectedTrackId] =
-    useState<TrackId>("space");
-  const [playerState, setPlayerState] =
-    useState<PlayerState>("stopped");
-  const [trackStep, setTrackStep] = useState(0);
-  const [invertY, setInvertY] = useState(true);
-  const [center, setCenter] = useState({ x: 512, y: 512 });
-  const [virtualJoystick, setVirtualJoystick] =
-    useState<VirtualJoystickState>({
-      x: 0,
-      y: 0,
-      active: false,
-    });
+  const effectiveMotionReduction = effectiveReducedMotion(
+    preferences.reducedMotion,
+    systemReducedMotion,
+  );
+  const audio = useGameAudio({
+    bossActive: hud.phase === "boss",
+    connection,
+    onCommand,
+    preferences,
+    sector: hud.sector,
+    state: uiStatus,
+  });
+  const emitSfxRef = useRef(audio.emitSfx);
+  const unlockAudioRef = useRef(audio.unlockAudio);
 
   useEffect(() => {
     commandRef.current = onCommand;
@@ -507,1511 +436,1289 @@ export default function GamePanel({
   }, [gameStats.recordRun]);
 
   useEffect(() => {
+    emitSfxRef.current = audio.emitSfx;
+    unlockAudioRef.current = audio.unlockAudio;
+  }, [audio.emitSfx, audio.unlockAudio]);
+
+  useEffect(() => {
+    statusRef.current = uiStatus;
+  }, [uiStatus]);
+
+  const dataAtRisk = checkpointError || Boolean(result && !result.saved);
+
+  useEffect(() => {
+    onDataSafetyChange(dataAtRisk);
+  }, [dataAtRisk, onDataSafetyChange]);
+
+  useEffect(() => {
+    if (!dataAtRisk) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = true;
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dataAtRisk]);
+
+  useEffect(() => {
+    preferencesRef.current = preferences;
+    reducedMotionRef.current = effectiveMotionReduction;
+  }, [effectiveMotionReduction, preferences]);
+
+  useEffect(() => {
     joystickRef.current = {
+      pressed: joystickPressed,
       x: joystickX,
       y: joystickY,
-      pressed: joystickPressed,
     };
   }, [joystickPressed, joystickX, joystickY]);
 
   useEffect(() => {
-    centerRef.current = center;
-  }, [center]);
+    joystickCentreRef.current = joystickCentre;
+  }, [joystickCentre]);
 
   useEffect(() => {
-    invertYRef.current = invertY;
-  }, [invertY]);
+    virtualJoystickRef.current = virtualJoystick;
+  }, [virtualJoystick]);
 
   useEffect(() => {
-    soundRef.current = soundEnabled;
-  }, [soundEnabled]);
-
-  const ensureAudioContext = useCallback(() => {
-    if (typeof window === "undefined") return null;
-    const AudioContextConstructor =
-      window.AudioContext ||
-      (window as WebAudioWindow).webkitAudioContext;
-    if (!AudioContextConstructor) return null;
-    if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContextConstructor();
-    }
-    return audioContextRef.current;
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setSystemReducedMotion(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
   }, []);
 
-  const stopBrowserMusic = useCallback(() => {
-    if (musicTimerRef.current !== null) {
-      window.clearInterval(musicTimerRef.current);
-      musicTimerRef.current = null;
-    }
+  useEffect(() => {
+    const storage = getBrowserLocalStorage();
+    if (storage) saveGamePreferences(storage, preferences);
+  }, [preferences]);
 
-    const context = audioContextRef.current;
-    const bus = musicBusRef.current;
-    musicBusRef.current = null;
-    if (context && bus) {
-      const now = context.currentTime;
-      bus.gain.cancelScheduledValues(now);
-      bus.gain.setValueAtTime(Math.max(0.0001, bus.gain.value), now);
-      bus.gain.exponentialRampToValueAtTime(0.0001, now + 0.045);
-      window.setTimeout(() => bus.disconnect(), 80);
-    }
+  useEffect(() => {
+    if (connection !== "connected") return;
+    commandRef.current(
+      `SFX:VOLUME:${Math.round(preferences.effectsVolume)}`,
+    );
+    commandRef.current(
+      `GAME:SOUND:${
+        preferences.effectsVolume > 0 || preferences.musicVolume > 0 ? 1 : 0
+      }`,
+    );
+  }, [connection, preferences.effectsVolume, preferences.musicVolume]);
+
+  const addToast = useCallback((toast: Omit<GameToast, "id">) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setToasts((current) => [...current.slice(-3), { ...toast, id }]);
+    const timer = window.setTimeout(() => {
+      toastTimersRef.current.delete(id);
+      setToasts((current) => current.filter((item) => item.id !== id));
+    }, 3_800);
+    toastTimersRef.current.set(id, timer);
   }, []);
 
-  const startBrowserMusic = useCallback(() => {
-    if (
-      connection !== "demo" ||
-      !soundRef.current ||
-      musicTimerRef.current !== null
-    ) {
-      return;
-    }
-
-    const context = ensureAudioContext();
-    if (!context) return;
-    void context.resume();
-
-    const bus = context.createGain();
-    bus.gain.setValueAtTime(0.28, context.currentTime);
-    bus.connect(context.destination);
-    musicBusRef.current = bus;
-    musicNextTimeRef.current = context.currentTime + 0.04;
-
-    const scheduleAhead = () => {
-      const track = getTrack(selectedTrackRef.current);
-
-      while (musicNextTimeRef.current < context.currentTime + 0.45) {
-        const step = musicStepRef.current % track.notes.length;
-        const stepSeconds = getTrackStepSeconds(track, step);
-        const startsAt = musicNextTimeRef.current;
-        const leadFrequency = track.notes[step];
-
-        scheduleBrowserTone(
-          context,
-          bus,
-          leadFrequency,
-          startsAt,
-          stepSeconds * 0.82,
-          "square",
-          0.11,
-        );
-
-        const beatInBar = step % 4;
-        if (beatInBar === 0 || beatInBar === 2) {
-          const root =
-            track.bassRoots[
-              Math.floor(step / 4) % track.bassRoots.length
-            ];
-          scheduleBrowserTone(
-            context,
-            bus,
-            beatInBar === 0 ? root : root * 2,
-            startsAt,
-            stepSeconds * (beatInBar === 0 ? 1.75 : 0.72),
-            "triangle",
-            beatInBar === 0 ? 0.16 : 0.09,
-          );
-        }
-
-        musicStepRef.current++;
-        musicNextTimeRef.current += stepSeconds;
-        setTrackStep(musicStepRef.current % track.notes.length);
-      }
-    };
-
-    scheduleAhead();
-    musicTimerRef.current = window.setInterval(scheduleAhead, 120);
-  }, [connection, ensureAudioContext]);
-
-  const stopSerialMusic = useCallback(
-    (notifyArduino = true) => {
-      if (serialMusicTimerRef.current !== null) {
-        window.clearTimeout(serialMusicTimerRef.current);
-        serialMusicTimerRef.current = null;
-      }
-      if (notifyArduino && connection === "connected") {
-        commandRef.current("TRACK:STOP");
-      }
+  const announceAchievement = useCallback(
+    (id: GameAchievementId) => {
+      if (knownAchievementsRef.current.has(id)) return false;
+      knownAchievementsRef.current.add(id);
+      runAchievementIdsRef.current.add(id);
+      const metadata = GAME_ACHIEVEMENTS.find((item) => item.id === id);
+      addToast({
+        icon: ACHIEVEMENT_ICONS[metadata?.icon ?? "star"] ?? "✦",
+        kind: "achievement",
+        subtitle: copy.achievements[id].description,
+        title: copy.achievements[id].name,
+      });
+      emitSfxRef.current("ACH");
+      return true;
     },
-    [connection],
+    [addToast, copy.achievements],
   );
 
-  const startSerialMusic = useCallback(() => {
-    if (
-      connection !== "connected" ||
-      !soundRef.current ||
-      serialMusicTimerRef.current !== null
-    ) {
-      return;
+  const previewLiveAchievements = useCallback(
+    (world: GameWorld) => {
+      const summary = snapshotGameSummary(world);
+      const stats = previewAchievementStats(
+        achievementBaselineRef.current.stats,
+        achievementFacts(summary),
+      );
+      const evaluated = evaluateAchievements(
+        stats,
+        achievementBaselineRef.current.progress,
+        Date.now(),
+      );
+      for (const id of evaluated.newlyUnlocked) {
+        if (
+          id === "first_run" ||
+          id === "veteran_10" ||
+          id === "arduino_pilot" ||
+          id === "sharpshooter"
+        ) {
+          continue;
+        }
+        announceAchievement(id);
+      }
+    },
+    [announceAchievement],
+  );
+
+  const finalizeRunAchievements = useCallback(
+    (summary: GameResultSummary) => {
+      const stats = accumulateAchievementStats(
+        achievementBaselineRef.current.stats,
+        achievementFacts(summary),
+      );
+      const evaluated = evaluateAchievements(
+        stats,
+        achievementBaselineRef.current.progress,
+        Date.now(),
+      );
+      for (const id of evaluated.newlyUnlocked) announceAchievement(id);
+      return GAME_ACHIEVEMENTS.map((item) => item.id).filter((id) =>
+        runAchievementIdsRef.current.has(id),
+      );
+    },
+    [announceAchievement],
+  );
+
+  useEffect(() => {
+    previewAchievementsRef.current = previewLiveAchievements;
+  }, [previewLiveAchievements]);
+
+  useEffect(
+    () => () => {
+      for (const timer of toastTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      toastTimersRef.current.clear();
+    },
+    [],
+  );
+
+  const resetControls = useCallback(() => {
+    keyboardRef.current.clear();
+    touchRef.current.clear();
+    virtualPointerRef.current = null;
+    const centred = { active: false, x: 0, y: 0 };
+    virtualJoystickRef.current = centred;
+    setVirtualJoystick(centred);
+    physicalPressStartedRef.current = null;
+    physicalPowerTriggeredRef.current = false;
+  }, []);
+
+  const saveSafeCheckpoint = useCallback((updateUi = true) => {
+    const world = worldRef.current;
+    if (!world || world.status !== "upgrade") return false;
+    try {
+      const storage = getBrowserLocalStorage();
+      if (!storage) {
+        if (updateUi) setCheckpointError(true);
+        return false;
+      }
+      const snapshot = checkpointGameWorld(
+        world,
+        Date.now(),
+        activeProfileOwnerRef.current,
+      );
+      if (!saveRunSnapshot(storage, snapshot)) {
+        if (updateUi) setCheckpointError(true);
+        return false;
+      }
+      if (updateUi) {
+        setResumeSnapshot(snapshot);
+        setCheckpointError(false);
+      }
+      return true;
+    } catch {
+      if (updateUi) setCheckpointError(true);
+      return false;
     }
+  }, []);
 
-    commandRef.current("TRACK:START");
+  const clearStoredCheckpoint = useCallback(() => {
+    const storage = getBrowserLocalStorage();
+    if (!storage || !clearRunSnapshot(storage)) {
+      setCheckpointError(true);
+      return false;
+    }
+    setResumeSnapshot(null);
+    setCheckpointError(false);
+    return true;
+  }, []);
 
-    const playNextStep = () => {
-      if (
-        connection !== "connected" ||
-        !soundRef.current ||
-        playerStateRef.current !== "playing"
-      ) {
-        serialMusicTimerRef.current = null;
-        return;
-      }
-
-      const track = getTrack(selectedTrackRef.current);
-      const step = serialMusicStepRef.current % track.notes.length;
-      const stepDurationMs = Math.round(getTrackStepSeconds(track, step) * 1000);
-      const toneDurationMs = Math.round(stepDurationMs * 0.82);
-
-      commandRef.current(
-        `TRACK:TONE:${track.notes[step]}:${toneDurationMs}`,
+  const finishWithResult = useCallback(
+    (
+      gameResult: GameResultSummary,
+      endedReason: string,
+      updateUi = true,
+      playEndSound = false,
+    ) => {
+      if (recordedRunIdsRef.current.has(gameResult.runId)) return;
+      resetControls();
+      const unlockedAchievements = finalizeRunAchievements(gameResult);
+      const recordStatus: GameRunRecordResult = recordRunRef.current(
+        gameResultToStatsInput(gameResult, endedReason),
+        activeProfileOwnerRef.current,
       );
-      serialMusicStepRef.current++;
-      setTrackStep(serialMusicStepRef.current % track.notes.length);
-      serialMusicTimerRef.current = window.setTimeout(
-        playNextStep,
-        stepDurationMs,
-      );
-    };
-
-    playNextStep();
-  }, [connection]);
-
-  const startTrackPlayback = useCallback(
-    (restart: boolean) => {
-      stopBrowserMusic();
-      stopSerialMusic(false);
-
-      if (restart) {
-        musicStepRef.current = 0;
-        serialMusicStepRef.current = 0;
-        setTrackStep(0);
+      const saved = recordStatus === "queued" || recordStatus === "duplicate";
+      if (saved) {
+        recordedRunIdsRef.current.add(gameResult.runId);
+        clearStoredCheckpoint();
       }
-
-      if (!soundRef.current) {
-        playerStateRef.current = "paused";
-        setPlayerState("paused");
-        return;
+      if (updateUi && !unmountingRef.current) {
+        const resultView = resultToView(
+          gameResult,
+          previousHighScoreRef.current,
+          endedReason,
+          recordStatus,
+          unlockedAchievements,
+        );
+        setResult(resultView);
+        statusRef.current = "over";
+        setUiStatus("over");
+        if (worldRef.current) setHud(worldToHud(worldRef.current));
+        if (resultView.newRecord) {
+          addToast({
+            icon: "✦",
+            kind: "record",
+            title: copy.newRecord,
+          });
+        }
       }
-
-      playerStateRef.current = "playing";
-      setPlayerState("playing");
-
-      if (connection === "demo") {
-        startBrowserMusic();
-      } else if (connection === "connected") {
-        startSerialMusic();
+      commandRef.current("GAME:PAUSE");
+      if (playEndSound) {
+        const isNewRecord = gameResult.score > previousHighScoreRef.current;
+        emitSfxRef.current(
+          isNewRecord
+            ? "RECORD"
+            : gameResult.outcome === "victory"
+              ? "BOSS"
+              : "OVER",
+        );
       }
     },
     [
-      connection,
-      startBrowserMusic,
-      startSerialMusic,
-      stopBrowserMusic,
-      stopSerialMusic,
+      addToast,
+      clearStoredCheckpoint,
+      copy.newRecord,
+      finalizeRunAchievements,
+      resetControls,
     ],
   );
 
-  const pauseTrackPlayback = useCallback(() => {
-    stopBrowserMusic();
-    stopSerialMusic();
-    playerStateRef.current = "paused";
-    setPlayerState("paused");
-  }, [stopBrowserMusic, stopSerialMusic]);
-
-  const stopTrackPlayback = useCallback(() => {
-    stopBrowserMusic();
-    stopSerialMusic();
-    musicStepRef.current = 0;
-    serialMusicStepRef.current = 0;
-    setTrackStep(0);
-    playerStateRef.current = "stopped";
-    setPlayerState("stopped");
-  }, [stopBrowserMusic, stopSerialMusic]);
-
-  const playBrowserEffect = useCallback(
-    (effect: "SHOT" | "SCORE" | "CRASH" | "OVER") => {
-      if (
-        connection !== "demo" ||
-        !soundRef.current ||
-        effectsVolumeRef.current <= 0
-      ) {
-        return;
-      }
-      const context = ensureAudioContext();
-      if (!context) return;
-      void context.resume();
-      const now = context.currentTime + 0.005;
-      const volumeScale = effectsVolumeRef.current / 28;
-      const scaledVolume = (baseVolume: number) =>
-        Math.min(0.35, baseVolume * volumeScale);
-
-      if (effect === "SHOT") {
-        scheduleBrowserTone(
-          context,
-          context.destination,
-          1568,
-          now,
-          0.055,
-          "square",
-          scaledVolume(0.07),
-        );
-      } else if (effect === "SCORE") {
-        scheduleBrowserTone(
-          context,
-          context.destination,
-          988,
-          now,
-          0.08,
-          "square",
-          scaledVolume(0.075),
-        );
-        scheduleBrowserTone(
-          context,
-          context.destination,
-          1568,
-          now + 0.075,
-          0.11,
-          "square",
-          scaledVolume(0.075),
-        );
-      } else if (effect === "CRASH") {
-        scheduleBrowserTone(
-          context,
-          context.destination,
-          110,
-          now,
-          0.22,
-          "sawtooth",
-          scaledVolume(0.09),
-        );
-      } else {
-        [330, 247, 196, 123].forEach((frequency, index) => {
-          scheduleBrowserTone(
-            context,
-            context.destination,
-            frequency,
-            now + index * 0.13,
-            0.16,
-            "square",
-            scaledVolume(0.065),
-          );
-        });
-      }
+  const finishActiveRun = useCallback(
+    (endedReason: string, updateUi = true) => {
+      const world = worldRef.current;
+      if (!world || recordedRunIdsRef.current.has(world.runId)) return;
+      finishWithResult(
+        snapshotGameSummary(world),
+        endedReason,
+        updateUi,
+        updateUi,
+      );
     },
-    [connection, ensureAudioContext],
+    [finishWithResult],
   );
 
-  const emitSound = useCallback((effect: "SHOT" | "SCORE" | "CRASH" | "OVER") => {
-    if (!soundRef.current) return;
-    playBrowserEffect(effect);
-    commandRef.current(`SFX:${effect}`);
-  }, [playBrowserEffect]);
+  const retryResultSave = useCallback(() => {
+    const world = worldRef.current;
+    if (!world || !result || result.saved) return;
+    finishWithResult(
+      snapshotGameSummary(world),
+      result.endedReason,
+      true,
+      false,
+    );
+  }, [finishWithResult, result]);
 
   useEffect(() => {
-    if (connection !== "demo") stopBrowserMusic();
-    if (connection !== "connected") stopSerialMusic(false);
-  }, [connection, stopBrowserMusic, stopSerialMusic]);
+    finishActiveRunRef.current = finishActiveRun;
+    saveSafeCheckpointRef.current = saveSafeCheckpoint;
+  }, [finishActiveRun, saveSafeCheckpoint]);
+
+  const toastForRuntimeEvent = useCallback(
+    (id: GameToastId, value?: string | number) => {
+      if (
+        id === "power-collected" ||
+        id === "power-ready" ||
+        id === "power-cooldown" ||
+        id === "power-low-energy" ||
+        id === "power-not-needed"
+      ) {
+        const powerId = typeof value === "string" && value in copy.powers
+          ? (value as PowerUpId)
+          : hud.powerId;
+        addToast({
+          icon: "ϟ",
+          kind:
+            id === "power-collected"
+              ? "power-collected"
+              : id === "power-ready"
+                ? "power-active"
+                : id,
+          subtitle:
+            id === "power-collected" || id === "power-ready"
+              ? copy.powers[powerId].description
+              : undefined,
+          title: copy.powers[powerId].name,
+        });
+      } else if (id === "sector-clear") {
+        addToast({
+          icon: "✓",
+          kind: "sector",
+          title: copy.sectors[hud.sector],
+        });
+      } else if (id === "elite-arrival" || id === "low-health") {
+        addToast({ icon: "!", kind: "warning", title: copy.hud.danger });
+      } else if (id === "victory") {
+        addToast({ icon: "✦", kind: "boss", title: copy.victoryTitle });
+      }
+    },
+    [addToast, copy, hud.powerId, hud.sector],
+  );
+
+  const handleEvents = useCallback(
+    (events: readonly GameEvent[]) => {
+      for (const event of events) {
+        if (event.type === "sfx") {
+          emitSfxRef.current(event.id);
+        } else if (event.type === "toast") {
+          toastForRuntimeEvent(event.id, event.value);
+        } else if (event.type === "upgrade" && event.action === "offered") {
+          resetControls();
+          setUpgradeChoices([...event.choices]);
+          if (worldRef.current) {
+            setUpgradeStacks({ ...worldRef.current.upgradeStacks });
+          }
+          statusRef.current = "upgrade";
+          setUiStatus("upgrade");
+          saveSafeCheckpoint();
+          commandRef.current("GAME:PAUSE");
+        } else if (event.type === "boss") {
+          if (event.action === "spawn") {
+            addToast({ icon: "♛", kind: "warning", title: copy.hud.boss });
+          } else if (event.action === "defeated") {
+            addToast({ icon: "♛", kind: "boss", title: copy.bossDefeated });
+          }
+        } else if (event.type === "result") {
+          finishWithResult(event.result, event.result.outcome, true, true);
+        }
+      }
+    },
+    [
+      addToast,
+      copy.bossDefeated,
+      copy.hud.boss,
+      finishWithResult,
+      resetControls,
+      saveSafeCheckpoint,
+      toastForRuntimeEvent,
+    ],
+  );
+  const handleEventsRef = useRef(handleEvents);
 
   useEffect(() => {
-    return () => {
-      stopBrowserMusic();
-      stopSerialMusic(false);
-      const context = audioContextRef.current;
-      audioContextRef.current = null;
-      if (context && context.state !== "closed") void context.close();
-    };
-  }, [stopBrowserMusic, stopSerialMusic]);
+    handleEventsRef.current = handleEvents;
+  }, [handleEvents]);
 
   const drawWorld = useCallback((world: GameWorld) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const context = canvas.getContext("2d");
+    const context = canvasRef.current?.getContext("2d");
     if (!context) return;
-
-    context.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-
-    const backdrop = context.createLinearGradient(0, 0, 0, GAME_HEIGHT);
-    backdrop.addColorStop(0, "#071a21");
-    backdrop.addColorStop(0.58, "#0a2630");
-    backdrop.addColorStop(1, "#103238");
-    context.fillStyle = backdrop;
-    context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-
-    const glow = context.createRadialGradient(
-      GAME_WIDTH * 0.78,
-      GAME_HEIGHT * 0.1,
-      0,
-      GAME_WIDTH * 0.78,
-      GAME_HEIGHT * 0.1,
-      GAME_WIDTH * 0.6,
-    );
-    glow.addColorStop(0, "rgba(86, 215, 191, 0.16)");
-    glow.addColorStop(1, "rgba(86, 215, 191, 0)");
-    context.fillStyle = glow;
-    context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-
-    for (const star of world.stars) {
-      context.fillStyle = `rgba(224, 255, 246, ${star.alpha})`;
-      context.beginPath();
-      context.arc(star.x, star.y, star.size, 0, Math.PI * 2);
-      context.fill();
-    }
-
-    context.strokeStyle = "rgba(86, 215, 191, 0.08)";
-    context.lineWidth = 1;
-    for (let x = 0; x < GAME_WIDTH; x += 60) {
-      context.beginPath();
-      context.moveTo(x, 0);
-      context.lineTo(x, GAME_HEIGHT);
-      context.stroke();
-    }
-    for (let y = 0; y < GAME_HEIGHT; y += 60) {
-      context.beginPath();
-      context.moveTo(0, y);
-      context.lineTo(GAME_WIDTH, y);
-      context.stroke();
-    }
-
-    for (const bullet of world.bullets) {
-      const bulletGlow = context.createLinearGradient(
-        bullet.x,
-        bullet.y - 12,
-        bullet.x,
-        bullet.y + 8,
-      );
-      bulletGlow.addColorStop(0, "rgba(215, 245, 90, 0)");
-      bulletGlow.addColorStop(0.35, "#d7f55a");
-      bulletGlow.addColorStop(1, "#ffffff");
-      context.fillStyle = bulletGlow;
-      roundedRect(context, bullet.x - 3, bullet.y - 13, 6, 21, 3);
-      context.fill();
-    }
-
-    for (const asteroid of world.asteroids) {
-      context.save();
-      context.translate(asteroid.x, asteroid.y);
-      context.rotate(asteroid.rotation);
-
-      const rockGradient = context.createRadialGradient(
-        -asteroid.radius * 0.3,
-        -asteroid.radius * 0.3,
-        asteroid.radius * 0.1,
-        0,
-        0,
-        asteroid.radius,
-      );
-      rockGradient.addColorStop(0, "#d7a47b");
-      rockGradient.addColorStop(0.48, "#9c624d");
-      rockGradient.addColorStop(1, "#543b3b");
-      context.fillStyle = rockGradient;
-      context.strokeStyle = "#f2b68d";
-      context.lineWidth = 2;
-      context.beginPath();
-      for (let point = 0; point < 10; point++) {
-        const angle = (point / 10) * Math.PI * 2;
-        const wobble = point % 2 === 0 ? 1 : 0.78;
-        const px = Math.cos(angle) * asteroid.radius * wobble;
-        const py = Math.sin(angle) * asteroid.radius * wobble;
-        if (point === 0) context.moveTo(px, py);
-        else context.lineTo(px, py);
-      }
-      context.closePath();
-      context.fill();
-      context.stroke();
-
-      context.fillStyle = "rgba(64, 38, 40, 0.55)";
-      context.beginPath();
-      context.arc(
-        -asteroid.radius * 0.22,
-        -asteroid.radius * 0.14,
-        asteroid.radius * 0.18,
-        0,
-        Math.PI * 2,
-      );
-      context.fill();
-      context.restore();
-    }
-
-    context.save();
-    context.translate(world.shipX, world.shipY);
-
-    const flameLength =
-      statusRef.current === "playing"
-        ? 20 + Math.sin(performance.now() / 48) * 5
-        : 8;
-    const flame = context.createLinearGradient(0, 16, 0, 16 + flameLength);
-    flame.addColorStop(0, "#fff4a4");
-    flame.addColorStop(0.45, "#ff6b3d");
-    flame.addColorStop(1, "rgba(255, 107, 61, 0)");
-    context.fillStyle = flame;
-    context.beginPath();
-    context.moveTo(-8, 15);
-    context.lineTo(0, 17 + flameLength);
-    context.lineTo(8, 15);
-    context.closePath();
-    context.fill();
-
-    context.shadowColor = "#56d7bf";
-    context.shadowBlur = 18;
-    context.fillStyle = "#56d7bf";
-    context.strokeStyle = "#d9fff7";
-    context.lineWidth = 2.5;
-    context.beginPath();
-    context.moveTo(0, -25);
-    context.lineTo(20, 20);
-    context.lineTo(0, 12);
-    context.lineTo(-20, 20);
-    context.closePath();
-    context.fill();
-    context.stroke();
-    context.shadowBlur = 0;
-
-    context.fillStyle = "#08232b";
-    context.beginPath();
-    context.ellipse(0, -4, 6.5, 11, 0, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-
-    context.fillStyle = "rgba(3, 16, 20, 0.78)";
-    roundedRect(context, 18, 16, 188, 45, 12);
-    context.fill();
-    context.fillStyle = "#d7f55a";
-    context.font = "800 18px Arial";
-    context.fillText(`${copy.canvasScore} ${world.score}`, 34, 45);
-
-    if (statusRef.current !== "playing") {
-      context.fillStyle = "rgba(3, 14, 18, 0.68)";
-      context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-      context.textAlign = "center";
-      context.fillStyle = "#ffffff";
-      context.font = "900 42px Arial";
-      const title =
-        statusRef.current === "paused"
-          ? copy.canvasPause
-          : statusRef.current === "over"
-            ? copy.canvasOver
-            : copy.canvasTitle;
-      context.fillText(title, GAME_WIDTH / 2, GAME_HEIGHT / 2 - 20);
-      context.fillStyle = "#b8cbc6";
-      context.font = "600 17px Arial";
-      const subtitle =
-        statusRef.current === "over"
-          ? copy.canvasResult(world.score)
-          : statusRef.current === "paused"
-            ? copy.canvasContinue
-            : copy.canvasInstructions;
-      context.fillText(subtitle, GAME_WIDTH / 2, GAME_HEIGHT / 2 + 20);
-      context.textAlign = "start";
-    }
-  }, [copy]);
-
-  const shoot = useCallback((now: number) => {
-    const world = worldRef.current;
-    if (now - world.lastShot < 220 || statusRef.current !== "playing") return;
-    world.lastShot = now;
-    world.bullets.push({
-      x: world.shipX,
-      y: world.shipY - 25,
-      speed: 550,
-    });
-    emitSound("SHOT");
-  }, [emitSound]);
-
-  const recordActiveRun = useCallback(() => {
-    const runId = activeRunIdRef.current;
-    if (!runId) return false;
-
-    activeRunIdRef.current = null;
-    const world = worldRef.current;
-    return recordRunRef.current({
-      runId,
-      score: world.score,
-      level: world.level,
-      durationMs: Math.max(0, Math.round(world.elapsed * 1000)),
+    renderGameWorld(context, world, {
+      reducedMotion: reducedMotionRef.current,
+      screenShake: preferencesRef.current.screenShake,
     });
   }, []);
 
-  const finishGame = useCallback(() => {
-    if (statusRef.current === "over") return;
-    statusRef.current = "over";
-    setStatus("over");
-    recordActiveRun();
-    stopTrackPlayback();
-    playBrowserEffect("OVER");
-    commandRef.current("GAME:OVER");
-  }, [playBrowserEffect, recordActiveRun, stopTrackPlayback]);
-
-  const updateWorld = useCallback((now: number) => {
-    const world = worldRef.current;
-    const elapsedSeconds = Math.min(0.034, (now - world.lastFrame) / 1000);
-    world.lastFrame = now;
-
-    for (const star of world.stars) {
-      star.y += star.speed * elapsedSeconds;
-      if (star.y > GAME_HEIGHT + 4) {
-        star.y = -4;
-        star.x = Math.random() * GAME_WIDTH;
-      }
-    }
-
-    if (statusRef.current !== "playing") {
-      drawWorld(world);
-      animationRef.current = requestAnimationFrame(updateWorld);
-      return;
-    }
-
-    world.elapsed += elapsedSeconds;
-    const newLevel = Math.min(9, 1 + Math.floor(world.elapsed / 22));
-    if (newLevel !== world.level) {
-      world.level = newLevel;
-      setLevel(newLevel);
-    }
-
-    const keys = keyboardRef.current;
-    const touches = touchRef.current;
-    const horizontalKey =
-      (keys.has("ArrowRight") || keys.has("KeyD") || touches.has("right")
-        ? 1
-        : 0) -
-      (keys.has("ArrowLeft") || keys.has("KeyA") || touches.has("left")
-        ? 1
-        : 0);
-    const verticalKey =
-      (keys.has("ArrowDown") || keys.has("KeyS") || touches.has("down")
-        ? 1
-        : 0) -
-      (keys.has("ArrowUp") || keys.has("KeyW") || touches.has("up")
-        ? 1
-        : 0);
-
-    const rawHorizontal = normalizeAxis(
-      joystickRef.current.x,
-      centerRef.current.x,
-    );
-    const rawVertical = normalizeAxis(
-      joystickRef.current.y,
-      centerRef.current.y,
-    );
-    const physicalVertical = invertYRef.current ? rawVertical : -rawVertical;
-    const virtual = virtualJoystickRef.current;
-    const joystickHorizontal = virtual.active ? virtual.x : rawHorizontal;
-    const joystickVertical = virtual.active ? virtual.y : physicalVertical;
-    const moveX = Math.max(
-      -1,
-      Math.min(1, joystickHorizontal + horizontalKey),
-    );
-    const moveY = Math.max(
-      -1,
-      Math.min(1, joystickVertical + verticalKey),
-    );
-    const shipSpeed = 330 + world.level * 8;
-
-    world.shipX = Math.max(
-      SHIP_RADIUS + 8,
-      Math.min(
-        GAME_WIDTH - SHIP_RADIUS - 8,
-        world.shipX + moveX * shipSpeed * elapsedSeconds,
-      ),
-    );
-    world.shipY = Math.max(
-      SHIP_RADIUS + 8,
-      Math.min(
-        GAME_HEIGHT - SHIP_RADIUS - 8,
-        world.shipY + moveY * shipSpeed * elapsedSeconds,
-      ),
-    );
-
-    const pressed =
-      joystickRef.current.pressed ||
-      keys.has("Space") ||
-      touches.has("fire");
-    if (pressed && !previousPressRef.current) shoot(now);
-    if (pressed && now - world.lastShot >= 280) shoot(now);
-    previousPressRef.current = pressed;
-
-    const spawnInterval = Math.max(360, 920 - world.level * 62);
-    if (now - world.lastSpawn >= spawnInterval) {
-      world.lastSpawn = now;
-      const radius = 17 + Math.random() * 20;
-      world.asteroids.push({
-        x: radius + Math.random() * (GAME_WIDTH - radius * 2),
-        y: -radius - 10,
-        radius,
-        speed: 82 + world.level * 15 + Math.random() * 58,
-        drift: (Math.random() - 0.5) * 36,
-        spin: (Math.random() - 0.5) * 2.2,
-        rotation: Math.random() * Math.PI,
-        health: radius > 30 ? 2 : 1,
-      });
-    }
-
-    for (const bullet of world.bullets) {
-      bullet.y -= bullet.speed * elapsedSeconds;
-    }
-    world.bullets = world.bullets.filter((bullet) => bullet.y > -30);
-
-    for (const asteroid of world.asteroids) {
-      asteroid.y += asteroid.speed * elapsedSeconds;
-      asteroid.x += asteroid.drift * elapsedSeconds;
-      asteroid.rotation += asteroid.spin * elapsedSeconds;
-      if (asteroid.x < -asteroid.radius) asteroid.x = GAME_WIDTH + asteroid.radius;
-      if (asteroid.x > GAME_WIDTH + asteroid.radius) asteroid.x = -asteroid.radius;
-    }
-
-    const removedBullets = new Set<Bullet>();
-    const removedAsteroids = new Set<Asteroid>();
-
-    for (const bullet of world.bullets) {
-      for (const asteroid of world.asteroids) {
-        if (
-          !removedAsteroids.has(asteroid) &&
-          circlesTouch(bullet.x, bullet.y, 5, asteroid.x, asteroid.y, asteroid.radius)
-        ) {
-          removedBullets.add(bullet);
-          asteroid.health--;
-          if (asteroid.health <= 0) {
-            removedAsteroids.add(asteroid);
-            world.score += 10 * world.level;
-            setScore(world.score);
-            emitSound("SCORE");
-          }
-          break;
-        }
-      }
-    }
-
-    for (const asteroid of world.asteroids) {
-      if (
-        !removedAsteroids.has(asteroid) &&
-        circlesTouch(
-          world.shipX,
-          world.shipY,
-          SHIP_RADIUS,
-          asteroid.x,
-          asteroid.y,
-          asteroid.radius * 0.82,
-        )
-      ) {
-        removedAsteroids.add(asteroid);
-        world.lives = Math.max(0, world.lives - 1);
-        setLives(world.lives);
-        emitSound("CRASH");
-        if (world.lives === 0) {
-          finishGame();
-          break;
-        }
-      } else if (asteroid.y - asteroid.radius > GAME_HEIGHT) {
-        removedAsteroids.add(asteroid);
-      }
-    }
-
-    if (removedBullets.size > 0) {
-      world.bullets = world.bullets.filter(
-        (bullet) => !removedBullets.has(bullet),
-      );
-    }
-    if (removedAsteroids.size > 0) {
-      world.asteroids = world.asteroids.filter(
-        (asteroid) => !removedAsteroids.has(asteroid),
-      );
-    }
-
-    drawWorld(world);
-    animationRef.current = requestAnimationFrame(updateWorld);
-  }, [drawWorld, emitSound, finishGame, shoot]);
-
   useEffect(() => {
-    worldRef.current.lastFrame = performance.now();
-    drawWorld(worldRef.current);
-    animationRef.current = requestAnimationFrame(updateWorld);
-    return () => {
-      if (animationRef.current !== null) {
-        cancelAnimationFrame(animationRef.current);
+    if (uiStatus !== "playing") return;
+    const tick = (timestamp: number) => {
+      const world = worldRef.current;
+      if (!world || statusRef.current !== "playing") return;
+      const previous = lastFrameRef.current || timestamp;
+      lastFrameRef.current = timestamp;
+
+      const joystick = joystickRef.current;
+      let physicalPowerPulse = false;
+      if (connection === "connected" && joystick.pressed) {
+        if (physicalPressStartedRef.current === null) {
+          physicalPressStartedRef.current = timestamp;
+          physicalPowerTriggeredRef.current = false;
+        } else if (
+          !physicalPowerTriggeredRef.current &&
+          timestamp - physicalPressStartedRef.current >= 650
+        ) {
+          physicalPowerPulse = true;
+          physicalPowerTriggeredRef.current = true;
+        }
+      } else {
+        physicalPressStartedRef.current = null;
+        physicalPowerTriggeredRef.current = false;
+      }
+
+      const input = resolveGameInput({
+        centre: joystickCentreRef.current,
+        invertY: preferencesRef.current.invertArduinoY,
+        joystick: {
+          connected: connection === "connected",
+          pressed: joystick.pressed,
+          x: joystick.x,
+          y: joystick.y,
+        },
+        keyBindings: preferencesRef.current.keyBindings,
+        keys: keyboardRef.current,
+        touch: touchRef.current,
+        virtualJoystick: virtualJoystickRef.current,
+      });
+      const events = stepGameWorld(
+        world,
+        { ...input, power: input.power || physicalPowerPulse },
+        timestamp - previous,
+      );
+      drawWorld(world);
+      if (timestamp - lastHudUpdateRef.current >= 80 || events.length > 0) {
+        lastHudUpdateRef.current = timestamp;
+        setHud(worldToHud(world));
+        previewAchievementsRef.current(world);
+      }
+      handleEventsRef.current(events);
+      if (statusRef.current === "playing") {
+        animationRef.current = window.requestAnimationFrame(tick);
       }
     };
-  }, [drawWorld, updateWorld]);
+    lastFrameRef.current = performance.now();
+    animationRef.current = window.requestAnimationFrame(tick);
+    return () => {
+      if (animationRef.current !== null) {
+        window.cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+    };
+  }, [connection, drawWorld, uiStatus]);
+
+  useEffect(() => {
+    if (uiStatus === "menu" || uiStatus === "playing") return;
+    const world = worldRef.current;
+    if (world) drawWorld(world);
+  }, [drawWorld, uiStatus]);
+
+  const pauseGame = useCallback(() => {
+    if (statusRef.current !== "playing") return;
+    resetControls();
+    statusRef.current = "paused";
+    setUiStatus("paused");
+    commandRef.current("GAME:PAUSE");
+  }, [resetControls]);
+
+  const resumeGame = useCallback(() => {
+    if (statusRef.current !== "paused") return;
+    lastFrameRef.current = performance.now();
+    statusRef.current = "playing";
+    setUiStatus("playing");
+    commandRef.current("GAME:RESUME");
+  }, []);
+
+  useEffect(() => {
+    const keyDown = (event: KeyboardEvent) => {
+      if (
+        (event.code === "Escape" || event.code === "KeyP") &&
+        !event.repeat
+      ) {
+        if (statusRef.current === "playing") pauseGame();
+        else if (statusRef.current === "paused") resumeGame();
+        if (statusRef.current !== "menu") event.preventDefault();
+        return;
+      }
+      if (isNativeKeyboardControl(event.target)) return;
+      if (statusRef.current !== "playing") return;
+      const bindings = preferencesRef.current.keyBindings;
+      if (
+        Object.values(bindings).includes(event.code) ||
+        event.code.startsWith("Arrow")
+      ) {
+        keyboardRef.current.add(event.code);
+        event.preventDefault();
+      }
+    };
+    const keyUp = (event: KeyboardEvent) => {
+      keyboardRef.current.delete(event.code);
+    };
+    const pauseForFocusLoss = () => pauseGame();
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") pauseGame();
+    };
+    window.addEventListener("keydown", keyDown);
+    window.addEventListener("keyup", keyUp);
+    window.addEventListener("blur", pauseForFocusLoss);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("keydown", keyDown);
+      window.removeEventListener("keyup", keyUp);
+      window.removeEventListener("blur", pauseForFocusLoss);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [pauseGame, resumeGame]);
+
+  const startGame = useCallback(() => {
+    if (
+      !gameStats.profile ||
+      !gameStats.profileOwnerId ||
+      !isPlayableConnection(connection) ||
+      resumeSnapshot ||
+      (result && !result.saved)
+    ) return;
+    const runId = generateRunId();
+    const world = createGameWorld(
+      runId,
+      mode,
+      difficulty,
+      `${runId}:${Date.now()}`,
+    );
+    previousHighScoreRef.current = gameStats.profile.highScore;
+    achievementBaselineRef.current = createAchievementBaseline(
+      gameStats.profile,
+      gameStats.progression,
+    );
+    runAchievementIdsRef.current.clear();
+    knownAchievementsRef.current = new Set(
+      gameStats.progression?.achievements
+        .filter((achievement) => achievement.unlockedAt !== null)
+        .map((achievement) => achievement.achievementId) ?? [],
+    );
+    achievementWatchRef.current = true;
+    void unlockAudioRef.current();
+    resetControls();
+    activeProfileOwnerRef.current = gameStats.profileOwnerId;
+    worldRef.current = world;
+    setResumeSnapshot(null);
+    setResult(null);
+    setCheckpointError(false);
+    setToasts([]);
+    setUpgradeChoices([]);
+    setUpgradeStacks({});
+    setHud(worldToHud(world));
+    statusRef.current = "playing";
+    setUiStatus("playing");
+    lastFrameRef.current = performance.now();
+    commandRef.current("GAME:1");
+    commandRef.current(
+      `GAME:SOUND:${
+        preferencesRef.current.effectsVolume > 0 ||
+        preferencesRef.current.musicVolume > 0
+          ? 1
+          : 0
+      }`,
+    );
+    if (preferencesRef.current.musicVolume <= 0) {
+      commandRef.current("TRACK:START");
+      commandRef.current("TRACK:STOP");
+    }
+    commandRef.current(
+      `SFX:VOLUME:${Math.round(preferencesRef.current.effectsVolume)}`,
+    );
+    drawWorld(world);
+  }, [
+    connection,
+    difficulty,
+    drawWorld,
+    gameStats.profile,
+    gameStats.profileOwnerId,
+    gameStats.progression,
+    mode,
+    resetControls,
+    result,
+    resumeSnapshot,
+  ]);
+
+  const continueGame = useCallback(() => {
+    if (
+      !resumeSnapshot ||
+      !gameStats.profile ||
+      !gameStats.profileOwnerId ||
+      resumeSnapshot.profileOwnerId !== gameStats.profileOwnerId ||
+      !connected
+    ) return;
+    const world = restoreGameWorld(resumeSnapshot);
+    previousHighScoreRef.current = gameStats.profile.highScore;
+    achievementBaselineRef.current = createAchievementBaseline(
+      gameStats.profile,
+      gameStats.progression,
+    );
+    runAchievementIdsRef.current.clear();
+    knownAchievementsRef.current = new Set(
+      gameStats.progression?.achievements
+        .filter((achievement) => achievement.unlockedAt !== null)
+        .map((achievement) => achievement.achievementId) ?? [],
+    );
+    achievementWatchRef.current = true;
+    void unlockAudioRef.current();
+    resetControls();
+    activeProfileOwnerRef.current = gameStats.profileOwnerId;
+    worldRef.current = world;
+    setMode(world.mode);
+    setDifficulty(world.difficulty);
+    setResult(null);
+    setCheckpointError(false);
+    setUpgradeChoices([...world.upgradeChoices]);
+    setUpgradeStacks({ ...world.upgradeStacks });
+    setHud(worldToHud(world));
+    statusRef.current = "upgrade";
+    setUiStatus("upgrade");
+    commandRef.current("GAME:1");
+    commandRef.current("GAME:PAUSE");
+  }, [
+    connected,
+    gameStats.profile,
+    gameStats.profileOwnerId,
+    gameStats.progression,
+    resetControls,
+    resumeSnapshot,
+  ]);
+
+  const discardResume = useCallback(() => {
+    clearStoredCheckpoint();
+  }, [clearStoredCheckpoint]);
+
+  const chooseUpgrade = useCallback(
+    (upgrade: UpgradeId) => {
+      const world = worldRef.current;
+      if (checkpointError || !world || !selectUpgrade(world, upgrade)) return;
+      resetControls();
+      setUpgradeChoices([]);
+      setUpgradeStacks({ ...world.upgradeStacks });
+      setHud(worldToHud(world));
+      statusRef.current = "playing";
+      setUiStatus("playing");
+      lastFrameRef.current = performance.now();
+      commandRef.current("GAME:RESUME");
+      drawWorld(world);
+    },
+    [checkpointError, drawWorld, resetControls],
+  );
+
+  const backToMenu = useCallback(() => {
+    if (result && !result.saved) return;
+    resetControls();
+    activeProfileOwnerRef.current = null;
+    achievementWatchRef.current = false;
+    runAchievementIdsRef.current.clear();
+    worldRef.current = null;
+    setResult(null);
+    setToasts([]);
+    setUpgradeChoices([]);
+    setUpgradeStacks({});
+    statusRef.current = "menu";
+    setUiStatus("menu");
+    commandRef.current("GAME:0");
+  }, [resetControls, result]);
+
+  const manageUnsavedResult = useCallback(() => {
+    if (!result || result.saved) return;
+    resetControls();
+    statusRef.current = "menu";
+    setUiStatus("menu");
+    commandRef.current("GAME:0");
+  }, [resetControls, result]);
+
+  const exportUnsavedResult = useCallback(() => {
+    const world = worldRef.current;
+    if (!world || !result || result.saved) return;
+    const recovery = {
+      exportedAt: new Date().toISOString(),
+      kind: "space-defender-run-recovery",
+      run: gameResultToStatsInput(
+        snapshotGameSummary(world),
+        result.endedReason,
+      ),
+      version: 1,
+    };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(recovery, null, 2)], {
+        type: "application/json",
+      }),
+    );
+    const link = document.createElement("a");
+    link.download = `space-defender-recovery-${world.runId}.json`;
+    link.href = url;
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    setResult((current) => current
+      ? { ...current, recoveryExported: true }
+      : current);
+  }, [result]);
+
+  const discardExportedResult = useCallback(() => {
+    if (!result?.recoveryExported) return;
+    if (!window.confirm(copy.discardRecoveryConfirm)) return;
+    resetControls();
+    achievementWatchRef.current = false;
+    runAchievementIdsRef.current.clear();
+    activeProfileOwnerRef.current = null;
+    worldRef.current = null;
+    setResult(null);
+    setToasts([]);
+    setUpgradeChoices([]);
+    setUpgradeStacks({});
+    statusRef.current = "menu";
+    setUiStatus("menu");
+    commandRef.current("GAME:0");
+  }, [copy.discardRecoveryConfirm, resetControls, result?.recoveryExported]);
+
+  const parkCheckpointInMenu = useCallback(() => {
+    achievementWatchRef.current = false;
+    statusRef.current = "menu";
+    setUiStatus("menu");
+  }, []);
+
+  useEffect(() => {
+    if (
+      !isPlayableConnection(connection) &&
+      (statusRef.current === "playing" || statusRef.current === "paused")
+    ) {
+      finishActiveRun("disconnected");
+    } else if (
+      !isPlayableConnection(connection) &&
+      statusRef.current === "upgrade"
+    ) {
+      if (saveSafeCheckpoint()) {
+        queueMicrotask(parkCheckpointInMenu);
+      }
+    }
+  }, [connection, finishActiveRun, parkCheckpointInMenu, saveSafeCheckpoint]);
+
+  useEffect(() => {
+    const activeOwner = activeProfileOwnerRef.current;
+    if (
+      activeOwner &&
+      gameStats.profileOwnerId !== activeOwner &&
+      (statusRef.current === "playing" || statusRef.current === "paused")
+    ) {
+      finishActiveRun("profile-changed");
+    } else if (
+      activeOwner &&
+      gameStats.profileOwnerId !== activeOwner &&
+      statusRef.current === "upgrade"
+    ) {
+      if (saveSafeCheckpoint()) {
+        queueMicrotask(parkCheckpointInMenu);
+      }
+    }
+  }, [
+    finishActiveRun,
+    gameStats.profileOwnerId,
+    parkCheckpointInMenu,
+    saveSafeCheckpoint,
+  ]);
+
+  useEffect(() => {
+    const unlocked = new Set(
+      gameStats.progression?.achievements
+        .filter((achievement) => achievement.unlockedAt !== null)
+        .map((achievement) => achievement.achievementId) ?? [],
+    );
+    if (!achievementWatchRef.current) {
+      knownAchievementsRef.current = unlocked;
+      return;
+    }
+    const newlyConfirmed: GameAchievementId[] = [];
+    for (const id of unlocked) {
+      if (announceAchievement(id)) newlyConfirmed.push(id);
+    }
+    if (newlyConfirmed.length > 0) {
+      queueMicrotask(() => {
+        setResult((current) => current
+          ? {
+              ...current,
+              unlockedAchievements: GAME_ACHIEVEMENTS
+                .map((item) => item.id)
+                .filter((id) =>
+                  current.unlockedAchievements.includes(id) ||
+                  newlyConfirmed.includes(id),
+                ),
+            }
+          : current);
+      });
+    }
+    knownAchievementsRef.current = new Set([
+      ...knownAchievementsRef.current,
+      ...unlocked,
+    ]);
+  }, [announceAchievement, gameStats.progression?.achievements]);
 
   useEffect(() => {
     const handlePageHide = (event: PageTransitionEvent) => {
-      if (!event.persisted) recordActiveRun();
+      if (event.persisted) return;
+      if (statusRef.current === "upgrade") saveSafeCheckpoint(false);
+      else if (
+        statusRef.current === "playing" ||
+        statusRef.current === "paused"
+      ) {
+        finishActiveRun("pagehide", false);
+      }
+      commandRef.current("GAME:0");
     };
-
     window.addEventListener("pagehide", handlePageHide);
-    return () => {
-      window.removeEventListener("pagehide", handlePageHide);
-      recordActiveRun();
-    };
-  }, [recordActiveRun]);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, [finishActiveRun, saveSafeCheckpoint]);
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        statusRef.current !== "playing" ||
-        isNativeKeyboardControl(event.target)
-      ) {
-        return;
-      }
-      if (
-        [
-          "ArrowUp",
-          "ArrowDown",
-          "ArrowLeft",
-          "ArrowRight",
-          "Space",
-          "KeyW",
-          "KeyA",
-          "KeyS",
-          "KeyD",
-        ].includes(event.code)
-      ) {
-        event.preventDefault();
-        keyboardRef.current.add(event.code);
-      }
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      keyboardRef.current.delete(event.code);
-    };
-    const onBlur = () => keyboardRef.current.clear();
-
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", onBlur);
+    unmountingRef.current = false;
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", onBlur);
+      unmountingRef.current = true;
+      if (statusRef.current === "upgrade") saveSafeCheckpointRef.current(false);
+      else if (
+        statusRef.current === "playing" ||
+        statusRef.current === "paused"
+      ) {
+        finishActiveRunRef.current("unmount", false);
+      }
+      commandRef.current("GAME:0");
     };
   }, []);
 
-  useEffect(() => {
-    if (connection !== "disconnected") return;
-
-    if (
-      statusRef.current === "playing" ||
-      statusRef.current === "paused"
-    ) {
-      recordActiveRun();
-      statusRef.current = "ready";
-      setStatus("ready");
-      worldRef.current = createWorld();
-      setScore(0);
-      setLives(3);
-      setLevel(1);
-      keyboardRef.current.clear();
-      touchRef.current.clear();
-      const centredJoystick = { x: 0, y: 0, active: false };
-      virtualJoystickRef.current = centredJoystick;
-      virtualJoystickPointerRef.current = null;
-      setVirtualJoystick(centredJoystick);
-      resumeMusicAfterGamePauseRef.current = false;
-    }
-
-    if (playerStateRef.current !== "stopped") stopTrackPlayback();
-  }, [connection, recordActiveRun, stopTrackPlayback]);
-
-  const startGame = () => {
-    if (!gameStats.profile) return;
-    const world = createWorld();
-    worldRef.current = world;
-    activeRunIdRef.current = generateRunId();
-    previousPressRef.current = joystickRef.current.pressed;
-    statusRef.current = "playing";
-    setStatus("playing");
-    setScore(0);
-    setLives(3);
-    setLevel(1);
-    onCommand("GAME:1");
-    onCommand(`GAME:SOUND:${soundRef.current ? 1 : 0}`);
-    onCommand(`SFX:VOLUME:${effectsVolume}`);
-    startTrackPlayback(true);
-    window.requestAnimationFrame(() => canvasRef.current?.focus());
-  };
-
-  const togglePause = () => {
-    if (statusRef.current === "playing") {
-      statusRef.current = "paused";
-      setStatus("paused");
-      resumeMusicAfterGamePauseRef.current =
-        playerStateRef.current === "playing";
-      if (resumeMusicAfterGamePauseRef.current) pauseTrackPlayback();
-      onCommand("GAME:PAUSE");
-    } else if (statusRef.current === "paused") {
-      worldRef.current.lastFrame = performance.now();
-      statusRef.current = "playing";
-      setStatus("playing");
-      onCommand("GAME:RESUME");
-      if (resumeMusicAfterGamePauseRef.current) {
-        startTrackPlayback(false);
+  const setTouchControl = useCallback(
+    (
+      control: "fire" | "power",
+      active: boolean,
+      event: ReactPointerEvent<HTMLButtonElement>,
+    ) => {
+      event.preventDefault();
+      if (active) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        touchRef.current.add(control);
+      } else {
+        touchRef.current.delete(control);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
       }
-      resumeMusicAfterGamePauseRef.current = false;
-      window.requestAnimationFrame(() => canvasRef.current?.focus());
-    }
-  };
+    },
+    [],
+  );
 
-  const stopGame = () => {
-    recordActiveRun();
-    statusRef.current = "ready";
-    setStatus("ready");
-    worldRef.current = createWorld();
-    const centredJoystick = { x: 0, y: 0, active: false };
-    virtualJoystickRef.current = centredJoystick;
-    virtualJoystickPointerRef.current = null;
-    setVirtualJoystick(centredJoystick);
-    stopTrackPlayback();
-    setScore(0);
-    setLives(3);
-    setLevel(1);
-    onCommand("GAME:0");
-  };
+  const setAccessibleTouchControl = useCallback(
+    (
+      control: "fire" | "power",
+      active: boolean,
+      event: ReactKeyboardEvent<HTMLButtonElement>,
+    ) => {
+      if (event.code !== "Space" && event.code !== "Enter") return;
+      event.preventDefault();
+      if (active) touchRef.current.add(control);
+      else touchRef.current.delete(control);
+    },
+    [],
+  );
 
-  const toggleSound = () => {
-    const next = !soundEnabled;
-    setSoundEnabled(next);
-    soundRef.current = next;
-    if (connection === "connected" || connection === "demo") {
-      onCommand(`GAME:SOUND:${next ? 1 : 0}`);
-    }
-    if (!next) {
-      if (playerStateRef.current === "playing") pauseTrackPlayback();
-    } else if (playerStateRef.current === "paused") {
-      startTrackPlayback(false);
-    }
-  };
+  const updateVirtualJoystick = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (virtualPointerRef.current !== event.pointerId) return;
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const radius = Math.max(24, Math.min(bounds.width, bounds.height) / 2 - 28);
+      const rawX = (event.clientX - (bounds.left + bounds.width / 2)) / radius;
+      const rawY = (event.clientY - (bounds.top + bounds.height / 2)) / radius;
+      const length = Math.max(1, Math.hypot(rawX, rawY));
+      const next = {
+        active: true,
+        x: Math.max(-1, Math.min(1, rawX / length)),
+        y: Math.max(-1, Math.min(1, rawY / length)),
+      };
+      virtualJoystickRef.current = next;
+      setVirtualJoystick(next);
+    },
+    [],
+  );
 
-  const changeEffectsVolume = (volume: number) => {
-    effectsVolumeRef.current = volume;
-    setEffectsVolume(volume);
-    if (connection === "connected" || connection === "demo") {
-      onCommand(`SFX:VOLUME:${volume}`);
-    }
-  };
-
-  const changeTrack = (trackId: TrackId) => {
-    selectedTrackRef.current = trackId;
-    setSelectedTrackId(trackId);
-    const shouldRestart = playerStateRef.current === "playing";
-    musicStepRef.current = 0;
-    serialMusicStepRef.current = 0;
-    setTrackStep(0);
-    if (shouldRestart) startTrackPlayback(true);
-  };
-
-  const togglePlayer = () => {
-    if (playerStateRef.current === "playing") {
-      pauseTrackPlayback();
-      return;
-    }
-    if (!soundRef.current) {
-      soundRef.current = true;
-      setSoundEnabled(true);
-      onCommand("GAME:SOUND:1");
-    }
-    startTrackPlayback(playerStateRef.current === "stopped");
-  };
-
-  const calibrate = () => {
-    const nextCenter = {
-      x: Math.round(joystickX),
-      y: Math.round(joystickY),
-    };
-    setCenter(nextCenter);
-  };
-
-  const setTouchControl = (
-    control: string,
-    active: boolean,
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    event.preventDefault();
-    if (active) {
+  const startVirtualJoystick = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      virtualPointerRef.current = event.pointerId;
       event.currentTarget.setPointerCapture(event.pointerId);
-      touchRef.current.add(control);
-    } else {
-      touchRef.current.delete(control);
+      updateVirtualJoystick(event);
+    },
+    [updateVirtualJoystick],
+  );
+
+  const stopVirtualJoystick = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (virtualPointerRef.current !== event.pointerId) return;
+      virtualPointerRef.current = null;
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
-    }
-  };
+      const reset = { active: false, x: 0, y: 0 };
+      virtualJoystickRef.current = reset;
+      setVirtualJoystick(reset);
+    },
+    [],
+  );
 
-  const setKeyboardControl = (
-    control: string,
-    active: boolean,
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-  ) => {
-    if (event.key !== " " && event.key !== "Enter") return;
-    event.preventDefault();
-    if (active) touchRef.current.add(control);
-    else touchRef.current.delete(control);
-  };
+  const achievementViews = useMemo<AchievementView[]>(
+    () =>
+      GAME_ACHIEVEMENTS.map((metadata) => {
+        const progress = gameStats.progression?.achievements.find(
+          (item) => item.achievementId === metadata.id,
+        );
+        return {
+          description: copy.achievements[metadata.id].description,
+          icon: ACHIEVEMENT_ICONS[metadata.icon] ?? "✦",
+          id: metadata.id,
+          name: copy.achievements[metadata.id].name,
+          progress: progress?.progress ?? 0,
+          rarity: metadata.rarity,
+          target: metadata.target,
+          unlockedAt: progress?.unlockedAt ?? null,
+        };
+      }),
+    [copy.achievements, gameStats.progression?.achievements],
+  );
 
-  const pulseAccessibleControl = (control: string) => {
-    touchRef.current.add(control);
-    window.setTimeout(() => touchRef.current.delete(control), 180);
-  };
-
-  const updateVirtualJoystick = (
-    event: ReactPointerEvent<HTMLDivElement>,
-  ) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const travelRadius = Math.max(
-      1,
-      Math.min(bounds.width, bounds.height) / 2 - 34,
-    );
-    let x = (event.clientX - (bounds.left + bounds.width / 2)) / travelRadius;
-    let y = (event.clientY - (bounds.top + bounds.height / 2)) / travelRadius;
-    const distance = Math.hypot(x, y);
-
-    if (distance > 1) {
-      x /= distance;
-      y /= distance;
-    }
-
-    const nextJoystick = { x, y, active: true };
-    virtualJoystickRef.current = nextJoystick;
-    setVirtualJoystick(nextJoystick);
-  };
-
-  const startVirtualJoystick = (
-    event: ReactPointerEvent<HTMLDivElement>,
-  ) => {
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    virtualJoystickPointerRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startedOnKnob:
-        event.target instanceof Element &&
-        Boolean(event.target.closest(".joystick-knob")),
+  const careerStats = useMemo(() => {
+    const totals = gameStats.progression?.totals;
+    const favourite = [...(gameStats.progression?.powers ?? [])]
+      .filter((power) => power.activatedCount > 0)
+      .sort(
+        (left, right) =>
+          right.activatedCount - left.activatedCount ||
+          left.powerId.localeCompare(right.powerId),
+      )[0];
+    return {
+      accuracy:
+        totals?.shotsFired
+          ? Math.min(1, totals.shotsHit / totals.shotsFired)
+          : 0,
+      bossesDefeated: totals?.bossesDefeated ?? 0,
+      enemiesDestroyed: totals?.enemiesDestroyed ?? 0,
+      favouritePower: favourite
+        ? copy.powers[favourite.powerId].name
+        : "",
+      longestCombo: totals?.longestCombo ?? 0,
+      longestRunSeconds: (totals?.longestRunMs ?? 0) / 1_000,
+      powerupsCollected: totals?.powerupsCollected ?? 0,
+      unlockedAchievements:
+        gameStats.progression?.achievements.filter(
+          (achievement) => achievement.unlockedAt !== null,
+        ).length ?? 0,
     };
-    updateVirtualJoystick(event);
-  };
+  }, [copy.powers, gameStats.progression]);
 
-  const moveVirtualJoystick = (
-    event: ReactPointerEvent<HTMLDivElement>,
-  ) => {
-    if (virtualJoystickPointerRef.current?.pointerId !== event.pointerId) {
-      return;
-    }
-    event.preventDefault();
-    updateVirtualJoystick(event);
-  };
-
-  const stopVirtualJoystick = (
-    event: ReactPointerEvent<HTMLDivElement>,
-    allowTap: boolean,
-  ) => {
-    const activePointer = virtualJoystickPointerRef.current;
-    if (activePointer?.pointerId !== event.pointerId) return;
-
-    event.preventDefault();
-    const wasKnobTap =
-      allowTap &&
-      activePointer.startedOnKnob &&
-      Math.hypot(
-        event.clientX - activePointer.startX,
-        event.clientY - activePointer.startY,
-      ) < 12;
-
-    virtualJoystickPointerRef.current = null;
-    const centredJoystick = { x: 0, y: 0, active: false };
-    virtualJoystickRef.current = centredJoystick;
-    setVirtualJoystick(centredJoystick);
-
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    if (wasKnobTap) shoot(performance.now());
-  };
-
-  const physicalNormalizedX = normalizeAxis(joystickX, center.x);
-  const physicalNormalizedY =
-    normalizeAxis(joystickY, center.y) * (invertY ? 1 : -1);
-  const normalizedX = virtualJoystick.active
-    ? virtualJoystick.x
-    : physicalNormalizedX;
-  const normalizedY = virtualJoystick.active
-    ? virtualJoystick.y
-    : physicalNormalizedY;
-  const displayedJoystickX = virtualJoystick.active
-    ? Math.round(512 + virtualJoystick.x * 511)
-    : Math.round(joystickX);
-  const displayedJoystickY = virtualJoystick.active
-    ? Math.round(512 + virtualJoystick.y * 511)
-    : Math.round(joystickY);
-  const connected = connection === "connected" || connection === "demo";
-  const selectedTrack = getTrack(selectedTrackId);
-  const trackLabels: Record<TrackId, string> = {
-    space: copy.trackSpace,
-    neon: copy.trackNeon,
-    boss: copy.trackBoss,
-    joy: copy.trackJoy,
-    elise: copy.trackElise,
-    bells: copy.trackBells,
-    anthem: copy.trackAnthem,
-  };
-  const selectedTrackName = trackLabels[selectedTrackId];
-  const playerProgress =
-    (trackStep / Math.max(1, selectedTrack.notes.length)) * 100;
-  const playerOutput =
+  const bestWave = Math.max(
+    gameStats.profile?.highestLevel ?? 0,
+    ...(gameStats.progression?.modes.map((entry) => entry.highestWave) ?? [0]),
+  );
+  const connectionLabel =
     connection === "connected"
-      ? copy.buzzerOutput
+      ? copy.controllerArduino
       : connection === "demo"
-        ? copy.phoneOutput
-        : copy.playerOffline;
+        ? copy.controllerDemo
+        : legacyCopy.noConnection;
+  const knobX = virtualJoystick.active
+    ? virtualJoystick.x
+    : connection === "connected"
+      ? Math.max(-1, Math.min(1, (joystickX - joystickCentre.x) / 420))
+      : 0;
+  const rawKnobY = Math.max(
+    -1,
+    Math.min(1, (joystickY - joystickCentre.y) / 420),
+  );
+  const knobY = virtualJoystick.active
+    ? virtualJoystick.y
+    : connection === "connected"
+      ? preferences.invertArduinoY
+        ? rawKnobY
+        : -rawKnobY
+      : 0;
+  const calibrateJoystick = () => {
+    setJoystickCentre({
+      x: Math.round(joystickX),
+      y: Math.round(joystickY),
+    });
+  };
 
   return (
     <section className="game-tab" id="game">
       <div className="game-intro">
         <div>
-          <p className="eyebrow">{copy.introEyebrow}</p>
-          <h1>{copy.title}</h1>
-          <p>{copy.intro}</p>
+          <p className="eyebrow">{legacyCopy.introEyebrow}</p>
+          <h1>{legacyCopy.title}</h1>
+          <p>{legacyCopy.intro}</p>
         </div>
         <div className="game-legend">
-          <span><kbd>↕ ↔</kbd> {copy.move}</span>
-          <span><kbd>SW</kbd> {copy.fire}</span>
-          <span><kbd>3</kbd> {copy.lives}</span>
+          <span>
+            <kbd>
+              {displayGameKey(preferences.keyBindings.moveUp)}·
+              {displayGameKey(preferences.keyBindings.moveLeft)}·
+              {displayGameKey(preferences.keyBindings.moveDown)}·
+              {displayGameKey(preferences.keyBindings.moveRight)}
+            </kbd>{" "}{legacyCopy.move}
+          </span>
+          <span><kbd>{displayGameKey(preferences.keyBindings.fire)}</kbd> {legacyCopy.fire}</span>
+          <span><kbd>{displayGameKey(preferences.keyBindings.power)}</kbd> {copy.activatePower}</span>
         </div>
       </div>
 
-      <div className="game-dashboard">
-        <div className="game-primary-column">
-          <PlayerStatsPanel
-            copy={copy}
-            disabled={status === "playing" || status === "paused"}
-            language={language}
-            stats={gameStats}
-          />
-
-          <div className="game-stage-card">
-          <div className="game-hud">
-            <div>
-              <small>{copy.score}</small>
-              <strong>{score.toString().padStart(5, "0")}</strong>
-            </div>
-            <div>
-              <small>{copy.lives.toUpperCase()}</small>
-              <strong className="lives" aria-label={copy.livesAria(lives)}>
-                {"◆".repeat(Math.max(0, lives))}
-                <span>{"◇".repeat(Math.max(0, 3 - lives))}</span>
-              </strong>
-            </div>
-            <div>
-              <small>{copy.level}</small>
-              <strong>{level}</strong>
-            </div>
-            <button
-              className={`sound-toggle ${soundEnabled ? "active" : ""}`}
-              onClick={toggleSound}
-              type="button"
-            >
-              {soundEnabled ? `♪ ${selectedTrackName}` : copy.soundOff}
-            </button>
-          </div>
-
-          <div className="game-canvas-wrap">
-            <canvas
-              aria-label={copy.canvasAria}
-              className="game-canvas"
-              height={GAME_HEIGHT}
-              onPointerDown={() => canvasRef.current?.focus()}
-              ref={canvasRef}
-              tabIndex={0}
-              width={GAME_WIDTH}
-            />
-
+      <div
+        className="space-game-root"
+        data-reduced-motion={effectiveMotionReduction ? "true" : "false"}
+      >
+        {uiStatus === "menu" ? (
+          <>
             {!connected && (
-              <div
+              <aside
                 aria-busy={connection === "connecting"}
-                className="game-connect-overlay"
+                className="space-connect-panel"
               >
-                <strong>{copy.connectFirst}</strong>
-                <p>{copy.demoHint}</p>
                 <div>
-                  {isSupported ? (
+                  <strong>{legacyCopy.connectFirst}</strong>
+                  <p>{legacyCopy.demoHint}</p>
+                  {error && <p className="error-message game-error">{error}</p>}
+                </div>
+                <div>
+                  {isSupported && (
                     <button
                       className="button primary"
                       disabled={connection === "connecting"}
                       onClick={onConnect}
+                      type="button"
                     >
-                      {copy.connectArduino}
-                    </button>
-                  ) : (
-                    <button
-                      className="button primary"
-                      disabled={connection === "connecting"}
-                      onClick={onStartDemo}
-                    >
-                      {copy.startDemo}
+                      {legacyCopy.connectArduino}
                     </button>
                   )}
-                  {isSupported && (
-                    <button
-                      className="button secondary"
-                      disabled={connection === "connecting"}
-                      onClick={onStartDemo}
-                    >
-                      {copy.demoWithoutBoard}
-                    </button>
-                  )}
+                  <button
+                    className="button secondary"
+                    disabled={connection === "connecting"}
+                    onClick={onStartDemo}
+                    type="button"
+                  >
+                    {isSupported ? legacyCopy.demoWithoutBoard : legacyCopy.startDemo}
+                  </button>
                 </div>
-                {!isSupported && (
-                  <small>{copy.usbNote}</small>
-                )}
-              </div>
+              </aside>
             )}
-          </div>
 
-          <div className="game-actions">
-            {status === "ready" || status === "over" ? (
-              <button
-                className="button game-start"
-                disabled={!connected || !gameStats.profile}
-                onClick={startGame}
-              >
-                {status === "over" ? copy.playAgain : copy.startGame}
-              </button>
-            ) : (
-              <button className="button game-pause" onClick={togglePause}>
-                {status === "paused" ? copy.continueGame : copy.pause}
-              </button>
-            )}
-            <button
-              className="button game-stop"
-              disabled={status === "ready"}
-              onClick={stopGame}
-            >
-              {copy.finish}
-            </button>
-          </div>
-
-          {error && <p className="error-message game-error">{error}</p>}
-          </div>
-
-          <div className="touch-controller">
-            <div className="touch-dpad">
-              {[
-                ["up", "↑", copy.directionUp],
-                ["left", "←", copy.directionLeft],
-                ["down", "↓", copy.directionDown],
-                ["right", "→", copy.directionRight],
-              ].map(([control, label, ariaLabel]) => (
+            {connection === "connected" && (
+              <aside className="space-connect-panel space-calibration-panel">
+                <div>
+                  <strong>{copy.controllerArduino}</strong>
+                  <p>{legacyCopy.calibration(joystickX, joystickY)}</p>
+                </div>
                 <button
-                  aria-label={ariaLabel}
-                  className={control}
-                  key={control}
-                  onBlur={() => touchRef.current.delete(control)}
-                  onClick={(event) => {
-                    if (event.detail === 0) pulseAccessibleControl(control);
-                  }}
-                  onKeyDown={(event) =>
-                    setKeyboardControl(control, true, event)
-                  }
-                  onKeyUp={(event) =>
-                    setKeyboardControl(control, false, event)
-                  }
-                  onPointerCancel={(event) =>
-                    setTouchControl(control, false, event)
-                  }
-                  onPointerDown={(event) =>
-                    setTouchControl(control, true, event)
-                  }
-                  onPointerUp={(event) =>
-                    setTouchControl(control, false, event)
-                  }
+                  className="button secondary"
+                  onClick={calibrateJoystick}
                   type="button"
                 >
-                  {label}
+                  {legacyCopy.calibrate}
                 </button>
-              ))}
-            </div>
-            <button
-              aria-label={copy.fire}
-              className="touch-fire"
-              onBlur={() => touchRef.current.delete("fire")}
-              onClick={(event) => {
-                if (event.detail === 0) shoot(performance.now());
-              }}
-              onKeyDown={(event) =>
-                setKeyboardControl("fire", true, event)
-              }
-              onKeyUp={(event) =>
-                setKeyboardControl("fire", false, event)
-              }
-              onPointerCancel={(event) => setTouchControl("fire", false, event)}
-              onPointerDown={(event) => setTouchControl("fire", true, event)}
-              onPointerUp={(event) => setTouchControl("fire", false, event)}
-              type="button"
-            >
-              FIRE
-              <small>{copy.fire}</small>
-            </button>
-          </div>
-          <p className="keyboard-hint">
-            {copy.keyboardPrefix} <kbd>WASD</kbd> / <kbd>{copy.keyboardArrows}</kbd>
-            {" + "}<kbd>{copy.keyboardSpace}</kbd>.
-          </p>
-        </div>
+              </aside>
+            )}
 
-        <div className="game-secondary-column">
-          <LeaderboardPanel
-            copy={copy}
-            language={language}
-            stats={gameStats}
-          />
-
-          <aside className="game-side-panel">
-          <div className="joystick-card">
-            <div className="game-card-heading">
-              <div>
-                <span className="game-kicker">{copy.liveSignal}</span>
-                <h2>{copy.yourJoystick}</h2>
-              </div>
-              <span
-                className={`joystick-link ${connection}`}
-                title={connected ? copy.signalReceived : copy.noConnection}
-              />
-            </div>
-
-            <div
-              aria-label={copy.touchJoystickAria}
-              className={`joystick-visual ${
-                virtualJoystick.active ? "dragging" : ""
-              }`}
-              onPointerCancel={(event) => stopVirtualJoystick(event, false)}
-              onPointerDown={startVirtualJoystick}
-              onPointerMove={moveVirtualJoystick}
-              onPointerUp={(event) => stopVirtualJoystick(event, true)}
-              role="group"
-            >
-              <div className="joystick-crosshair" />
-              <div
-                className={`joystick-knob ${
-                  joystickPressed || virtualJoystick.active ? "pressed" : ""
-                }`}
-                style={{
-                  transform: `translate(calc(-50% + ${normalizedX * 46}px), calc(-50% + ${normalizedY * 46}px))`,
-                }}
-              >
-                <span>SW</span>
-              </div>
-            </div>
-
-            <div className="joystick-readings">
-              <span><small>VRx · A0</small><strong>{displayedJoystickX}</strong></span>
-              <span><small>VRy · A1</small><strong>{displayedJoystickY}</strong></span>
-              <span><small>SW · D4</small><strong>{joystickPressed ? "CLICK" : "—"}</strong></span>
-            </div>
-
-            <p className="virtual-joystick-hint">{copy.touchJoystickHint}</p>
-
-            <button
-              className="calibrate-button"
-              disabled={!connected}
-              onClick={calibrate}
-              type="button"
-            >
-              {copy.calibrate}
-            </button>
-            <p className="calibration-note">
-              {copy.calibration(center.x, center.y)}
-            </p>
-
-            <label className="invert-control">
-              <input
-                checked={invertY}
-                onChange={(event) => setInvertY(event.target.checked)}
-                type="checkbox"
-              />
-              <span>{copy.verticalDirection}</span>
-            </label>
-          </div>
-
-          <div className="chiptune-player-card">
-            <div className="game-card-heading">
-              <div>
-                <span className="game-kicker">{copy.playerEyebrow}</span>
-                <h2>{copy.playerTitle}</h2>
-              </div>
-              <span
-                className={`player-state-dot ${
-                  playerState === "playing" ? "playing" : ""
-                }`}
-                aria-hidden="true"
-              />
-            </div>
-
-            <div
-              className={`chiptune-now-playing ${
-                playerState === "playing" ? "playing" : ""
-              }`}
-            >
-              <div className="chiptune-equalizer" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-                <i />
-                <i />
-              </div>
-              <div>
-                <small>{copy.nowPlaying}</small>
-                <strong>{selectedTrackName}</strong>
-                <span>
-                  {selectedTrack.bpm} BPM · {copy.loopLabel}
-                </span>
-              </div>
-            </div>
-
-            <label className="track-picker">
-              <span>{copy.chooseTrack}</span>
-              <select
-                aria-label={copy.chooseTrack}
-                onChange={(event) =>
-                  changeTrack(event.target.value as TrackId)
-                }
-                value={selectedTrackId}
-              >
-                {CHIPTUNE_TRACKS.map((track) => (
-                  <option key={track.id} value={track.id}>
-                    {trackLabels[track.id]}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <p className="recognizable-melody-hint">
-              {copy.recognizableMelodyHint}
-            </p>
-
-            <div
-              aria-label={copy.trackProgress}
-              aria-valuemax={100}
-              aria-valuemin={0}
-              aria-valuenow={Math.round(playerProgress)}
-              className="track-progress"
-              role="progressbar"
-            >
-              <i style={{ width: `${playerProgress}%` }} />
-            </div>
-
-            <div className="player-controls">
-              <button
-                disabled={!connected}
-                onClick={togglePlayer}
-                type="button"
-              >
-                {playerState === "playing"
-                  ? copy.pauseTrack
-                  : copy.playTrack}
-              </button>
-              <button
-                disabled={playerState === "stopped"}
-                onClick={stopTrackPlayback}
-                type="button"
-              >
-                {copy.stopTrack}
-              </button>
-            </div>
-
-            <div className="player-output">
-              <span>{playerState === "playing" ? "♪" : "○"}</span>
-              <div>
-                <strong>{playerOutput}</strong>
-                <small>
-                  {connection === "connected"
-                    ? copy.buzzerStreamHint
-                    : connection === "demo"
-                      ? copy.phoneStreamHint
-                      : copy.playerConnectHint}
-                </small>
-              </div>
-            </div>
-          </div>
-
-          </aside>
-        </div>
-      </div>
-
-      <div className="game-wiring-section">
-        <div className="game-wiring-copy">
-          <p className="eyebrow">{copy.wiringEyebrow}</p>
-          <h2>{copy.wiringTitle}</h2>
-          <p>{copy.wiringIntro}</p>
-          <div className="game-safety">
-            <strong>{copy.disconnectUsb}</strong>
-            {copy.wiringSafety}
-          </div>
-        </div>
-
-        <div className="joystick-wiring-card">
-          <div className="wiring-module-visual" aria-hidden="true">
-            <div className="module-stick"><span /></div>
-            <strong>JOYSTICK</strong>
-            <div className="module-pins">
-              <i>GND</i><i>+5V</i><i>VRx</i><i>VRy</i><i>SW</i>
-            </div>
-          </div>
-          <div className="joystick-wire-list">
-            <div><span>VRx</span><i>→</i><strong>A0</strong><small>{copy.horizontalMove}</small></div>
-            <div><span>VRy</span><i>→</i><strong>A1</strong><small>{copy.verticalMove}</small></div>
-            <div><span>SW</span><i>→</i><strong>D4</strong><small>{copy.clickFire}</small></div>
-            <div><span>{copy.vccLabel}</span><i>→</i><strong>5V</strong><small>{copy.redRail}</small></div>
-            <div><span>GND</span><i>→</i><strong>GND</strong><small>{copy.blueRail}</small></div>
-          </div>
-        </div>
-
-        <div className="buzzer-routing-card">
-          <div className="buzzer-routing-heading">
-            <span aria-hidden="true">♫</span>
-            <div>
-              <strong>{copy.soundRoutingTitle}</strong>
-              <p>{copy.soundRoutingIntro}</p>
-            </div>
-          </div>
-          <div className="buzzer-routing-lines">
-            <div className="passive-route">
-              <small>PASSIVE BUZZER</small>
-              <strong>D3</strong>
-              <span>{copy.passiveMusicRoute}</span>
-            </div>
-            <div className="active-route">
-              <small>ACTIVE BUZZER</small>
-              <strong>D5</strong>
-              <span>{copy.activeEffectsRoute}</span>
-            </div>
-          </div>
-            <div className="active-buzzer-wire-list">
-            <div><span>{copy.activeBuzzerLong}</span><i>→</i><strong>D5</strong></div>
-            <div><span>{copy.activeBuzzerShort}</span><i>→</i><strong>GND</strong></div>
-            </div>
-          <label className="effects-volume-control">
-            <span>{copy.effectsVolume}</span>
-            <output>{effectsVolume}%</output>
-            <input
-              aria-label={copy.effectsVolume}
-              max="100"
-              min="0"
-              onChange={(event) =>
-                changeEffectsVolume(Number(event.target.value))
-              }
-              step="1"
-              type="range"
-              value={effectsVolume}
+            <GameMenu
+              achievementsPanel={(
+                <AchievementGallery achievements={achievementViews} copy={copy} />
+              )}
+              bestScore={gameStats.profile?.highScore ?? 0}
+              bestWave={bestWave}
+              checkpointError={checkpointError}
+              connected={connected}
+              connectionLabel={connectionLabel}
+              copy={copy}
+              difficulty={difficulty}
+              hasProfile={Boolean(gameStats.profile)}
+              hasResume={Boolean(resumeSnapshot)}
+              hasUnsavedResult={Boolean(result && !result.saved)}
+              hardwareAudio={connection === "connected"}
+              leaderboardPanel={(
+                <LeaderboardPanel
+                  copy={legacyCopy}
+                  language={language}
+                  stats={gameStats}
+                />
+              )}
+              mode={mode}
+              onContinue={continueGame}
+              onConfirm={() => emitSfxRef.current("MENU")}
+              onDifficultyChange={setDifficulty}
+              onDiscardResume={discardResume}
+              onModeChange={setMode}
+              onPreferencesChange={setPreferences}
+              onRetryUnsavedResult={retryResultSave}
+              onStart={startGame}
+              preferences={preferences}
+              resumeCompatible={Boolean(
+                resumeSnapshot?.profileOwnerId &&
+                resumeSnapshot.profileOwnerId === gameStats.profileOwnerId
+              )}
+              resumeSummary={resumeSnapshot
+                ? {
+                    difficulty: resumeSnapshot.run.difficulty,
+                    equippedPower: resumeSnapshot.run.equippedPowerUp,
+                    mode: resumeSnapshot.run.mode,
+                    upgrades: (Object.entries(resumeSnapshot.run.upgradeStacks) as Array<[
+                      UpgradeId,
+                      number,
+                    ]>)
+                      .filter(([, stacks]) => stacks > 0)
+                      .map(([id, stacks]) => ({ id, stacks })),
+                    wave: resumeSnapshot.run.wave,
+                  }
+                : null}
+              profilePanel={(
+                <PlayerStatsPanel
+                  copy={legacyCopy}
+                  language={language}
+                  stats={gameStats}
+                />
+              )}
+              startingPowers={[copy.powers.shield.name]}
+              statisticsPanel={(
+                <CareerStats
+                  copy={copy}
+                  modes={gameStats.progression?.modes ?? []}
+                  stats={careerStats}
+                />
+              )}
             />
-          </label>
-          <p className="active-buzzer-note">{copy.activeBuzzerNote}</p>
-        </div>
-      </div>
+          </>
+        ) : (
+          <>
+            <div className="space-stage-shell" data-sector={hud.sector}>
+              <GameHud
+                bossHealth={hud.bossHealth}
+                bossMaxHealth={hud.bossMaxHealth}
+                bossPhase={hud.bossPhase}
+                combo={hud.combo}
+                copy={copy}
+                energy={hud.energy}
+                lives={hud.lives}
+                maxLives={hud.maxLives}
+                maxShield={hud.maxShield}
+                phase={hud.phase}
+                powerActiveRemaining={hud.powerActiveRemaining}
+                powerCooldown={hud.powerCooldown}
+                powerEnergyCost={hud.powerEnergyCost}
+                powerName={copy.powers[hud.powerId].name}
+                score={hud.score}
+                sectorName={copy.sectors[hud.sector]}
+                shield={hud.shield}
+                upgrades={hud.upgrades}
+                wave={hud.wave}
+              />
+              <div className="space-canvas-wrap">
+                <canvas
+                  aria-label={legacyCopy.canvasAria}
+                  height={540}
+                  onPointerDown={() => canvasRef.current?.focus()}
+                  ref={canvasRef}
+                  tabIndex={0}
+                  width={900}
+                />
+                <GameToastStack copy={copy} toasts={toasts} />
+                <GameOverlay
+                  canPlayAgain={
+                    connected &&
+                    Boolean(result?.saved) &&
+                    !checkpointError &&
+                    !resumeSnapshot
+                  }
+                  checkpointError={checkpointError}
+                  copy={copy}
+                  onBackToMenu={backToMenu}
+                  onDiscardUnsavedResult={discardExportedResult}
+                  onExportRecovery={exportUnsavedResult}
+                  onFinish={() => finishActiveRun("stopped")}
+                  onManageSave={manageUnsavedResult}
+                  onPlayAgain={startGame}
+                  onRetryCheckpoint={() => saveSafeCheckpoint()}
+                  onRetrySave={retryResultSave}
+                  onResume={resumeGame}
+                  onSelectUpgrade={(upgrade) => chooseUpgrade(upgrade)}
+                  result={result}
+                  status={uiStatus}
+                  upgradeChoices={upgradeChoices}
+                  upgradeStacks={upgradeStacks}
+                />
+              </div>
+              <div className="space-stage-toolbar">
+                <button
+                  className="button secondary"
+                  disabled={uiStatus !== "playing"}
+                  onClick={pauseGame}
+                  type="button"
+                >
+                  {legacyCopy.pause}
+                </button>
+                <span>{connectionLabel}</span>
+                {connection === "connected" && (
+                  <button
+                    className="button secondary"
+                    onClick={calibrateJoystick}
+                    type="button"
+                  >
+                    {legacyCopy.calibrate}
+                  </button>
+                )}
+              </div>
+            </div>
 
-      <div className="game-update-note">
-        <span>1</span>
-        <div>
-          <strong>{copy.firmwareTitle}</strong>
-          <p>{copy.firmwareText}</p>
-        </div>
-        <a className="button primary" download href="/arduino-smart-gate.ino">
-          {copy.firmwareButton}
-        </a>
+            {uiStatus === "playing" && (
+              <div className="space-touch-deck">
+                <div
+                  aria-label={legacyCopy.touchJoystickAria}
+                  className={`space-virtual-stick ${virtualJoystick.active ? "is-active" : ""}`}
+                  onPointerCancel={stopVirtualJoystick}
+                  onPointerDown={startVirtualJoystick}
+                  onLostPointerCapture={stopVirtualJoystick}
+                  onPointerMove={updateVirtualJoystick}
+                  onPointerUp={stopVirtualJoystick}
+                  role="group"
+                >
+                  <i />
+                  <span
+                    style={{
+                      transform: `translate(calc(-50% + ${knobX * 48}px), calc(-50% + ${knobY * 48}px))`,
+                    }}
+                  >
+                    SW
+                  </span>
+                </div>
+                <div className="space-touch-actions">
+                  <button
+                    aria-label={legacyCopy.fire}
+                    className="space-fire-button"
+                    onBlur={() => touchRef.current.delete("fire")}
+                    onKeyDown={(event) => setAccessibleTouchControl("fire", true, event)}
+                    onKeyUp={(event) => setAccessibleTouchControl("fire", false, event)}
+                    onLostPointerCapture={(event) => setTouchControl("fire", false, event)}
+                    onPointerCancel={(event) => setTouchControl("fire", false, event)}
+                    onPointerDown={(event) => setTouchControl("fire", true, event)}
+                    onPointerUp={(event) => setTouchControl("fire", false, event)}
+                    type="button"
+                  >
+                    {legacyCopy.fire.toUpperCase()}<small>{legacyCopy.fire}</small>
+                  </button>
+                  <button
+                    aria-label={copy.activatePower}
+                    className="space-power-button"
+                    onBlur={() => touchRef.current.delete("power")}
+                    onKeyDown={(event) => setAccessibleTouchControl("power", true, event)}
+                    onKeyUp={(event) => setAccessibleTouchControl("power", false, event)}
+                    onLostPointerCapture={(event) => setTouchControl("power", false, event)}
+                    onPointerCancel={(event) => setTouchControl("power", false, event)}
+                    onPointerDown={(event) => setTouchControl("power", true, event)}
+                    onPointerUp={(event) => setTouchControl("power", false, event)}
+                    type="button"
+                  >
+                    ϟ<small>{copy.activatePower}</small>
+                  </button>
+                </div>
+              </div>
+            )}
+            <p className="space-keyboard-hint">
+              {formatGameControlSummary(copy, preferences)}
+            </p>
+          </>
+        )}
       </div>
     </section>
   );

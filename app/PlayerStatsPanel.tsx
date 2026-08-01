@@ -224,6 +224,8 @@ export function PlayerStatsPanel({
   const serviceError = stats.error
     ? localizedError(stats.error, copy)
     : null;
+  const protectPendingProfile =
+    stats.pendingCount > 0 && stats.status !== "synced";
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -564,14 +566,16 @@ export function PlayerStatsPanel({
               </div>
             )}
 
-            <button
-              className="profile-forget-button"
-              disabled={actionsDisabled}
-              onClick={forgetProfile}
-              type="button"
-            >
-              {copy.forgetProfile}
-            </button>
+            {!protectPendingProfile && (
+              <button
+                className="profile-forget-button"
+                disabled={actionsDisabled}
+                onClick={forgetProfile}
+                type="button"
+              >
+                {copy.forgetProfile}
+              </button>
+            )}
           </div>
         )}
 

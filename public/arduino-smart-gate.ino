@@ -81,7 +81,11 @@ bool gameLiveTrackEnabled = false;
 byte gameNoteIndex = 0;
 unsigned long nextGameNoteMs = 0;
 bool activeBuzzerPlaying = false;
-unsigned long activeBuzzerOffMs = 0;
+bool activeBuzzerPulseOn = false;
+byte activeBuzzerPulsesRemaining = 0;
+unsigned int activeBuzzerPulseOnMs = 0;
+unsigned int activeBuzzerPulseGapMs = 0;
+unsigned long activeBuzzerNextMs = 0;
 // D5 is a PWM pin. A lower duty cycle makes the Active Buzzer quieter
 // without touching the music played by the Passive Buzzer on D3.
 byte activeBuzzerVolume = 71; // 28% by default
@@ -336,9 +340,17 @@ void updateMusic() {
   activeNoteIndex++;
 }
 
-void stopDeviceMode() {
+void stopActiveBuzzerEffect() {
   analogWrite(ACTIVE_BUZZER_PIN, 0);
   activeBuzzerPlaying = false;
+  activeBuzzerPulseOn = false;
+  activeBuzzerPulsesRemaining = 0;
+  activeBuzzerPulseOnMs = 0;
+  activeBuzzerPulseGapMs = 0;
+}
+
+void stopDeviceMode() {
+  stopActiveBuzzerEffect();
 
   if (gameLiveTrackEnabled) {
     noTone(BUZZER_PIN);
@@ -373,41 +385,122 @@ void stopGame() {
   moveServo(CLOSED_ANGLE);
 }
 
+void startActiveBuzzerPattern(
+  unsigned int onDuration,
+  unsigned int gapDuration,
+  byte pulseCount
+) {
+  if (onDuration == 0 || pulseCount == 0 || activeBuzzerVolume == 0) {
+    stopActiveBuzzerEffect();
+    return;
+  }
+
+  analogWrite(ACTIVE_BUZZER_PIN, activeBuzzerVolume);
+  activeBuzzerPlaying = true;
+  activeBuzzerPulseOn = true;
+  activeBuzzerPulsesRemaining = pulseCount;
+  activeBuzzerPulseOnMs = onDuration;
+  activeBuzzerPulseGapMs = gapDuration;
+  activeBuzzerNextMs = millis() + onDuration;
+}
+
 void playGameEffect(String effect) {
+  bool menuEffect = effect == "MENU";
+  bool allowedWhilePaused =
+    effect == "OVER" || effect == "BOSS" || effect == "ACH" ||
+    effect == "RECORD";
   if (
-    deviceMode != GAME_DEVICE ||
-    gamePaused ||
+    (deviceMode != GAME_DEVICE && !menuEffect) ||
+    (gamePaused && !allowedWhilePaused) ||
     !gameSoundEnabled
   ) {
     return;
   }
 
-  unsigned int duration = 0;
+  unsigned int onDuration = 0;
+  unsigned int gapDuration = 0;
+  byte pulseCount = 1;
 
   if (effect == "SHOT") {
-    duration = 45;
+    onDuration = 45;
   } else if (effect == "SCORE") {
-    duration = 90;
+    onDuration = 90;
   } else if (effect == "CRASH") {
-    duration = 220;
+    onDuration = 220;
   } else if (effect == "OVER") {
-    duration = 460;
+    onDuration = 460;
+  } else if (effect == "POWER") {
+    onDuration = 55;
+    gapDuration = 45;
+    pulseCount = 3;
+  } else if (effect == "SHIELD") {
+    onDuration = 75;
+    gapDuration = 55;
+    pulseCount = 2;
+  } else if (effect == "BOSS") {
+    onDuration = 140;
+    gapDuration = 90;
+    pulseCount = 3;
+  } else if (effect == "WARN") {
+    onDuration = 80;
+    gapDuration = 70;
+    pulseCount = 3;
+  } else if (effect == "ACH") {
+    onDuration = 55;
+    gapDuration = 40;
+    pulseCount = 4;
+  } else if (effect == "LASER") {
+    onDuration = 160;
+  } else if (effect == "MISSILE") {
+    onDuration = 70;
+    gapDuration = 40;
+    pulseCount = 3;
+  } else if (effect == "EMP") {
+    onDuration = 240;
+  } else if (effect == "RECORD") {
+    onDuration = 70;
+    gapDuration = 45;
+    pulseCount = 4;
+  } else if (effect == "LOW") {
+    onDuration = 65;
+    gapDuration = 180;
+    pulseCount = 2;
+  } else if (effect == "MENU") {
+    onDuration = 38;
+    gapDuration = 30;
+    pulseCount = 2;
   } else {
     return;
   }
 
   // Active Buzzer має власну фіксовану частоту. D5 керує його
-  // гучністю PWM-сигналом, тому ефекти не заважають Passive Buzzer на D3.
-  analogWrite(ACTIVE_BUZZER_PIN, activeBuzzerVolume);
-  activeBuzzerPlaying = true;
-  activeBuzzerOffMs = millis() + duration;
+  // гучністю PWM-сигналом. Короткі неблокуючі імпульси розрізняють події
+  // та не заважають Passive Buzzer на D3.
+  startActiveBuzzerPattern(onDuration, gapDuration, pulseCount);
 }
 
 void updateActiveBuzzer() {
-  if (activeBuzzerPlaying && deadlineReached(activeBuzzerOffMs)) {
-    analogWrite(ACTIVE_BUZZER_PIN, 0);
-    activeBuzzerPlaying = false;
+  if (!activeBuzzerPlaying || !deadlineReached(activeBuzzerNextMs)) {
+    return;
   }
+
+  if (activeBuzzerPulseOn) {
+    analogWrite(ACTIVE_BUZZER_PIN, 0);
+    activeBuzzerPulseOn = false;
+
+    if (activeBuzzerPulsesRemaining <= 1) {
+      stopActiveBuzzerEffect();
+      return;
+    }
+
+    activeBuzzerPulsesRemaining--;
+    activeBuzzerNextMs = millis() + activeBuzzerPulseGapMs;
+    return;
+  }
+
+  analogWrite(ACTIVE_BUZZER_PIN, activeBuzzerVolume);
+  activeBuzzerPulseOn = true;
+  activeBuzzerNextMs = millis() + activeBuzzerPulseOnMs;
 }
 
 void updateGameAudio() {
@@ -577,8 +670,7 @@ void handleCommand(String command) {
     if (deviceMode == GAME_DEVICE) {
       gamePaused = true;
       noTone(BUZZER_PIN);
-      analogWrite(ACTIVE_BUZZER_PIN, 0);
-      activeBuzzerPlaying = false;
+      stopActiveBuzzerEffect();
     }
   } else if (command == "GAME:RESUME") {
     if (deviceMode == GAME_DEVICE) {
@@ -596,8 +688,7 @@ void handleCommand(String command) {
     gameSoundEnabled = command.substring(11).toInt() == 1;
     if (!gameSoundEnabled) {
       noTone(BUZZER_PIN);
-      analogWrite(ACTIVE_BUZZER_PIN, 0);
-      activeBuzzerPlaying = false;
+      stopActiveBuzzerEffect();
     } else {
       nextGameNoteMs = millis();
     }
@@ -641,8 +732,7 @@ void handleCommand(String command) {
     int percent = constrain(command.substring(11).toInt(), 0, 100);
     activeBuzzerVolume = map(percent, 0, 100, 0, 255);
     if (percent == 0) {
-      analogWrite(ACTIVE_BUZZER_PIN, 0);
-      activeBuzzerPlaying = false;
+      stopActiveBuzzerEffect();
     }
   } else if (command.startsWith("SFX:")) {
     playGameEffect(command.substring(4));
