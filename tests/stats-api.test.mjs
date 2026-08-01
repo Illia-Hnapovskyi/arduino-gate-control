@@ -23,6 +23,10 @@ test("stats source keeps the Web handler, weighted rollover, and consistent snap
   assert.doesNotMatch(source, /Readable\.toWeb|ServerResponse|IncomingMessage/);
   assert.match(source, /THEN \$\{amount\}\s*ELSE game_rate_limits\.request_count/s);
   assert.match(source, /isolation level repeatable read read only/);
+  assert.match(source, /to_regclass\('public\.game_sync_events'\)/);
+  assert.match(source, /SCHEMA_MIGRATION_REQUIRED/);
+  assert.match(source, /createLegacyPlayer/);
+  assert.match(source, /recordLegacyRun/);
   assert.doesNotMatch(source, /CREATE\s+(?:TABLE|INDEX)|ALTER\s+TABLE/i);
 });
 

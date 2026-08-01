@@ -33,6 +33,7 @@ import {
 
 const MAX_REQUEST_BYTES = 65_536;
 const MAX_SAFE_DATABASE_INTEGER = Number.MAX_SAFE_INTEGER;
+const MAX_RETAINED_LEGACY_RUNS_PER_PLAYER = 512;
 const LEADERBOARD_LIMIT = 25;
 const RATE_LIMIT_RETENTION_DAYS = 2;
 
@@ -380,6 +381,38 @@ function databaseString(value: unknown) {
   return value;
 }
 
+async function hasProgressionSchema(sql: SqlClient) {
+  const rows = resultRows<Record<string, unknown>>(await sql`
+    SELECT
+      to_regclass('public.game_sync_events') IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'game_players'
+          AND column_name = 'stats_revision'
+      ) AS available
+  `);
+  return databaseBoolean(rows[0]?.available);
+}
+
+async function selectLegacyPlayer(sql: SqlClient, accessCodeHash: string) {
+  const rows = rowsFromResult(await sql`
+    SELECT
+      nickname,
+      LEAST(games_played, ${MAX_SAFE_DATABASE_INTEGER}) AS "gamesPlayed",
+      LEAST(total_score, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalScore",
+      high_score AS "highScore",
+      highest_level AS "highestLevel",
+      LEAST(total_duration_ms, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalDurationMs",
+      updated_at AS "updatedAt"
+    FROM game_players
+    WHERE access_code_hash = ${accessCodeHash}
+    LIMIT 1
+  `);
+  return rows[0] ? playerFromRow(rows[0]) : null;
+}
+
 type PlayerRecord = {
   id: number;
   profile: PlayerStats;
@@ -632,6 +665,71 @@ async function getLeaderboard(sql: SqlClient) {
   }));
 }
 
+async function createLegacyPlayer(
+  sql: SqlClient,
+  accessCodeHash: string,
+  accessCode: string,
+  requestedNickname: string,
+  language: GameStatsLanguage,
+) {
+  const hasRequestedNickname = requestedNickname.length > 0;
+  const attempts = hasRequestedNickname ? 1 : 6;
+
+  if (!hasRequestedNickname) {
+    const existingProfile = await selectLegacyPlayer(sql, accessCodeHash);
+    if (existingProfile) {
+      return jsonResponse({
+        profile: existingProfile,
+        accessCode: formatAccessCode(accessCode),
+      } satisfies ProfileResponse);
+    }
+  }
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const insertNickname = hasRequestedNickname
+      ? requestedNickname
+      : generateRandomNickname(language);
+    try {
+      const rows = rowsFromResult(await sql`
+        INSERT INTO game_players (access_code_hash, nickname, language)
+        VALUES (${accessCodeHash}, ${insertNickname}, ${language})
+        ON CONFLICT (access_code_hash) DO UPDATE SET
+          nickname = COALESCE(${hasRequestedNickname ? requestedNickname : null}, game_players.nickname),
+          language = EXCLUDED.language,
+          updated_at = CASE
+            WHEN ${hasRequestedNickname} OR game_players.language <> EXCLUDED.language
+              THEN NOW()
+            ELSE game_players.updated_at
+          END
+        RETURNING
+          nickname,
+          LEAST(games_played, ${MAX_SAFE_DATABASE_INTEGER}) AS "gamesPlayed",
+          LEAST(total_score, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalScore",
+          high_score AS "highScore",
+          highest_level AS "highestLevel",
+          LEAST(total_duration_ms, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalDurationMs",
+          updated_at AS "updatedAt"
+      `);
+      return jsonResponse({
+        profile: playerFromRow(rows[0]),
+        accessCode: formatAccessCode(accessCode),
+      } satisfies ProfileResponse);
+    } catch (error) {
+      if (isUniqueNicknameError(error) && attempt + 1 < attempts) continue;
+      if (isUniqueNicknameError(error)) {
+        return errorResponse(409, "NICKNAME_TAKEN", "Nickname is already in use.");
+      }
+      throw error;
+    }
+  }
+
+  return errorResponse(
+    503,
+    "RANDOM_NICKNAME_UNAVAILABLE",
+    "A random nickname could not be allocated. Please try again.",
+  );
+}
+
 async function createPlayer(
   sql: SqlClient,
   accessCodeHash: string,
@@ -741,6 +839,105 @@ async function renamePlayer(
     }
     throw error;
   }
+}
+
+async function pruneLegacyRuns(sql: SqlClient, accessCodeHash: string) {
+  await sql`
+    DELETE FROM game_runs
+    WHERE player_id = (
+      SELECT id FROM game_players WHERE access_code_hash = ${accessCodeHash}
+    )
+    AND id NOT IN (
+      SELECT run.id
+      FROM game_runs AS run
+      INNER JOIN game_players AS player ON player.id = run.player_id
+      WHERE player.access_code_hash = ${accessCodeHash}
+      ORDER BY run.recorded_at DESC, run.id DESC
+      LIMIT ${MAX_RETAINED_LEGACY_RUNS_PER_PLAYER}
+    )
+  `;
+}
+
+async function recordLegacyRun(
+  sql: SqlClient,
+  accessCodeHash: string,
+  run: { runId: string; score: number; level: number; durationMs: number },
+) {
+  const rows = rowsFromResult(await sql`
+    WITH selected_player AS (
+      SELECT id
+      FROM game_players
+      WHERE access_code_hash = ${accessCodeHash}
+    ), inserted_run AS (
+      INSERT INTO game_runs (player_id, run_id, score, level, duration_ms)
+      SELECT id, ${run.runId}, ${run.score}, ${run.level}, ${run.durationMs}
+      FROM selected_player
+      WHERE TRUE
+      ON CONFLICT (player_id, run_id) DO NOTHING
+      RETURNING player_id
+    ), updated_player AS (
+      UPDATE game_players AS player
+      SET
+        games_played = LEAST(player.games_played + 1, ${MAX_SAFE_DATABASE_INTEGER}),
+        total_score = LEAST(player.total_score + ${run.score}, ${MAX_SAFE_DATABASE_INTEGER}),
+        high_score = GREATEST(player.high_score, ${run.score}),
+        highest_level = GREATEST(player.highest_level, ${run.level}),
+        total_duration_ms = LEAST(
+          player.total_duration_ms + ${run.durationMs},
+          ${MAX_SAFE_DATABASE_INTEGER}
+        ),
+        updated_at = NOW()
+      FROM inserted_run
+      WHERE player.id = inserted_run.player_id
+      RETURNING
+        player.nickname,
+        LEAST(player.games_played, ${MAX_SAFE_DATABASE_INTEGER}) AS "gamesPlayed",
+        LEAST(player.total_score, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalScore",
+        player.high_score AS "highScore",
+        player.highest_level AS "highestLevel",
+        LEAST(player.total_duration_ms, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalDurationMs",
+        player.updated_at AS "updatedAt"
+    )
+    SELECT
+      nickname,
+      "gamesPlayed",
+      "totalScore",
+      "highScore",
+      "highestLevel",
+      "totalDurationMs",
+      "updatedAt",
+      TRUE AS recorded
+    FROM updated_player
+    UNION ALL
+    SELECT
+      player.nickname,
+      LEAST(player.games_played, ${MAX_SAFE_DATABASE_INTEGER}) AS "gamesPlayed",
+      LEAST(player.total_score, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalScore",
+      player.high_score AS "highScore",
+      player.highest_level AS "highestLevel",
+      LEAST(player.total_duration_ms, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalDurationMs",
+      player.updated_at AS "updatedAt",
+      FALSE AS recorded
+    FROM game_players AS player
+    INNER JOIN selected_player ON selected_player.id = player.id
+    WHERE NOT EXISTS (SELECT 1 FROM inserted_run)
+  `);
+
+  if (!rows[0]) {
+    return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
+  }
+
+  await pruneLegacyRuns(sql, accessCodeHash);
+  const profile = rows[0].recorded === true
+    ? playerFromRow(rows[0])
+    : await selectLegacyPlayer(sql, accessCodeHash);
+  if (!profile) {
+    return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
+  }
+  return jsonResponse({
+    profile,
+    recorded: rows[0].recorded === true,
+  } satisfies ProfileResponse);
 }
 
 class SyncEventError extends Error {
@@ -1326,6 +1523,7 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
       if (!nickname.ok) {
         return errorResponse(400, "INVALID_NICKNAME", nickname.error);
       }
+      const progressionAvailable = await hasProgressionSchema(sql);
       const rateLimited = await enforceMutationRateLimits(
         request,
         sql,
@@ -1333,16 +1531,31 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
         accessCodeHash,
       );
       if (rateLimited) return rateLimited;
-      return createPlayer(
-        sql,
-        accessCodeHash,
-        accessCode.value,
-        nickname.value,
-        language.value,
-      );
+      return progressionAvailable
+        ? createPlayer(
+            sql,
+            accessCodeHash,
+            accessCode.value,
+            nickname.value,
+            language.value,
+          )
+        : createLegacyPlayer(
+            sql,
+            accessCodeHash,
+            accessCode.value,
+            nickname.value,
+            language.value,
+          );
     }
 
     case "connect": {
+      const progressionAvailable = await hasProgressionSchema(sql);
+      if (!progressionAvailable) {
+        const profile = await selectLegacyPlayer(sql, accessCodeHash);
+        return profile
+          ? jsonResponse({ profile } satisfies ProfileResponse)
+          : errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
+      }
       const snapshot = await selectPlayerSnapshot(sql, accessCodeHash);
       return snapshot
         ? jsonResponse({
@@ -1383,6 +1596,10 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
       if (!summary.ok) {
         return errorResponse(400, "INVALID_RUN", summary.error);
       }
+      const progressionAvailable = await hasProgressionSchema(sql);
+      if (!progressionAvailable) {
+        return recordLegacyRun(sql, accessCodeHash, summary.value);
+      }
       try {
         const result = await applySyncEvent(sql, accessCodeHash, {
           eventId: summary.value.runId,
@@ -1411,6 +1628,14 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
       const events = validateGameSyncEvents(body.events);
       if (!events.ok) {
         return errorResponse(400, "INVALID_SYNC_EVENTS", events.error);
+      }
+      const progressionAvailable = await hasProgressionSchema(sql);
+      if (!progressionAvailable) {
+        return errorResponse(
+          503,
+          "SCHEMA_MIGRATION_REQUIRED",
+          "Game progression is queued until the database migration is applied.",
+        );
       }
       const rateLimited = await enforceMutationRateLimits(
         request,

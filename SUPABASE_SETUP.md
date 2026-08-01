@@ -160,13 +160,16 @@ openssl rand -hex 32
 1. Зроби backup або підтвердь доступну point-in-time recovery.
 2. Застосуй відсутні міграції: `0001` → `0002`.
 3. Виконай read-only перевірку схеми/RLS.
-4. Тільки після підтвердженої `0002` deploy v2 API/frontend.
+4. Бажано лише після підтвердженої `0002` deploy v2 API/frontend.
 5. Виконай безпечні probes нижче.
 6. Перевір Vercel runtime logs без виведення secrets або request payloads.
 
-Цей порядок критичний: v2 create/connect/record/sync читають progression tables.
-Deploy API перед `0002` може повернути SQLSTATE `42P01` як HTTP 503 і зупинити
-синхронізацію. Міграцію не можна «наздогнати» request-time DDL.
+Якщо frontend/API уже розгорнуто раніше, сервер read-only перевіряє наявність
+v2 schema. На базі лише з `0001` leaderboard, create, connect, rename і legacy
+record продовжують працювати, а `sync` повертає HTTP 503
+`SCHEMA_MIGRATION_REQUIRED`. Браузер залишає v2 events у локальній черзі й
+повторює їх після міграції. Це аварійна сумісність, а не заміна правильного
+порядку; міграцію не можна виконувати через request-time DDL.
 
 Збережи правильну Vercel handler-форму:
 

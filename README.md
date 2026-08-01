@@ -131,9 +131,10 @@ npx vercel dev
 1. `db/migrations/0001_game_stats.sql`;
 2. `db/migrations/0002_game_progression.sql`.
 
-Для вже налаштованої v1 production-бази виконай тільки відсутню `0002`, але
-ніколи не деплой v2 API раніше за неї: create/connect/record/sync читають нові
-progression-таблиці. `0002` зберігає старі дані та backfill-ить чотири
+Для вже налаштованої v1 production-бази виконай тільки відсутню `0002`.
+До її застосування API лишає leaderboard/create/connect/rename і legacy record
+сумісними з `0001`, а новий `sync` повертає `SCHEMA_MIGRATION_REQUIRED`; браузер
+не втрачає run, а тримає його в offline queue. `0002` зберігає старі дані та backfill-ить чотири
 досягнення, які можна довести з v1 totals; точні старі дати й детальні бойові
 факти відновити неможливо. DDL під час API-запиту не виконується.
 

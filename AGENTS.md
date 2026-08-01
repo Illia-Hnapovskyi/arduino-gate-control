@@ -609,11 +609,13 @@ Files under `api/` are deployed as Vercel Functions alongside the Vite output.
 converted too: Vercel's Node helpers parse `request.body`, and wrapping that
 already-consumed stream as a second Web `Request` makes JSON POSTs fail.
 
-`0002` is required by create/connect/record/sync responses because the API reads
-progression tables even for an otherwise empty profile. Deploying the v2 API
-before `0002` can turn otherwise valid requests into SQLSTATE `42P01`/HTTP 503.
-Do not push a production-connected branch until the operator confirms the
-migration, unless the deployment is otherwise prevented.
+`0002` is required for v2 progression sync. The API checks the schema with a
+read-only catalog query: while production still has only `0001`, leaderboard,
+create, connect, rename, and legacy `record` stay compatible, while `sync`
+returns `503 SCHEMA_MIGRATION_REQUIRED`. The v2 browser retains those events in
+its offline queue and retries after migration. This fallback prevents a deploy
+from breaking base profiles, but it is not a substitute for applying `0002`;
+progression remains pending until the operator completes the migration.
 
 For database/API changes, perform at least one real integration pass against an
 empty disposable Supabase project with both migrations applied:

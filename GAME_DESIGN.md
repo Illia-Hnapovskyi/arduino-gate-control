@@ -378,6 +378,11 @@ Shared/API модель підтримує:
 
 Завершення створює idempotent подію `run.completed` v2 зі стабільним event ID, рівним `runId`. Налаштування використовують `settings.updated` v1. Offline queue зберігає події до синхронізації; за один запит передається не більше п'яти game events (`shared/gameStats.ts`, `app/useGameStats.ts`, `api/stats.ts`). Повтор того самого retained event/run ID не повинен вдруге збільшувати агрегати.
 
+Якщо deployment тимчасово випередив ручну `0002`, API read-only визначає v1
+schema: базові profile/leaderboard операції залишаються доступними, а `sync`
+повертає `SCHEMA_MIGRATION_REQUIRED`. Клієнт не викидає подію й повторює її
+після міграції; DDL під час запиту не запускається.
+
 Runtime накопичує точні per-power collection/activation counts, cumulative `livesLost` (включно з ушкодженнями, які пізніше компенсувала repair-сила) та фактичні duration/loss facts кожної хвилі. Adapter передає останні 64 sector facts у v2 event; для забігів довших за 64 хвилі старіші деталізовані записи відсікаються, але загальні lifetime totals залишаються точними.
 
 Міграція `0002` backfill-ить тільки `first_run`, `score_10000`, `max_level` і `veteran_10`, які можна довести зі старих v1 aggregates, та створює їхні unlock rows. Точний історичний час невідомий, тому `unlocked_at` дорівнює часу міграції. Інші досягнення починають накопичуватися з v2 run facts. Revisioned `settings.updated` підтримується shared/API/SQL, але поточний UI зберігає preferences device-local і ще не ставить settings events в offline queue.
