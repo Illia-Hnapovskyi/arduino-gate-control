@@ -1,19 +1,83 @@
-# Arduino Gate Control
+# Arduino Gate Control + Space Defender
 
 Вебпанель для Arduino UNO зі шлагбаумом, ультразвуковим радаром, DHT11,
-джойстиком, двома buzzer-ами та браузерною грою «Космічний захисник».
+джойстиком, двома buzzer-ами та процедурною браузерною грою **Space Defender / «Космічний захисник»**.
 
-## Як працює застосунок
+## Що вміє проєкт
 
-- `src/main.tsx` монтує React-застосунок із `app/page.tsx`.
-- Сайт збирається Vite та публікується з каталогу `dist`.
-- Chrome або Edge підключається до Arduino через Web Serial на 115200 baud.
-- Arduino надсилає JSON-телеметрію, а сайт повертає текстові команди керування.
-- Гра й фізика працюють у браузері; Arduino-джойстик керує кораблем.
-- Passive Buzzer на D3 відтворює музику, Active Buzzer на D5 — ефекти гри.
+- керує шлагбаумом вручну або за показами HC-SR04;
+- перетворює сервопривід і HC-SR04 на радар та показує кліматичну телеметрію;
+- запускає повноцінний arcade survival shooter із keyboard, touch або фізичним
+  Arduino-джойстиком;
+- працює в demo mode без плати й у браузерах без Web Serial;
+- зберігає профіль і результати offline-first та синхронізує їх між пристроями
+  через Supabase PostgreSQL;
+- відтворює музику через Passive Buzzer D3 або Web Audio, а короткі ефекти —
+  через Active Buzzer D5.
 
-Без Arduino можна запустити деморежим. Safari та браузери без Web Serial також
-можуть використовувати демо, клавіатуру, touch-кнопки й віртуальний джойстик.
+Шлагбаум, радар і гра є взаємовиключними режимами пристрою. Прошивка та UI
+зберігають старі Serial-команди, тому оновлення гри не змінює піни чи схему
+підключення.
+
+## Space Defender v2
+
+Короткий цикл гри:
+
+```text
+підготовка → попередження → бій → перепочинок → покращення
+           → складніша хвиля → бос/нагорода → результат → нова спроба
+```
+
+Реалізоване ядро містить:
+
+- 3 режими: дев'ятихвильова `Expedition`, нескінченний `Survival` і чистий
+  score-attack `Classic`;
+- 3 складності: `Cadet`, `Pilot`, `Ace`;
+- 9 процедурних секторів, 10 класів звичайних загроз і 3 багатофазних босів;
+- 14 суперсил, які треба зібрати, екіпірувати та вчасно активувати;
+- 12 stackable-покращень забігу й 12 довготривалих досягнень;
+- combo, щит, енергію, телеграфовані атаки, перепочинки, гарантовані й
+  одразу екіпіровані boss rewards,
+  результат забігу й повідомлення про рекорд/досягнення;
+- remappable keyboard controls, virtual touch joystick, окремі fire/power
+  кнопки, screen shake toggle, volume controls і `prefers-reduced-motion`;
+- паузу при втраті фокуса та безпечне «Продовжити» лише з checkpoint між
+  хвилями. Середина бою навмисно не відновлюється;
+- екран результату не дозволяє випадково піти або почати новий забіг, доки
+  результат не записаний у локальну offline queue; у разі помилки є явний retry.
+- recovery JSON не містить access code; остаточна відмова від незаписаного
+  результату потребує експорту й окремого підтвердження, а помилка очищення
+  checkpoint блокує новий запуск замість прихованого відновлення старого стану;
+
+Повний дизайн, числовий баланс, інваріанти й відомі межі описані в
+[`GAME_DESIGN.md`](GAME_DESIGN.md). Канонічні числа живуть у
+`app/game/balance.ts`, а стабільні ID — у `app/game/types.ts` і
+`shared/gameStats.ts`.
+
+## Активна архітектура
+
+```text
+src/main.tsx → app/page.tsx → app/GamePanel.tsx → app/game/*
+                        │
+                        ├─ Web Serial 115200 → public/arduino-smart-gate.ino
+                        ├─ localStorage → profile/event queue/preferences/checkpoint
+                        └─ /api/stats → Vercel Web Fetch Function
+                                         └─ Postgres.js
+                                            └─ Supavisor Transaction Pooler
+                                               └─ Supabase PostgreSQL
+```
+
+Основні game-підсистеми винесені з React-компонента:
+
+- `runtime.ts`, `waves.ts`, `rng.ts`, `balance.ts` — детермінована симуляція;
+- `rendering.ts` — процедурний Canvas-рендер;
+- `powerUps.ts`, `achievements.ts` — progression у забігу й між забігами;
+- `input.ts`, `audio.ts`, `useGameAudio.ts` — усі контролери та звук;
+- `persistence.ts`, `resume.ts`, `statsAdapter.ts` — checkpoint і статистика;
+- `GameMenu.tsx`, `GameHud.tsx`, `GameOverlays.tsx`, `ProgressPanels.tsx` — UI.
+
+Next.js, Cloudflare worker, D1, Drizzle і vinext-файли лишаються опціональним
+legacy/scaffolding. Production frontend — React 19 + Vite, output — `dist/`.
 
 ## Локальний запуск
 
@@ -24,70 +88,112 @@ npm ci
 npm run dev
 ```
 
-Після запуску відкрий адресу, яку покаже Vite.
+`npm run dev` запускає лише Vite. Для frontend і `api/stats.ts` разом потрібні
+локальні Vercel environment variables та:
 
-## Онлайн-статистика гри
+```bash
+npx vercel dev
+```
 
-Статистика та таблиця лідерів зберігаються в Supabase PostgreSQL через Vercel
-Function `api/stats.ts`. Повна покрокова інструкція для Supabase і Vercel:
-[`SUPABASE_SETUP.md`](SUPABASE_SETUP.md).
+Не вставляй database URL або інші секрети в команду, якщо shell history може їх
+зберегти. Використовуй `.env.local`/Vercel CLI environment store; ці файли не
+можна комітити.
 
-Коротко: створи Supabase-проєкт, виконай
-`db/migrations/0001_game_stats.sql` у SQL Editor, скопіюй **Transaction pooler**
-URI (Supavisor, порт `6543`) і додай його у Vercel як серверну секретну змінну
-`SUPABASE_DATABASE_URL`. Рекомендовано також додати окремий випадковий
-`RATE_LIMIT_SECRET` щонайменше із 32 символів. Якщо його немає, API використовує
-рядок підключення як HMAC-ключ, але ніколи не записує сам рядок у таблиці.
+## Профіль, offline-first і синхронізація
 
-Для локальної перевірки API задай `SUPABASE_DATABASE_URL` у локальному Vercel
-environment і запусти `npx vercel dev`. Звичайний `npm run dev` запускає лише
-Vite, тому маршрут `/api/stats` у цьому режимі недоступний. Функція використовує
-вже створену схему; міграцію потрібно виконати вручну до
-першого production deploy.
+- власний або локалізований випадковий нік прив'язується до 20-символьного
+  access code; цей код є паролем;
+- raw access code залишається в браузері та запиті, у PostgreSQL зберігається
+  лише SHA-256 digest;
+- активне сховище статистики — `arduino-gate-game-stats:v2`; валідний v1
+  профіль, pending rename і pending runs мігрують без втрати access code;
+- завершення спершу оптимістично записується локально як `run.completed` v2,
+  потім відправляється чергою пакетами до п'яти подій;
+- `eventId === runId`; однакова повторна подія є idempotent, а повторне
+  використання ID з іншим payload відхиляється;
+- у базі синхронізуються базові totals, режим/складність, бойові метрики,
+  power statistics, achievements, unlocks і рекорди;
+- volumes, shake, reduced-motion override і remapped keys у поточному UI є
+  device-local. API/SQL уже мають revisioned settings contract, але клієнтське
+  cross-device settings sync ще не підключене;
+- «Забути профіль» видаляє лише локальну копію й приховується, поки є
+  несинхронізований результат. Воно ніколи не видаляє remote profile.
 
-Сайт не використовує cookies для профілю. Код профілю є секретом: він
-зберігається в базі лише як SHA-256 і потрібен, щоб відкрити статистику на іншому
-пристрої. Не публікуй цей код.
+Таблиця лідерів показує top 25 профілів із `games_played > 0`. Порожній рейтинг
+не доводить, що `game_players` порожня.
 
-Для захисту публічного API мутації обмежено фіксованими одногодинними вікнами:
-до 30 створень/повторних створень профілю і 600 мутацій з однієї IP-адреси, до
-240 результатів та 30 перейменувань або create-upsert одного профілю. IP
-надходить із довіреного Vercel-заголовка
-`x-forwarded-for` і перед записом перетворюється на HMAC-SHA-256 — сира
-адреса в Supabase не зберігається. Перевищення повертає HTTP 429 із `Retry-After`.
-Локальні запити без Vercel-заголовка належать до спільного локального ліміту.
-Застарілі лічильники видаляються через дві доби.
+## Supabase і Vercel
 
-Для точної ідемпотентності зберігаються 512 останніх `runId` кожного профілю;
-старі записи результатів очищаються без зміни вже накопичених показників.
-Для сайту з великим трафіком додатково налаштуй Vercel Firewall/WAF.
+Повний runbook: [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md).
 
-Таблиця лідерів має дружній, не змагальний характер: гра працює в браузері, тому
-результати є клієнтськими даними. API перевіряє базовий формат, діапазони та
-відповідність рівня тривалості, але не може автентифікувати перебіг браузерної
-гри й не є античіт-системою для турнірів із призами.
+Міграції ручні й виконуються **до** deployment відповідного API:
+
+1. `db/migrations/0001_game_stats.sql`;
+2. `db/migrations/0002_game_progression.sql`.
+
+Для вже налаштованої v1 production-бази виконай тільки відсутню `0002`, але
+ніколи не деплой v2 API раніше за неї: create/connect/record/sync читають нові
+progression-таблиці. `0002` зберігає старі дані та backfill-ить чотири
+досягнення, які можна довести з v1 totals; точні старі дати й детальні бойові
+факти відновити неможливо. DDL під час API-запиту не виконується.
+
+Vercel потребує серверні secrets:
+
+- `SUPABASE_DATABASE_URL` — Supavisor **Transaction pooler** URI, порт `6543`;
+- `RATE_LIMIT_SECRET` — окремий випадковий HMAC-secret, бажано ≥32 символів.
+
+Postgres.js використовує TLS, одну connection на теплий instance і
+`prepare: false`, що сумісно з transaction pooling. Не додавай префікс `VITE_`
+до secrets. Всі таблиці мають RLS deny-by-default; нові v2 таблиці також не
+мають публічних grants/policies. Браузер працює тільки через `/api/stats`.
+
+Rate limits у фіксованому одногодинному вікні: 600 mutation events з IP,
+30 create з IP, 240 completed runs, 30 rename/create-upsert та 300 total v2
+sync events на профіль. Batch списує counters за кожну подію. Raw IP у БД не
+потрапляє: scope спочатку HMAC-псевдонімізується.
+
+Leaderboard є дружнім, а не tournament-grade: сервер перевіряє формат,
+діапазони й rate limits, але браузерний run не має криптографічного доказу.
 
 ## Перевірки
 
 ```bash
-npm run lint       # ESLint
-npm run typecheck  # TypeScript без генерації файлів
-npm test           # production build + Node regression tests
-npm run check      # усі перевірки разом
+npm run lint
+npm run typecheck
+npm test
+npm run check
+npm audit --omit=dev
+git diff --check
 ```
+
+Автотести покривають deterministic waves/enemies, power cooldown, achievements,
+checkpoint migration, stats storage v1→v2, API validation/idempotency, SQL
+контракти, Arduino protocol, translation parity та форму Vercel Web Fetch
+export. Вони не доводять фізичний Web Serial timing, реальний Supabase deploy
+або UI у конкретному браузері — ці перевірки виконуються окремо й не мають
+вважатися пройденими без фактичного тесту.
 
 ## Arduino
 
-Готова прошивка: `public/arduino-smart-gate.ino`.
+Прошивка: `public/arduino-smart-gate.ino`. Схема, безпека та повний протокол:
+[`public/README-UK.md`](public/README-UK.md).
 
-Українська інструкція зі схемою підключення:
-`public/README-UK.md`.
+Старі `SFX:SHOT|SCORE|CRASH|OVER` збережені. Додані короткі non-blocking ефекти
+`POWER`, `SHIELD`, `BOSS`, `WARN`, `ACH`, `LASER`, `MISSILE`, `EMP`, `RECORD`,
+`LOW` і `MENU`; patterns виконуються через `millis()`, без довгих `delay`. Командний
+буфер приймає не більше 40 символів.
 
-Перед додаванням або переставлянням дротів від’єднай USB. Не подавай 9V на
-контакти 5V, D2–D7, датчики, джойстик, сервопривід або buzzer-и.
+Перед переставлянням дротів від'єднай USB. Не подавай 9 V на 5 V, D2–D7,
+датчики, джойстик, сервопривід або buzzer-и.
 
-## Додаткова інфраструктура
+## Rollback
 
-Файли `worker/`, `db/`, `examples/` і `app/chatgpt-auth.ts` залишаються як
-опціональна Cloudflare/Next.js інфраструктура. Поточний Vercel-деплой
-використовує Vite-конфігурацію та `vercel.json`.
+Точка перед Space Defender v2:
+
+- tag `pre-space-defender-overhaul-20260801`;
+- branch `backup/pre-space-defender-overhaul-20260801`;
+- commit `7764d15f89d7cb0581ee72216498ed3b541ec278`.
+
+Для shared `main` використовуй новий `git revert`, а не переписування історії.
+Не видаляй additive v2 таблиці під час code rollback: вони можуть уже містити
+користувацькі дані й idempotency ledger.

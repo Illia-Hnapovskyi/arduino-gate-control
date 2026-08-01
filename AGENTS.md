@@ -9,14 +9,18 @@ the user-facing setup guide.
 - Active app: Vite/React (`src/main.tsx` → `app/page.tsx`), not Next.js.
 - Active backend: Vercel `api/stats.ts` → Supabase PostgreSQL; shared contract lives in
   `shared/gameStats.ts`.
+- Active game: `app/GamePanel.tsx` orchestrates the deterministic subsystems in
+  `app/game/`; `GAME_DESIGN.md` documents the implemented design and balance.
 - Project-scoped official Supabase skills live under `.agents/skills/`; load
   `supabase` for any Supabase task and `supabase-postgres-best-practices` before
   SQL, schema, migration, RLS, pooling, or database-performance work.
 - Start frontend work with `npm ci && npm run dev`; use `npx vercel dev` plus
   `SUPABASE_DATABASE_URL` for real stats API work.
 - Before handoff run `npm run check` and `git diff --check`.
-- Keep firmware, serial parsing, translations, validation, and both Postgres
-  schema copies synchronized when their contracts change.
+- Keep firmware, serial parsing, translations, validation, game balance, and
+  checked-in Postgres migrations synchronized when their contracts change.
+- Production schema setup is ordered: apply `0001_game_stats.sql` and then
+  `0002_game_progression.sql` before deploying the matching v2 API.
 - No cookies and no committed secrets. Profile codes are passwords.
 - `worker/`, D1/Drizzle, Next.js, and vinext files are optional legacy paths,
   although they are still included in lint/type checking.
@@ -36,7 +40,8 @@ The active production shape is:
 ```text
 Browser (React 19 + Vite)
   ├─ Web Serial at 115200 baud ── Arduino UNO firmware
-  ├─ localStorage ─────────────── language, profile secret, offline run queue
+  ├─ localStorage ─────────────── language, profile secret, offline event queue,
+  │                               device preferences, safe wave checkpoint
   └─ /api/stats ───────────────── Vercel Function
                                       └─ Supabase PostgreSQL via Supavisor
                                                        and SUPABASE_DATABASE_URL
@@ -90,20 +95,36 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | --- | --- |
 | `src/main.tsx` | Vite entry point; mounts `app/page.tsx` and imports global CSS. |
 | `app/page.tsx` | Main control panel, language state, Web Serial lifecycle, telemetry parsing, gate/radar/demo state. |
-| `app/GamePanel.tsx` | Game physics/canvas, input, audio, run lifecycle, and stats integration. |
+| `app/GamePanel.tsx` | Space Defender orchestration: menu, runtime loop, lifecycle, checkpoint, stats, input, audio, and canvas composition. |
 | `app/PlayerStatsPanel.tsx` | Profile creation/import/rename UI, access-code UI, personal stats, leaderboard. |
-| `app/useGameStats.ts` | Offline-first client store, optimistic totals, API synchronization, reconnect and deduplication logic. |
+| `app/useGameStats.ts` | Offline-first v2 profile store, v1 migration, optimistic totals, event queue, reconnect and deduplication. |
+| `app/game/types.ts` | Canonical IDs and types for modes, difficulties, sectors, threats, bosses, upgrades, powers, and metrics. |
+| `app/game/balance.ts` | Typed numeric balance; treat it as the technical source of truth when tuning. |
+| `app/game/rng.ts`, `app/game/waves.ts` | Seeded RNG and deterministic telegraph/combat/rest wave plans. |
+| `app/game/runtime.ts` | Mutable-in-refs combat simulation, entities, enemy behavior, bosses, scoring, and run results. |
+| `app/game/rendering.ts` | Procedural Canvas renderer, sector treatments, effects, and reduced-motion handling. |
+| `app/game/powerUps.ts`, `app/game/achievements.ts` | Upgrade/power rules and pure achievement progression. |
+| `app/game/input.ts`, `app/game/preferences.ts` | Unified keyboard/touch/Arduino input and device-local remappable preferences. |
+| `app/game/audio.ts`, `app/game/useGameAudio.ts` | Browser Web Audio, sector music, and Arduino buzzer command routing. |
+| `app/game/persistence.ts`, `app/game/resume.ts` | Validated seven-day v2 checkpoints and safe between-wave restoration. |
+| `app/game/statsAdapter.ts` | Converts a runtime result to the shared v2 statistics contract. |
+| `app/game/GameMenu.tsx`, `app/game/GameHud.tsx`, `app/game/GameOverlays.tsx`, `app/game/ProgressPanels.tsx` | Menu, HUD, pause/upgrade/result/toast overlays, achievements, and career panels. |
 | `app/i18n.ts` | All Ukrainian, German, and English page/game copy. |
 | `app/globals.css` | Entire visual system and responsive behavior; there is no component CSS framework. |
 | `shared/gameStats.ts` | Browser-safe API types, generators, normalization, and shared validation. This is the contract source of truth. |
 | `api/stats.ts` | Vercel Web Fetch-style function, Supabase PostgreSQL queries, rate limiting, and stats aggregation. |
-| `db/migrations/0001_game_stats.sql` | Auditable/manual SQL copy of the live stats schema. |
+| `db/migrations/0001_game_stats.sql` | Base profiles, runs, leaderboard aggregates, and rate-limit schema. |
+| `db/migrations/0002_game_progression.sql` | Additive v2 event ledger, detailed run facts, progression, achievements, unlocks, settings, RLS, and grants. |
+| `GAME_DESIGN.md` | Implemented game loop, balance, validation invariants, known gaps, and test contract. |
 | `SUPABASE_SETUP.md` | Ukrainian step-by-step Supabase/Vercel provisioning, verification, troubleshooting, and rollback guide. |
 | `.agents/skills/supabase/` | Official Supabase agent workflow, current-docs, tooling, migration, and security guidance. |
 | `.agents/skills/supabase-postgres-best-practices/` | Official Supabase/Postgres schema, SQL, RLS, pooling, locking, indexing, and performance rules. |
 | `public/arduino-smart-gate.ino` | Arduino UNO firmware downloaded from the built site. |
 | `public/README-UK.md` | Hardware wiring and usage instructions in Ukrainian. |
-| `tests/game-stats.test.mjs` | Shared validation/generator regression tests. |
+| `tests/game-engine.test.mjs`, `tests/game-runtime.test.mjs` | Deterministic balance/planner/power/achievement/persistence and combat runtime regression tests. |
+| `tests/game-input.test.mjs`, `tests/game-preferences.test.mjs`, `tests/game-resume.test.mjs` | Controls, device preferences, and safe checkpoint tests. |
+| `tests/game-stats*.test.mjs`, `tests/stats-api.test.mjs` | Shared validation, localStorage migration, adapter, API export/idempotency, and SQL contract tests. |
+| `tests/arduino-protocol.test.mjs` | Static Serial compatibility, pin, buffer, and non-blocking SFX checks. |
 | `tests/rendered-html.test.mjs` | Production artifact and translation-key tests. |
 | `vite.config.ts` | Active frontend build configuration. |
 | `vercel.json` | Active Vercel build/output configuration. |
@@ -175,51 +196,128 @@ Language state:
 
 Game profile state:
 
-- localStorage key: `arduino-gate-game-stats:v1`;
-- the stored object contains a schema version, local profile, pending runs, and
-  recently known run IDs;
+- active localStorage key: `arduino-gate-game-stats:v2`; the v1 key is retained
+  as a safe migration fallback rather than deleted automatically;
+- the v2 object contains the local profile/access code, optional server
+  progression, pending `run.completed` events, and up to 100 known event IDs;
+- `migrateStoredGameStatsV1` preserves a valid profile, unconfirmed access code,
+  pending nickname, pending runs, and known run IDs while converting runs to v2
+  events;
 - local writes and optimistic totals happen synchronously before network sync;
 - online reconnect and the `online` event retry queued changes;
+- same-profile `storage` events merge and persist the union of pending run
+  events, so simultaneous offline runs in two tabs converge instead of letting
+  the last `localStorage` writer discard the other tab's queue;
 - a profile can be opened on another device only with its access code;
 - “forget profile” removes only this browser’s local copy. It does not delete
-  the remote profile;
-- the browser remembers 100 recent run IDs; the server retains the newest 512
-  per profile for idempotency while keeping lifetime aggregates.
+  the remote profile, and the UI hides this action while unsynchronized results
+  are pending;
+- the browser remembers up to 100 event IDs; the server keeps the v2 event
+  ledger for permanent idempotency instead of pruning it to 512 runs.
 
-Synchronization ordering is deliberate. For a confirmed profile with pending
-mutations, flush rename/run operations before doing an idle profile refresh.
-This prevents double-counting when a prior record request reached Postgres but
-its HTTP response was lost.
+Synchronization ordering is deliberate. Confirm the profile first, flush a
+queued rename, send pending events in batches of at most five, and only then do
+an idle profile/leaderboard refresh. The server hashes canonical event JSON; an
+identical retained event is a duplicate, while reuse of its ID with different
+data is HTTP 409 `EVENT_ID_REUSED`.
 
-## 6. Game and run invariants
+Other game-local state:
 
-Important game mechanics in `app/GamePanel.tsx`:
+- `arduino-gate-space-defender-run:v2` stores at most one validated checkpoint,
+  only at `wave-rest`/`upgrade`, with a seven-day lifetime;
+- game volumes, screen shake, reduced-motion override, and remapped keyboard
+  controls use the key exported by `app/game/preferences.ts` and stay
+  device-local in the current UI;
+- the API/schema define revisioned `settings.updated` events, but
+  `useGameStats` currently queues completed-run events only. Do not claim that
+  UI preferences already synchronize across devices.
 
-- initial lives: 3;
-- level range: 1-9;
-- level increases every 22 seconds of recorded active game time;
-- destroying an asteroid adds `10 * currentLevel` points;
-- shot cooldown: 220 ms, but do not use this alone for server plausibility for
-  the clock reason described above;
-- physics frame delta is capped at 34 ms;
-- a profile is required before a run can start.
+## 6. Space Defender v2 game and run invariants
 
-Each start creates a cryptographically random `runId`. An active run is queued
-exactly once when the player reaches game over, presses stop, disconnects,
-leaves/unmounts the game, or closes a non-bfcache page. `recordActiveRun` clears
-the active ID before calling `recordRun`, and the server additionally enforces
-`UNIQUE (player_id, run_id)`.
+`GAME_DESIGN.md` explains the design; `app/game/types.ts` and
+`app/game/balance.ts` are the technical sources of truth. The implemented core
+contains:
 
-Shared run validation currently requires:
+- modes `expedition`, `survival`, and `classic`;
+- difficulties `cadet`, `pilot`, and `ace` with different health, speed,
+  damage, spawn, recovery, and score multipliers;
+- nine sectors, ten ordinary threat archetypes, three multi-phase bosses,
+  fourteen equip/activate power-ups, twelve stackable run upgrades, and twelve
+  stable achievements;
+- deterministic seeded wave plans with `telegraph` → `combat` → `rest` phases;
+  active combat is 22 seconds, while boss waves can continue until the boss is
+  defeated;
+- a finite nine-wave Expedition, looping Survival, and score-focused Classic
+  without bosses or upgrade cards;
+- three initial lives, shield and energy resources, combo scoring, a base
+  220 ms shot cooldown, and a server-contract level of
+  `min(9, 1 + floor(activeDurationMs / 22000))`;
+- every defeated boss immediately grants and equips its signature power before
+  the between-wave checkpoint; it is not left as an unpersisted live pickup;
+- a 250 ms external delta cap split into physics steps of at most 20 ms, plus
+  bounded entity/effect counts for mobile stability;
+- keyboard, touch/virtual joystick, Arduino joystick, and mixed controller
+  classification; a long Arduino-switch hold activates the equipped power
+  without changing the firmware pin map.
 
-- `runId`: 8-64 ASCII letters, digits, `_`, or `-`;
-- `score`: safe integer from 0 through 100,000,000 and divisible by 10;
-- `level`: safe integer from 1 through 9;
-- `durationMs`: safe integer from 0 through 21,600,000 (six hours);
-- level no greater than `min(9, 1 + floor(durationMs / 22000))`.
+Canonical content IDs (never invent a second spelling in UI/API/SQL):
 
-If mechanics change, change `GamePanel`, `shared/gameStats.ts`, API validation,
-SQL checks, tests, and relevant copy together.
+- sectors: `starfield`, `nebula`, `meteor-belt`, `ice`, `ion-storm`,
+  `ship-graveyard`, `solar`, `dark`, `boss`;
+- threats: `swift-asteroid`, `splitter-asteroid`, `armored-asteroid`, `comet`,
+  `mine`, `debris`, `scout-drone`, `gunner-drone`, `hunter-drone`,
+  `support-drone`;
+- bosses: `sentinel-array`, `comet-leviathan`, `void-dreadnought`;
+- powers: `shield`, `spread`, `laser`, `missiles`, `emp`, `time`, `magnet`,
+  `drone`, `repair`, `pulse`, `invulnerability`, `critical`, `speed`, `charge`;
+- upgrades: `twin-shot`, `rapid-fire`, `piercing-rounds`, `critical-focus`,
+  `reinforced-shield`, `phase-plating`, `repair-nanites`, `engine-boost`,
+  `missile-bay`, `emp-capacitor`, `magnet-array`, `escort-drone`;
+- achievements: `first_run`, `first_enemy`, `first_boss`, `survivor_5m`,
+  `flawless_sector`, `combo_25`, `score_10000`, `sharpshooter`,
+  `arduino_pilot`, `power_explorer`, `max_level`, `veteran_10`.
+
+A profile and either a live Arduino connection or demo mode are required before
+start. Starting creates a cryptographically random `runId`. Terminal game over,
+victory, disconnect, unmount, or non-bfcache page close queues the result once.
+The result dialog blocks menu/restart navigation until that local queue write
+succeeds and exposes a retry action after a storage failure.
+At an upgrade/rest boundary the browser saves a checkpoint instead; it never
+pretends to restore arbitrary mid-combat entity positions. Snapshot parsing
+derives sector from mode+wave and rejects expired or invalid state.
+
+The recovery export contains validated run facts but never the profile access
+code. Destructive discard is available only after an export attempt and an
+explicit confirmation. If deleting an old checkpoint fails, retain its
+resumable state, show the error, and block a new launch until cleanup succeeds;
+otherwise a stale run can return after reload.
+
+Shared v2 validation still enforces the legacy score contract and additionally
+validates mode, difficulty, final sector, wave, controller, end reason, counters,
+unique power/sector summaries, `shotsHit <= shotsFired`, and canonical IDs:
+
+- `runId`/event ID: 8-64 ASCII letters, digits, `_`, or `-`;
+- `score`: safe integer 0-100,000,000 and divisible by 10;
+- `level`: safe integer 1-9 and no greater than
+  `min(9, 1 + floor(durationMs / 22000))`;
+- `durationMs`: safe integer 0-21,600,000 (six hours);
+- `highestWave`: 1-10,000 at the API/SQL boundary; resumable snapshots use the
+  tighter six-hour-derived planning cap.
+
+Cross-field plausibility is shared by browser/API and mirrored for stored run
+columns in SQL: wave is duration-derived (and Expedition caps at 9), Classic has
+no boss wins, boss count follows three-wave intervals, final sector follows the
+mode's sector cycle, enemies are capped at ten per active second, combo cannot
+exceed destroyed enemies, powers cannot outnumber destroyed threats, cumulative
+lives lost fits a conservative repair-aware bound, sector durations/counts fit
+the run, and `victory` is only valid for Expedition wave 9. These are coarse
+anti-abuse invariants, not proof of authoritative gameplay. Do not add a
+shot-rate-derived ceiling.
+
+Do not restore a shot-rate score ceiling: firing and recorded physics time use
+different clocks under low FPS. When mechanics change, update runtime, typed
+balance, shared/API validation, SQL checks, persistence migration, tests, and
+all three languages together.
 
 ## 7. Profile and statistics contract
 
@@ -246,13 +344,17 @@ Public API at `/api/stats`:
 - `POST { action: "create", accessCode, nickname?, language }`;
 - `POST { action: "connect", accessCode }`;
 - `POST { action: "rename", accessCode, nickname }`;
-- `POST { action: "record", accessCode, runId, score, level, durationMs }`.
+- legacy-compatible `POST { action: "record", accessCode, runId, score, level,
+  durationMs }`; it is converted server-side to a v2 completed-run event;
+- `POST { action: "sync", accessCode, events }`, with 1-5 events. Supported
+  versions are `run.completed` v2 and revision-checked `settings.updated` v1.
 
 Use the request/response types from `shared/gameStats.ts`; do not create a second
 slightly different contract. Responses are JSON with `no-store` headers. Only
-GET and POST are accepted, and request bodies are limited to 8 KiB.
+GET and POST are accepted, and request bodies are limited to 64 KiB.
 
-The profile aggregates are:
+Profile responses retain the original public aggregates and may add a
+`progression` object. The base aggregates are:
 
 - nickname;
 - games played;
@@ -262,34 +364,76 @@ The profile aggregates are:
 - total active duration;
 - last update timestamp.
 
+Progression schema version 2 adds:
+
+- enemies/bosses, shots and best accuracy, longest combo/run, collected powers,
+  wins, and Arduino runs;
+- aggregates by mode+difficulty and by power;
+- achievement progress plus immutable first `unlockedAt`, unlock records, and a
+  server revision;
+- revisioned game settings in the API/schema. The active UI preferences remain
+  local until a deliberate client settings-sync flow is connected.
+
+For `run.completed`, `eventId` must equal `runId`. The server stores a SHA-256
+of canonical validated JSON beside the unique `(player_id, event_id)` key. A
+same-ID/same-payload retry returns `duplicate`; a changed payload with the same
+ID returns `EVENT_ID_REUSED` and never reapplies aggregates.
+
+Each event is applied in a short transaction that locks its profile row,
+inserts child power/sector/achievement rows in batches, and rolls back the whole
+event on failure. Profile plus progression responses are then read through a
+`REPEATABLE READ READ ONLY` transaction so their revision and aggregates form a
+consistent snapshot. A multi-event `sync` batch is resumable rather than one
+giant transaction: if a later event fails, retries see earlier ones as
+duplicates.
+
 ## 8. Postgres schema and API security
 
-Active tables:
+Apply the imperative migrations in filename order:
 
-- `game_players`: hashed access code, nickname/language, and lifetime aggregates;
-- `game_runs`: recent idempotency records linked to a player;
-- `game_rate_limits`: HMAC-pseudonymized fixed-window counters.
+1. `0001_game_stats.sql` creates `game_players`, `game_runs`, and
+   `game_rate_limits`;
+2. `0002_game_progression.sql` additively extends the base tables and creates
+   `game_sync_events`, `game_run_power_stats`, `game_run_sector_stats`,
+   `game_player_totals`, `game_player_mode_stats`,
+   `game_player_power_stats`, `game_player_achievements`,
+   `game_player_unlocks`, and `game_player_settings`.
+
+The v2 event ledger is the permanent idempotency source. Do not reintroduce the
+old newest-512-run cleanup: pruning ledger rows would allow an old event to be
+applied again. `game_runs` keeps the unique per-player `run_id` guard as an
+additional compatibility layer.
 
 `api/stats.ts` connects through the Supabase transaction pooler on port 6543
 with Postgres.js prepared statements disabled, a one-connection client per warm
 Vercel instance, and TLS required. Schema changes are never run during a request:
-apply the checked-in SQL migration in Supabase SQL Editor before deploying. The
-initial migration is safe for a fresh database, but `CREATE IF NOT EXISTS` does
-not evolve an already-existing incompatible schema. For a future schema change,
-add explicit migration/ALTER logic.
+apply the checked-in SQL migrations in Supabase SQL Editor before deploying.
+`0002` uses an explicit transaction, advisory lock, short lock/statement
+timeouts, guarded constraints, FK indexes, and additive `ALTER` statements.
+`CREATE IF NOT EXISTS` does not evolve an already-existing incompatible object;
+future changes still require a new explicit migration.
+
+The migration backfills only achievements provable from v1 aggregates:
+`first_run`, `score_10000`, `max_level`, and `veteran_10`, plus matching unlock
+rows. Their exact historical unlock dates cannot be reconstructed, so migrated
+rows use migration time. Enemy, boss, accuracy, controller, sector, and power
+milestones begin when v2 facts arrive; never fabricate their history.
 
 All active statistics tables enable Row Level Security without anon or
-authenticated policies. Supabase exposes the public schema through its Data
-API, so this deny-by-default state prevents browser clients from bypassing the
-validation and rate limiting in `/api/stats`. Do not add public policies without
-a separate security review.
+authenticated policies. The v2 migration also explicitly revokes access to its
+new tables/sequences from `anon`, `authenticated`, and `service_role`. Supabase
+Data API grants and RLS are separate controls; retain both deny-by-default layers
+so browser clients cannot bypass `/api/stats`. The direct Postgres connection
+must use an appropriate server role. Do not add public grants or policies
+without a separate security review.
 
 Current fixed one-hour mutation limits:
 
-- 600 total mutations per Vercel client IP;
+- 600 mutation events per Vercel client IP;
 - 30 create/create-upsert operations per client IP;
-- 240 recorded runs per profile;
-- 30 rename/create-upsert operations per profile.
+- 240 completed runs per profile, across legacy `record` and v2 sync;
+- 30 rename/create-upsert operations per profile;
+- 300 v2 sync events per profile (a batch consumes one unit per event).
 
 Rate-limit scopes are HMAC-SHA-256 values. The raw
 `x-forwarded-for` address is never inserted into Postgres. Vercel overwrites
@@ -332,7 +476,7 @@ Main commands:
 | `TRACK:START`, `TRACK:STOP` | Control browser-streamed live track mode. |
 | `TRACK:TONE:frequency:duration` | Passive-buzzer tone; 0-4000 Hz and 20-1000 ms. |
 | `SFX:VOLUME:percent` | Active-buzzer PWM volume, 0-100%. |
-| `SFX:name` | Play a named game sound effect. |
+| `SFX:name` | Play `SHOT`, `SCORE`, `CRASH`, `OVER`, `POWER`, `SHIELD`, `BOSS`, `WARN`, `ACH`, `LASER`, `MISSILE`, `EMP`, `RECORD`, `LOW`, or `MENU`. |
 
 Telemetry is one JSON object per line with these fields:
 
@@ -365,7 +509,12 @@ Protocol caveats worth preserving:
 - `TRACK:STOP` intentionally leaves live-track mode selected so silence does not
   fall back to the built-in game tune;
 - the UI uses `ANGLE:n` for manual movement even though firmware also supports
-  `OPEN` and `CLOSE`.
+  `OPEN` and `CLOSE`;
+- all Active Buzzer SFX patterns are scheduled from `millis()` without long
+  blocking delays; keep that property when adding effects;
+- the physical joystick switch remains the backward-compatible fire input; the
+  browser interprets a hold of about 650 ms as a power activation. No new pin or
+  inbound telemetry field is required.
 
 ## 10. Hardware map
 
@@ -400,6 +549,11 @@ When changing pins, commands, constraints, or hardware behavior, update all of:
 - UI labels/diagrams in `app/page.tsx` and `app/i18n.ts`;
 - artifact tests where applicable.
 
+The game maps sector music to the existing browser-streamed `TRACK:TONE`
+protocol and routes typed effects through the `SFX:*` allowlist. This was tested
+by static/protocol simulation only unless a handoff explicitly reports a
+physical Arduino pass.
+
 ## 11. UI, CSS, and localization rules
 
 - `app/globals.css` is intentionally monolithic. Reuse existing variables,
@@ -429,8 +583,9 @@ Production prerequisites managed outside Git:
 - `SUPABASE_DATABASE_URL` containing the Supavisor transaction-pooler URI in
   every Vercel environment that needs shared statistics;
 - preferably `RATE_LIMIT_SECRET` in the same environments;
-- the checked-in migration run once in Supabase SQL Editor before the first
-  production deploy;
+- checked-in migrations `0001_game_stats.sql` then
+  `0002_game_progression.sql` completed in Supabase SQL Editor before the
+  matching production API deploy;
 - a redeploy after environment changes.
 
 Without `SUPABASE_DATABASE_URL`, `/api/stats` intentionally returns HTTP 503 with
@@ -454,17 +609,26 @@ Files under `api/` are deployed as Vercel Functions alongside the Vite output.
 converted too: Vercel's Node helpers parse `request.body`, and wrapping that
 already-consumed stream as a second Web `Request` makes JSON POSTs fail.
 
+`0002` is required by create/connect/record/sync responses because the API reads
+progression tables even for an otherwise empty profile. Deploying the v2 API
+before `0002` can turn otherwise valid requests into SQLSTATE `42P01`/HTTP 503.
+Do not push a production-connected branch until the operator confirms the
+migration, unless the deployment is otherwise prevented.
+
 For database/API changes, perform at least one real integration pass against an
-empty disposable Supabase project:
+empty disposable Supabase project with both migrations applied:
 
 1. GET an empty leaderboard;
 2. create a profile;
 3. connect with its access code as a second client;
-4. record a valid run and retry the same `runId`;
-5. confirm totals increment once;
-6. rename and verify the leaderboard;
-7. verify invalid data and rate limiting;
-8. ensure no connection string, access code, raw IP, or claim URL reaches logs or Git.
+4. send one valid `run.completed` v2 event and retry the exact event;
+5. confirm the response changes from `applied` to `duplicate` and totals
+   increment once;
+6. confirm the same event ID with changed data returns `EVENT_ID_REUSED`;
+7. rename, reconnect, and verify progression plus leaderboard;
+8. verify invalid data, settings revision conflicts, and rate limiting;
+9. ensure no connection string, access code, raw IP, or claim URL reaches logs
+   or Git.
 
 ### Production statistics incident and proven baseline (2026-07-31)
 
@@ -548,7 +712,7 @@ For a local profile with `remoteConfirmed: false` and queued runs,
 ```text
 POST create with the existing access code
   -> optional queued rename
-  -> POST each pending run in order
+  -> POST sync batches of up to five pending run.completed events in order
   -> GET leaderboard
 ```
 
@@ -558,11 +722,12 @@ in that pass. The access code, optimistic totals, and pending runs remain in
 same create. This is a recoverable retry trap, not an autonomous React loop.
 
 Never tell a user in this state to forget the profile: that can destroy the only
-copy of an unconfirmed access code and queued result. Deploy/fix the API, then
+copy of an unconfirmed access code and queued result. The UI also hides that
+action while pending data is not synchronized. Deploy/fix the API, then
 hard-refresh if an old fetch is still pending and press the existing retry
-control once. Same-code create is an upsert, and pending runs keep their original
-`runId`, so response-loss retries do not normally duplicate the profile or a
-retained run.
+control once. Same-code create is an upsert, pending events keep the original
+`runId`/`eventId`, and the server's canonical-payload ledger makes response-loss
+retries idempotent.
 
 The profile and leaderboard currently share one hook-level status. A create
 failure can therefore make an unrequested empty leaderboard look authoritative.
@@ -630,7 +795,7 @@ is not executed by Vercel.
 
 Do not delete or migrate the optional stack unless the task explicitly targets
 it. Do not implement current game statistics in `db/schema.ts`; the live source
-is `api/stats.ts` plus `db/migrations/0001_game_stats.sql`.
+is `api/stats.ts` plus the ordered migrations under `db/migrations/`.
 
 ## 14. Git, rollback, and handoff
 
@@ -654,6 +819,17 @@ commits after it are:
 - `e76d217`: browser request timeout;
 - `7ffcec9`: correct Vercel Web Fetch handler and JSON POST fix;
 - `7d93a75`: regression-test/documentation hardening.
+
+The rollback refs created immediately before the Space Defender v2 work are:
+
+- annotated tag: `pre-space-defender-overhaul-20260801`;
+- branch: `backup/pre-space-defender-overhaul-20260801`;
+- target commit: `7764d15f89d7cb0581ee72216498ed3b541ec278`.
+
+Both refs are published on `origin`. The implementation, migration, firmware,
+and automated tests are recorded in commit `31d6945`. The additive `0002`
+database objects must not be dropped for a code rollback; older code ignores
+them, while they may already contain user progression and idempotency evidence.
 
 For a shared deployed branch, prefer a history-preserving rollback:
 
@@ -681,17 +857,29 @@ results, deployment prerequisites, and any external step you could not perform.
   mode is the fallback.
 - Database migrations are manual and must be applied before deploying code that
   depends on them; there is not yet an automated migration runner.
-- Server run-id deduplication retains only the newest 512 rows per profile. A
-  replay older than that retention window can increment lifetime aggregates
-  again; idempotency is not permanent archival deduplication.
+- Space Defender v2's event ledger grows without an automated archival policy;
+  this is intentional for idempotency but needs monitoring at larger scale.
 - Same-code create retries preserve identity and statistics, but currently
   consume mutation-rate counters and can update `updated_at`. Avoid aggressive
   blind retry loops; the create/profile-rename limit is 30 per hour.
 - Profile sync and leaderboard loading still share one hook status; a future UI
   refactor should separate those states and display the failing operation/code.
-- Automated tests currently do not execute React hooks/UI interactions, physical
-  Web Serial, or a live Supabase database. Use the manual/real integration
-  checks in this guide for changes in those areas.
+- Runtime records cumulative hull losses (including losses later repaired) and
+  exact per-wave sector duration/loss facts. The API adapter sends the latest
+  64 sector facts to keep an event bounded; runs beyond that retain exact
+  lifetime totals but omit older per-sector detail from the sync payload.
+- Revisioned settings exist in the shared/API/SQL contract, but the current UI
+  stores volumes, shake, motion, and remapped keys locally. Cross-device settings
+  sync is not yet wired into `useGameStats`.
+- Checkpoint/resume intentionally works only between waves. A mid-combat close
+  records the run; it does not serialize live entities.
+- `nebula` slows hostile projectiles to 82%, while `dark` accelerates hostile
+  movement and projectiles to 112%; their mist/vignette rendering remains
+  cosmetic and must not obscure essential telegraphs.
+- Automated tests do not execute React hook/UI interactions, physical Web
+  Serial, or a live Supabase database. Use the manual/real integration checks in
+  this guide for changes in those areas and never claim those passes unless they
+  were actually performed.
 
 ## 16. Definition of done
 
@@ -702,7 +890,15 @@ Before considering a change complete:
 3. Run `npm audit --omit=dev` when dependencies changed.
 4. Verify all three languages when copy or UI structure changed.
 5. Verify desktop/mobile layout when CSS or components changed.
-6. Verify both demo mode and physical-connection behavior when serial/game code changed.
-7. Run a real disposable-Postgres API flow when persistence, SQL, validation, or rate limiting changed.
-8. Update this file and `README.md` whenever architecture, commands, deployment,
+6. Verify demo, keyboard, touch, pause-on-focus-loss, checkpoint, and controlled
+   Arduino-protocol simulation when game code changed.
+7. Verify physical Arduino/Web Serial separately when available; report it as
+   unverified when no board was used.
+8. Apply migrations in order and run a real disposable-Supabase API flow when
+   persistence, SQL, validation, or rate limiting changed. Never substitute a
+   production test profile without explicit approval.
+9. Run the safe production GET/body/connect probes after a handler/runtime
+   change; they must not create a profile or result.
+10. Update this file, `README.md`, `SUPABASE_SETUP.md`, `GAME_DESIGN.md`, and
+   hardware docs whenever architecture, commands, deployment,
    environment variables, protocol, or rollback procedures change.
