@@ -353,6 +353,33 @@ function isUniqueNicknameError(error: unknown) {
   );
 }
 
+// SQLSTATE 23514 means already-validated data still failed a table CHECK, which
+// is shared-validation/SQL contract drift rather than an outage. Only map it for
+// the event-apply paths: the same SQLSTATE can also come from infrastructure
+// constraints such as `game_rate_limits_bucket_check`, and calling that a
+// rejected statistic would be its own misdiagnosis.
+function isCheckViolation(error: unknown) {
+  return (
+    Boolean(error) &&
+    typeof error === "object" &&
+    (error as DatabaseError).code === "23514"
+  );
+}
+
+function syncFailureResponse(error: unknown) {
+  if (error instanceof SyncEventError) {
+    return errorResponse(error.status, error.code, error.message);
+  }
+  if (isCheckViolation(error)) {
+    return errorResponse(
+      400,
+      "STATISTICS_REJECTED",
+      "The submitted statistics failed a database consistency check.",
+    );
+  }
+  return null;
+}
+
 function rowsFromResult(result: unknown): DatabaseRow[] {
   if (!Array.isArray(result)) {
     throw new Error("The database returned an invalid result.");
@@ -1617,8 +1644,10 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
           recorded: result.status === "applied",
         } satisfies ProfileResponse);
       } catch (error) {
-        if (error instanceof SyncEventError) {
-          return errorResponse(error.status, error.code, error.message);
+        const mapped = syncFailureResponse(error);
+        if (mapped) {
+          reportDatabaseError("Legacy run could not be applied", error);
+          return mapped;
         }
         throw error;
       }
@@ -1653,8 +1682,10 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
         }
         return progressionResponse(sql, accessCodeHash, results);
       } catch (error) {
-        if (error instanceof SyncEventError) {
-          return errorResponse(error.status, error.code, error.message);
+        const mapped = syncFailureResponse(error);
+        if (mapped) {
+          reportDatabaseError("Sync event could not be applied", error);
+          return mapped;
         }
         throw error;
       }

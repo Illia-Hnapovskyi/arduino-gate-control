@@ -33,6 +33,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local agent/MCP connector config (holds no secret, but stays developer-local
+# until it is deliberately committed)
+/.mcp.json
+
 # typescript
 next-env.d.ts
 *.tsbuildinfo

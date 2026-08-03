@@ -37,16 +37,21 @@ DDL ніколи не виконується під час API-запиту. С�
 У Supabase **SQL Editor** послідовно виконай повний вміст:
 
 1. [`db/migrations/0001_game_stats.sql`](db/migrations/0001_game_stats.sql);
-2. [`db/migrations/0002_game_progression.sql`](db/migrations/0002_game_progression.sql).
+2. [`db/migrations/0002_game_progression.sql`](db/migrations/0002_game_progression.sql);
+3. [`db/migrations/0003_base_table_grants.sql`](db/migrations/0003_base_table_grants.sql).
 
 Не об'єднуй і не міняй їх місцями. Після кожного файлу дочекайся успішного
 завершення перед переходом далі.
 
+`0003` не створює й не змінює жодного об'єкта: він лише робить `REVOKE` для
+базових таблиць з `0001`, які раніше трималися тільки на RLS. Його можна
+застосувати в будь-який момент і повторно.
+
 ### База, де v1 статистика вже працює
 
 Якщо `0001_game_stats.sql` раніше застосовано і наявні
-`game_players`, `game_runs`, `game_rate_limits`, зроби backup та виконай лише
-відсутню `0002_game_progression.sql`. Міграція additive: вона не видаляє
+`game_players`, `game_runs`, `game_rate_limits`, зроби backup та виконай
+відсутні `0002_game_progression.sql` і `0003_base_table_grants.sql`. Міграція additive: вона не видаляє
 профілі, старі runs або lifetime totals; додає колонки, ledger і progression
 таблиці. Вона backfill-ить `first_run`, `score_10000`, `max_level` і
 `veteran_10`, якщо їх можна довести з v1 aggregates, та створює відповідні
@@ -54,8 +59,9 @@ unlock rows. Для таких рядків `unlocked_at` є часом мігр
 історичною датою. Детальні enemy/boss/power/accuracy/controller milestones
 неможливо чесно відновити без v2 run facts.
 
-`0002` запускається у транзакції, бере advisory lock, використовує короткі
-`lock_timeout`/`statement_timeout` і додає constraints явно. `IF NOT EXISTS` не
+`0002` і `0003` запускаються у транзакції, беруть той самий advisory lock і
+використовують короткі `lock_timeout`/`statement_timeout`; `0002` додає
+constraints явно. `IF NOT EXISTS` не
 може виправити вже наявний несумісний об'єкт. Якщо міграція завершується
 помилкою, не повторюй її навмання: зафіксуй SQLSTATE/назву constraint без
 значень запиту та перевір фактичну схему.
@@ -104,12 +110,50 @@ select tablename, policyname
 from pg_policies
 where schemaname = 'public'
   and tablename like 'game_%';
+
+select c.relname as table_name, r.rolname as role_name, p.privilege
+from pg_class c
+join pg_namespace n on n.oid = c.relnamespace
+cross join (values ('anon'), ('authenticated'), ('service_role')) as r(rolname)
+cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) as p(privilege)
+where n.nspname = 'public'
+  and c.relkind = 'r'
+  and c.relname like 'game_%'
+  and has_table_privilege(r.rolname, c.oid, p.privilege)
+order by c.relname, r.rolname, p.privilege;
 ```
 
 Очікується 12 таблиць, `rls_enabled = true` для кожної та відсутність public
-policies. Data API grants і RLS — різні захисні рівні: `0002` додатково робить
-`REVOKE` для нових таблиць/sequence від `anon`, `authenticated` і
-`service_role`. Не додавай grants або policies без окремого security review.
+policies. Останній запит має вернути **нуль рядків після застосування `0003`**;
+до нього три базові таблиці з `0001` ще мають Data API grants. Він свідомо
+використовує `has_table_privilege`, а не `information_schema.role_table_grants`:
+той view показує лише grants, видані поточно доступними ролями, і може дати
+хибне «все чисто».
+
+Data API grants і RLS — різні захисні рівні: `0002` робить `REVOKE` для нових
+таблиць/sequence, `0003` — для трьох базових. Обидві міграції знімають права
+станом на момент виконання; вони **не** змінюють `ALTER DEFAULT PRIVILEGES`, тому
+будь-яка майбутня таблиця в `public` знову отримає grants і потребуватиме
+власного `REVOKE`. Не додавай grants або policies без окремого security review.
+
+Швидка однорядкова перевірка стану схеми:
+
+```sql
+select
+  (select count(*) from information_schema.tables
+     where table_schema = 'public' and table_name like 'game_%')  as tables_found,
+  (to_regclass('public.game_sync_events') is not null)            as migration_0002_applied,
+  (select count(*) from pg_policies
+     where schemaname = 'public' and tablename like 'game_%')      as public_policies,
+  (select count(*) from pg_class c
+     join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public' and c.relkind = 'r'
+       and c.relname like 'game_%' and not c.relrowsecurity)       as tables_without_rls;
+```
+
+Здоровий стан: `12 | true | 0 | 0`. Якщо `migration_0002_applied = false`, то
+`sync` повертає `503 SCHEMA_MIGRATION_REQUIRED`, а браузери накопичують
+завершені забіги в offline-черзі — дані не втрачені, але progression не працює.
 
 ## 3. Скопіюй Transaction Pooler URI
 
@@ -158,8 +202,8 @@ openssl rand -hex 32
 ## 5. Безпечний порядок production deployment
 
 1. Зроби backup або підтвердь доступну point-in-time recovery.
-2. Застосуй відсутні міграції: `0001` → `0002`.
-3. Виконай read-only перевірку схеми/RLS.
+2. Застосуй відсутні міграції: `0001` → `0002` → `0003`.
+3. Виконай read-only перевірку схеми/RLS/grants.
 4. Бажано лише після підтвердженої `0002` deploy v2 API/frontend.
 5. Виконай безпечні probes нижче.
 6. Перевір Vercel runtime logs без виведення secrets або request payloads.
@@ -220,8 +264,8 @@ mutation, яка не створила gameplay result, змінює rate-limit 
 
 ## 7. Повна інтеграційна перевірка — тільки disposable project
 
-Для persistence/API/SQL зміни застосуй `0001` і `0002` до порожнього disposable
-Supabase project і перевір:
+Для persistence/API/SQL зміни застосуй `0001`, `0002` і `0003` до порожнього
+disposable Supabase project і перевір:
 
 1. GET порожнього leaderboard;
 2. create profile з локально згенерованим кодом;
@@ -332,7 +376,9 @@ remote deletion endpoint.
 - `42P10` — немає unique/primary constraint для `ON CONFLICT`;
 - `42501` — privilege/RLS проблема;
 - `23505` — unique conflict, зазвичай nickname;
-- `23514` — check constraint відхилив дані;
+- `23514` — check constraint відхилив дані. API віддає це як HTTP 400
+  `STATISTICS_REJECTED`, а не як 503, і логує SQLSTATE. Це означає розходження
+  між shared-валідацією і SQL, а не збій бази;
 - `080xx`, `53300`, `57P03` — connection/capacity/availability.
 
 Лог має містити тільки context і SQLSTATE. Не копіюй туди query values,
@@ -343,6 +389,19 @@ database URL, access code, raw IP або request body.
 Це не доказ Supabase outage. Перевір, що handler — Web Fetch object, shared
 server import закінчується `.js`, а legacy `Readable.toWeb()` adapter відсутній.
 Саме змішування Vercel Node і Web handler моделей спричинило outage 2026-07-31.
+
+### `STATISTICS_REJECTED`
+
+HTTP 400. Shared-валідація прийняла забіг, а table CHECK у Postgres його
+відхилив (SQLSTATE `23514`). Це означає розходження між `shared/gameStats.ts` і
+`db/migrations/*.sql`, а не збій бази — тому код навмисно не 503. Мапиться лише
+для apply-шляхів `record`/`sync`: те саме SQLSTATE від інфраструктурних
+constraint-ів (наприклад `game_rate_limits_bucket_check`) лишається 503, бо це не
+проблема даних гравця.
+
+Клієнт не викидає подію при 400: вона лишається в offline-черзі й буде
+повторюватися. Тому детерміновану `23514` треба виправляти в контракті, інакше
+черга не просунеться.
 
 ### `EVENT_ID_REUSED`
 

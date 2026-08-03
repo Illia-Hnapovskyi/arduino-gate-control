@@ -160,6 +160,32 @@ test("v2 run summaries normalize progression facts without weakening legacy rule
     ["laser", "shield"],
   );
 
+  // An omitted final sector must resolve to the same value the SQL CHECK derives
+  // from mode+wave. A fixed fallback previously let the API accept a payload that
+  // Postgres rejected with SQLSTATE 23514, which surfaced as a bogus outage.
+  const withoutSector = {
+    ...summary,
+    modeId: "survival",
+    difficultyId: "pilot",
+    durationMs: 44_000,
+    level: 2,
+    highestWave: 2,
+    bossesDefeated: 0,
+    won: false,
+    endedReason: "defeat",
+  };
+  delete withoutSector.finalSectorId;
+  const derivedSector = validateRunSummary(withoutSector);
+  assert.equal(derivedSector.ok, true);
+  assert.equal(
+    derivedSector.ok ? derivedSector.value.finalSectorId : null,
+    "nebula",
+  );
+  assert.equal(
+    validateRunSummary({ ...withoutSector, finalSectorId: "starfield" }).ok,
+    false,
+  );
+
   assert.equal(validateRunSummary({ ...summary, score: 12_001 }).ok, false);
   assert.equal(validateRunSummary({ ...summary, shotsHit: 101 }).ok, false);
   assert.equal(validateRunSummary({ ...summary, modeId: "forged" }).ok, false);
@@ -404,4 +430,26 @@ test("progression migration keeps permanent dedupe and deny-by-default RLS", asy
   assert.match(migration, /game_sync_events ENABLE ROW LEVEL SECURITY/);
   assert.match(migration, /FROM anon, authenticated, service_role/);
   assert.doesNotMatch(migration, /CREATE POLICY/i);
+});
+
+test("base table migration closes the Data API grant gap left by 0001", async () => {
+  const migration = await readFile(
+    new URL("../db/migrations/0003_base_table_grants.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(migration, /REVOKE ALL ON TABLE/);
+  for (const table of ["game_players", "game_runs", "game_rate_limits"]) {
+    assert.match(migration, new RegExp(`\\b${table}\\b`));
+  }
+  assert.match(migration, /REVOKE ALL ON SEQUENCE/);
+  // Assert the exact BIGSERIAL sequence names 0001 creates: a typo here would
+  // pass a substring check and only fail inside Supabase.
+  for (const sequence of ["game_players_id_seq", "game_runs_id_seq"]) {
+    assert.match(migration, new RegExp(`\\b${sequence}\\b`));
+  }
+  assert.match(migration, /FROM anon, authenticated, service_role/);
+  // Privileges only: this migration must never create objects or open access.
+  assert.doesNotMatch(migration, /CREATE POLICY/i);
+  assert.doesNotMatch(migration, /^\s*GRANT\b/mi);
+  assert.doesNotMatch(migration, /CREATE TABLE|ALTER TABLE|DROP TABLE/i);
 });
