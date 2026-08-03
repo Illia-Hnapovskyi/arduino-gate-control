@@ -730,7 +730,13 @@ than trusting it as an invariant.
   accumulated completed runs in their offline queues while the UI showed only a
   generic sync error. `0002` was then applied and the catalog query reported 12
   `game_%` tables, RLS enabled on all of them, and zero policies.
-- `0003` was authored afterwards and is not yet applied in production.
+- `0003` was authored and applied later the same day. Before it ran, exactly the
+  three `0001` tables (`game_players`, `game_runs`, `game_rate_limits`) still
+  granted `anon`, `authenticated`, and `service_role`, while all nine `0002`
+  tables granted none — the single-layer gap `0003` exists to close. After it
+  ran, `has_table_privilege` reports zero grants across all 12 tables, and the
+  three safe probes still returned `200`/`400`/`404`, confirming the API is
+  unaffected because it connects as the table owner.
 - `GET` no longer returns an empty array: one real profile is ranked, which
   proves the mutation path worked in production at least once. Do not copy the
   older empty-array example as the expected baseline.
@@ -818,6 +824,11 @@ access codes, connection strings, or raw IPs. Ask for the newest runtime log and
 deployment commit; stale logs from an earlier deployment can point to an already
 fixed cause.
 
+Capture runtime logs immediately after an incident. Retention on this project's
+plan is short: on 2026-08-03 a query for the previous three hours of production
+logs already returned nothing, while entries from minutes earlier were present.
+Do not plan to inspect yesterday's failure from the logs — it will be gone.
+
 ## 13. Legacy and optional infrastructure
 
 Do not mistake these for the active Vercel path:
@@ -860,7 +871,12 @@ commits after it are:
 - `fef3ff1`: legacy Node response adapter (do not restore without redesign);
 - `e76d217`: browser request timeout;
 - `7ffcec9`: correct Vercel Web Fetch handler and JSON POST fix;
-- `7d93a75`: regression-test/documentation hardening.
+- `7d93a75`: regression-test/documentation hardening;
+- `d5b140a`: derived final-sector validation, scoped `23514` → HTTP 400
+  `STATISTICS_REJECTED`, and `0003_base_table_grants.sql`. Squash-merged from
+  `fix/sql-contract-and-base-table-grants`, so that branch's `82d7b51` is not an
+  ancestor of `main`; roll back with `git revert d5b140a`, not by restoring the
+  branch.
 
 The rollback refs created immediately before the Space Defender v2 work are:
 
