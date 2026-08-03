@@ -693,10 +693,16 @@ export function validateRunSummary(
   ) {
     return { ok: false, error: "Lives lost is not plausible for available repairs." };
   }
-  if (
-    candidate.finalSectorId !== undefined &&
-    finalSectorId.value !== getGameSectorForWave(modeId.value, highestWave.value)
-  ) {
+  // An omitted sector must resolve to the same value the SQL CHECK derives from
+  // mode+wave. A fixed fallback made this validator accept a payload that
+  // `game_runs_progression_check` would reject with SQLSTATE 23514. No in-repo
+  // caller reaches that state (the adapter always sends a sector, and the legacy
+  // `record`/v1-migration paths default to Classic, whose derived sector is
+  // `starfield`), so this is contract hygiene rather than an observed outage.
+  const derivedSectorId = getGameSectorForWave(modeId.value, highestWave.value);
+  const resolvedSectorId =
+    candidate.finalSectorId === undefined ? derivedSectorId : finalSectorId.value;
+  if (resolvedSectorId !== derivedSectorId) {
     return { ok: false, error: "Final sector does not match the selected mode and wave." };
   }
 
@@ -876,7 +882,7 @@ export function validateRunSummary(
       modeId: modeId.value,
       difficultyId: difficultyId.value,
       highestWave: highestWave.value,
-      finalSectorId: finalSectorId.value,
+      finalSectorId: resolvedSectorId,
       enemiesDestroyed: counters.enemiesDestroyed.value,
       bossesDefeated: counters.bossesDefeated.value,
       shotsFired: counters.shotsFired.value,

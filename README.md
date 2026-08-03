@@ -129,9 +129,11 @@ npx vercel dev
 Міграції ручні й виконуються **до** deployment відповідного API:
 
 1. `db/migrations/0001_game_stats.sql`;
-2. `db/migrations/0002_game_progression.sql`.
+2. `db/migrations/0002_game_progression.sql`;
+3. `db/migrations/0003_base_table_grants.sql` — лише `REVOKE`, без нових
+   об'єктів, тому порядок для нього не критичний.
 
-Для вже налаштованої v1 production-бази виконай тільки відсутню `0002`.
+Для вже налаштованої v1 production-бази виконай відсутні `0002` і `0003`.
 До її застосування API лишає leaderboard/create/connect/rename і legacy record
 сумісними з `0001`, а новий `sync` повертає `SCHEMA_MIGRATION_REQUIRED`; браузер
 не втрачає run, а тримає його в offline queue. `0002` зберігає старі дані та backfill-ить чотири
@@ -145,8 +147,9 @@ Vercel потребує серверні secrets:
 
 Postgres.js використовує TLS, одну connection на теплий instance і
 `prepare: false`, що сумісно з transaction pooling. Не додавай префікс `VITE_`
-до secrets. Всі таблиці мають RLS deny-by-default; нові v2 таблиці також не
-мають публічних grants/policies. Браузер працює тільки через `/api/stats`.
+до secrets. Всі таблиці мають RLS deny-by-default і не мають публічних grants/policies:
+`0002` робить `REVOKE` для v2 таблиць, `0003` — для трьох базових. Браузер
+працює тільки через `/api/stats`.
 
 Rate limits у фіксованому одногодинному вікні: 600 mutation events з IP,
 30 create з IP, 240 completed runs, 30 rename/create-upsert та 300 total v2

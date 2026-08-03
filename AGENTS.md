@@ -19,8 +19,9 @@ the user-facing setup guide.
 - Before handoff run `npm run check` and `git diff --check`.
 - Keep firmware, serial parsing, translations, validation, game balance, and
   checked-in Postgres migrations synchronized when their contracts change.
-- Production schema setup is ordered: apply `0001_game_stats.sql` and then
-  `0002_game_progression.sql` before deploying the matching v2 API.
+- Production schema setup is ordered: apply `0001_game_stats.sql`, then
+  `0002_game_progression.sql` before deploying the matching v2 API, then the
+  privilege-only `0003_base_table_grants.sql`.
 - No cookies and no committed secrets. Profile codes are passwords.
 - `worker/`, D1/Drizzle, Next.js, and vinext files are optional legacy paths,
   although they are still included in lint/type checking.
@@ -115,6 +116,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `api/stats.ts` | Vercel Web Fetch-style function, Supabase PostgreSQL queries, rate limiting, and stats aggregation. |
 | `db/migrations/0001_game_stats.sql` | Base profiles, runs, leaderboard aggregates, and rate-limit schema. |
 | `db/migrations/0002_game_progression.sql` | Additive v2 event ledger, detailed run facts, progression, achievements, unlocks, settings, RLS, and grants. |
+| `db/migrations/0003_base_table_grants.sql` | Privilege-only migration revoking the Data API roles from the three `0001` base tables and their sequences. |
 | `GAME_DESIGN.md` | Implemented game loop, balance, validation invariants, known gaps, and test contract. |
 | `SUPABASE_SETUP.md` | Ukrainian step-by-step Supabase/Vercel provisioning, verification, troubleshooting, and rollback guide. |
 | `.agents/skills/supabase/` | Official Supabase agent workflow, current-docs, tooling, migration, and security guidance. |
@@ -397,7 +399,11 @@ Apply the imperative migrations in filename order:
    `game_sync_events`, `game_run_power_stats`, `game_run_sector_stats`,
    `game_player_totals`, `game_player_mode_stats`,
    `game_player_power_stats`, `game_player_achievements`,
-   `game_player_unlocks`, and `game_player_settings`.
+   `game_player_unlocks`, and `game_player_settings`;
+3. `0003_base_table_grants.sql` revokes `anon`, `authenticated`, and
+   `service_role` from `game_players`, `game_runs`, `game_rate_limits`, and the
+   two base sequences. It changes privileges only: no object is created,
+   altered, or dropped, and it is safe to re-run.
 
 The v2 event ledger is the permanent idempotency source. Do not reintroduce the
 old newest-512-run cleanup: pruning ledger rows would allow an old event to be
@@ -408,8 +414,9 @@ additional compatibility layer.
 with Postgres.js prepared statements disabled, a one-connection client per warm
 Vercel instance, and TLS required. Schema changes are never run during a request:
 apply the checked-in SQL migrations in Supabase SQL Editor before deploying.
-`0002` uses an explicit transaction, advisory lock, short lock/statement
-timeouts, guarded constraints, FK indexes, and additive `ALTER` statements.
+`0002` and `0003` use an explicit transaction, the same advisory lock, and short
+lock/statement timeouts; `0002` adds guarded constraints, FK indexes, and
+additive `ALTER` statements, while `0003` only revokes privileges.
 `CREATE IF NOT EXISTS` does not evolve an already-existing incompatible object;
 future changes still require a new explicit migration.
 
@@ -420,10 +427,15 @@ rows use migration time. Enemy, boss, accuracy, controller, sector, and power
 milestones begin when v2 facts arrive; never fabricate their history.
 
 All active statistics tables enable Row Level Security without anon or
-authenticated policies. The v2 migration also explicitly revokes access to its
-new tables/sequences from `anon`, `authenticated`, and `service_role`. Supabase
+authenticated policies. `0002` revokes access to its new tables/sequences from
+`anon`, `authenticated`, and `service_role`, and `0003` does the same for the
+three `0001` base tables, which previously relied on RLS alone. Supabase
 Data API grants and RLS are separate controls; retain both deny-by-default layers
-so browser clients cannot bypass `/api/stats`. The direct Postgres connection
+so browser clients cannot bypass `/api/stats`. `0002` and `0003` revoke privileges
+as of their execution only: neither touches `ALTER DEFAULT PRIVILEGES` on
+`public`, so any table added later is granted to the Data API roles again and
+needs its own `REVOKE`. Verify with `has_table_privilege`, not
+`information_schema.role_table_grants`, which can report a false all-clear. The direct Postgres connection
 must use an appropriate server role. Do not add public grants or policies
 without a separate security review.
 
@@ -585,7 +597,8 @@ Production prerequisites managed outside Git:
 - preferably `RATE_LIMIT_SECRET` in the same environments;
 - checked-in migrations `0001_game_stats.sql` then
   `0002_game_progression.sql` completed in Supabase SQL Editor before the
-  matching production API deploy;
+  matching production API deploy, plus `0003_base_table_grants.sql`, which can be
+  applied at any point because it only revokes privileges;
 - a redeploy after environment changes.
 
 Without `SUPABASE_DATABASE_URL`, `/api/stats` intentionally returns HTTP 503 with
@@ -618,7 +631,7 @@ from breaking base profiles, but it is not a substitute for applying `0002`;
 progression remains pending until the operator completes the migration.
 
 For database/API changes, perform at least one real integration pass against an
-empty disposable Supabase project with both migrations applied:
+empty disposable Supabase project with all three migrations applied:
 
 1. GET an empty leaderboard;
 2. create a profile;
@@ -706,6 +719,28 @@ zero-game profiles are intentionally excluded. Conversely, a successful GET
 proves database connectivity and the leaderboard SELECT, but not the mutation
 or JSON-body paths.
 
+### Verified production state (2026-08-03)
+
+Confirmed by the safe probes plus a read-only Supabase catalog query, without
+exposing a credential or profile code. This records one moment; re-verify rather
+than trusting it as an invariant.
+
+- Until this date only `0001` was applied. Every v2 `sync` therefore returned
+  `503 SCHEMA_MIGRATION_REQUIRED`, progression stayed empty, and browsers
+  accumulated completed runs in their offline queues while the UI showed only a
+  generic sync error. `0002` was then applied and the catalog query reported 12
+  `game_%` tables, RLS enabled on all of them, and zero policies.
+- `0003` was authored afterwards and is not yet applied in production.
+- `GET` no longer returns an empty array: one real profile is ranked, which
+  proves the mutation path worked in production at least once. Do not copy the
+  older empty-array example as the expected baseline.
+- `{}` still returns `400 INVALID_ACTION` and a synthetic `connect` still
+  returns `404 PROFILE_NOT_FOUND` — the latter now through the v2
+  `REPEATABLE READ READ ONLY` snapshot path rather than the `0001` fallback.
+- The deployed frontend matched `HEAD`: a local `npm run build` produced the same
+  hashed asset filenames the live site serves. This is a cheap way to confirm the
+  deployment without Vercel Dashboard access.
+
 ### Browser synchronization failure model
 
 For a local profile with `remoteConfirmed: false` and queued runs,
@@ -769,7 +804,12 @@ Useful Vercel/Postgres evidence codes:
 - `42501`: insufficient database privilege/RLS issue;
 - `23505`: unique conflict (normally `NICKNAME_TAKEN` when it is the nickname
   index);
-- `23514`: database check constraint rejected data;
+- `23514`: database check constraint rejected data. In the `record`/`sync` apply
+  paths only, the API maps this to HTTP 400 `STATISTICS_REJECTED` instead of a
+  misleading `503 DATABASE_UNAVAILABLE`, and still logs the SQLSTATE; treat it as
+  shared-validation/SQL contract drift. The same SQLSTATE from an infrastructure
+  constraint such as `game_rate_limits_bucket_check` deliberately stays a 503,
+  because it is not the player's data that is wrong;
 - HTTP `429`: mutation limit reached; inspect `Retry-After`;
 - `080xx`, `53300`, or `57P03`: connection/capacity/availability failure.
 
@@ -829,9 +869,14 @@ The rollback refs created immediately before the Space Defender v2 work are:
 - target commit: `7764d15f89d7cb0581ee72216498ed3b541ec278`.
 
 Both refs are published on `origin`. The implementation, migration, firmware,
-and automated tests are recorded in commit `31d6945`. The additive `0002`
+and automated tests are recorded in commit `31d6945`. The released state is also
+tagged `space-defender-v2-20260801`, and `origin/codex/space-defender-overhaul-20260801`
+currently points at the same commit as `main`; neither is a rollback target. The additive `0002`
 database objects must not be dropped for a code rollback; older code ignores
 them, while they may already contain user progression and idempotency evidence.
+`0003` only revokes Data API privileges and should also stay in place during a
+code rollback: every code version reaches Postgres as the table owner, so no
+older revision depends on those grants.
 
 For a shared deployed branch, prefer a history-preserving rollback:
 
@@ -866,6 +911,14 @@ results, deployment prerequisites, and any external step you could not perform.
   blind retry loops; the create/profile-rename limit is 30 per hour.
 - Profile sync and leaderboard loading still share one hook status; a future UI
   refactor should separate those states and display the failing operation/code.
+- A deterministically rejected event blocks the head of the queue. `useGameStats`
+  always retries `pendingEvents[0]` first and never discards it, so a permanent
+  400 (`STATISTICS_REJECTED`) or 503 also stops every later run from syncing.
+  That is deliberate — the alternative is silent data loss — but it means
+  validation/SQL contract drift must be fixed, not waited out.
+- `STATISTICS_REJECTED` has no dedicated localized copy: `PlayerStatsPanel`
+  localizes only a few codes, so the player still sees the generic sync error.
+  That change improved the HTTP status and the server log, not the UI text.
 - Runtime records cumulative hull losses (including losses later repaired) and
   exact per-wave sector duration/loss facts. The API adapter sends the latest
   64 sector facts to keep an event bounded; runs beyond that retain exact
