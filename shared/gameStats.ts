@@ -2,6 +2,17 @@ export const GAME_STATS_API_PATH = "/api/stats";
 
 export const GAME_STATS_LANGUAGES = ["uk", "de", "en"] as const;
 
+export const GAME_STATS_ACTIONS = [
+  "create",
+  "connect",
+  "rename",
+  "record",
+  "sync",
+  "link",
+  "unlink",
+  "session",
+] as const;
+
 export const GAME_MODE_IDS = ["expedition", "survival", "classic"] as const;
 export const GAME_DIFFICULTY_IDS = ["cadet", "pilot", "ace"] as const;
 export const GAME_SECTOR_IDS = [
@@ -55,6 +66,7 @@ export const GAME_ACHIEVEMENTS = [
 export const MAX_GAME_SYNC_EVENTS = 5;
 
 export type GameStatsLanguage = (typeof GAME_STATS_LANGUAGES)[number];
+export type GameStatsAction = (typeof GAME_STATS_ACTIONS)[number];
 export type GameModeId = (typeof GAME_MODE_IDS)[number];
 export type GameDifficultyId = (typeof GAME_DIFFICULTY_IDS)[number];
 export type GameSectorId = (typeof GAME_SECTOR_IDS)[number];
@@ -103,7 +115,9 @@ export type LeaderboardEntry = PlayerStats & {
 
 export type CreateStatsRequest = {
   action: "create";
-  accessCode: string;
+  // Absent access code selects the bearer/account path: the server generates a
+  // fresh code itself. When present, the legacy code path runs unchanged.
+  accessCode?: string;
   nickname?: string;
   language: GameStatsLanguage;
 };
@@ -222,12 +236,29 @@ export type SyncStatsRequest = {
   events: GameSyncEvent[];
 };
 
+export type LinkStatsRequest = {
+  action: "link";
+  accessCode: string;
+};
+
+export type UnlinkStatsRequest = {
+  action: "unlink";
+  accessCode: string;
+};
+
+export type SessionStatsRequest = {
+  action: "session";
+};
+
 export type GameStatsRequest =
   | CreateStatsRequest
   | ConnectStatsRequest
   | RenameStatsRequest
   | RecordStatsRequest
-  | SyncStatsRequest;
+  | SyncStatsRequest
+  | LinkStatsRequest
+  | UnlinkStatsRequest
+  | SessionStatsRequest;
 
 export type PlayerExtendedTotals = {
   enemiesDestroyed: number;
@@ -300,6 +331,8 @@ export type ProfileResponse = {
   accessCode?: string;
   recorded?: boolean;
   progression?: PlayerProgression;
+  profilePublicId?: string;
+  accountLinked?: boolean;
 };
 
 export type GameSyncResult = {
@@ -475,6 +508,86 @@ export function validateLanguage(value: unknown): ValidationResult<GameStatsLang
     (GAME_STATS_LANGUAGES as readonly string[]).includes(value)
     ? { ok: true, value: value as GameStatsLanguage }
     : { ok: false, error: "Unsupported language." };
+}
+
+const PROFILE_PUBLIC_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function validateProfilePublicId(
+  value: unknown,
+): ValidationResult<string> {
+  if (typeof value !== "string") {
+    return { ok: false, error: "Profile public ID must be text." };
+  }
+
+  const publicId = value.trim().toLowerCase();
+  if (!PROFILE_PUBLIC_ID_PATTERN.test(publicId)) {
+    return { ok: false, error: "Profile public ID must be a UUID." };
+  }
+
+  return { ok: true, value: publicId };
+}
+
+export type CredentialMode = "code" | "bearer" | "both";
+
+export type CredentialDecision =
+  | { ok: true; credential: CredentialMode }
+  | {
+      ok: false;
+      status: 400 | 401;
+      code: "MIXED_CREDENTIALS" | "INVALID_ACCESS_CODE" | "AUTH_TOKEN_MISSING";
+      error: string;
+    };
+
+const MIXED_CREDENTIALS_DECISION: CredentialDecision = {
+  ok: false,
+  status: 400,
+  code: "MIXED_CREDENTIALS",
+  error: "Provide either an access code or a bearer token, not both.",
+};
+
+const ACCESS_CODE_MISSING_DECISION: CredentialDecision = {
+  ok: false,
+  status: 400,
+  code: "INVALID_ACCESS_CODE",
+  error: "An access code is required for this action.",
+};
+
+const BEARER_MISSING_DECISION: CredentialDecision = {
+  ok: false,
+  status: 401,
+  code: "AUTH_TOKEN_MISSING",
+  error: "A bearer token is required for this action.",
+};
+
+// Server-enforced credential matrix. `link`/`unlink` are the only both-actions;
+// `session` is bearer-only; `connect` stays code-only (bearer users call
+// `session` instead); the remaining actions accept exactly one credential.
+export function evaluateCredentialMatrix(
+  action: GameStatsAction,
+  hasAccessCode: boolean,
+  hasBearerToken: boolean,
+): CredentialDecision {
+  if (action === "link" || action === "unlink") {
+    if (hasAccessCode && hasBearerToken) return { ok: true, credential: "both" };
+    return hasBearerToken ? ACCESS_CODE_MISSING_DECISION : BEARER_MISSING_DECISION;
+  }
+
+  if (action === "session") {
+    if (hasAccessCode) return MIXED_CREDENTIALS_DECISION;
+    return hasBearerToken
+      ? { ok: true, credential: "bearer" }
+      : BEARER_MISSING_DECISION;
+  }
+
+  if (hasAccessCode && hasBearerToken) return MIXED_CREDENTIALS_DECISION;
+  if (hasAccessCode) return { ok: true, credential: "code" };
+  if (hasBearerToken) {
+    return action === "connect"
+      ? MIXED_CREDENTIALS_DECISION
+      : { ok: true, credential: "bearer" };
+  }
+  return ACCESS_CODE_MISSING_DECISION;
 }
 
 function validateInteger(

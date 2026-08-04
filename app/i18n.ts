@@ -585,6 +585,73 @@ export const GAME_COPY = {
     forgetProfile: "Забути профіль на цьому пристрої",
     forgetProfileConfirm:
       "Забути цей профіль на пристрої? Онлайн-статистика не видалиться, але для повернення знадобиться код профілю.",
+    accountTitle: "Акаунт",
+    accountSubtitle:
+      "Увійди, щоб відкривати профіль на інших пристроях без коду.",
+    accountEmailLabel: "Електронна пошта",
+    accountPasswordLabel: "Пароль",
+    accountNicknameLabel: "Нік для профілю",
+    accountSignIn: "Увійти",
+    accountSignUp: "Створити акаунт",
+    accountSignOut: "Вийти на цьому пристрої",
+    accountSignOutAll: "Вийти на всіх пристроях",
+    accountForgotPassword: "Не пам’ятаєш пароль?",
+    accountResetSent:
+      "Лист для скидання пароля надіслано. Перевір свою пошту.",
+    accountConfirmSent:
+      "Лист із підтвердженням надіслано. Перевір свою пошту.",
+    accountPasswordUpdated: "Пароль оновлено.",
+    accountNewPasswordLabel: "Новий пароль",
+    accountUpdatePassword: "Оновити пароль",
+    accountGoogle: "Увійти через Google",
+    accountApple: "Увійти через Apple",
+    accountOrDivider: "або",
+    accountLegacyCodeSummary: "У мене є код профілю",
+    accountLinked: "Профіль прив’язано до акаунта",
+    accountNotLinked: "Профіль не прив’язано до акаунта",
+    accountLinkProfile: "Прив’язати профіль до акаунта",
+    accountUnlinkProfile: "Відв’язати профіль від акаунта",
+    accountLinkDone: "Профіль прив’язано до акаунта.",
+    accountAlreadyLinked:
+      "Цей профіль уже прив’язано до твого акаунта.",
+    accountLinkConflictAccount:
+      "До цього акаунта вже прив’язано інший профіль.",
+    accountLinkConflictProfile:
+      "Цей профіль уже прив’язано до іншого акаунта.",
+    accountSessionExpired: "Сесія завершилася. Увійди ще раз.",
+    accountAuthError:
+      "Не вдалося виконати дію з акаунтом. Спробуй ще раз.",
+    accountEmailInvalid: "Перевір адресу електронної пошти.",
+    accountPasswordTooShort:
+      "Пароль має містити щонайменше 8 символів.",
+    conflictTitle: "Знайдено два профілі",
+    conflictBody:
+      "На акаунті вже є один профіль, а на цьому пристрої — інший. Обери, з яким продовжити; нічого не об’єднується й не перезаписується.",
+    conflictKeepLocal: "Залишити локальний профіль",
+    conflictUseAccount: "Використати профіль акаунта",
+    conflictVaultNote:
+      "Другий профіль не зникне — він залишиться у списку профілів на цьому пристрої.",
+    profilesTitle: "Профілі на цьому пристрої",
+    profilesSwitch: "Перемкнутися",
+    profilesActive: "Активний",
+    profilesLocalOnly: "Лише на цьому пристрої",
+    profilesAccount: "Акаунт",
+    consentTitle: "Дані та приватність",
+    consentIntro:
+      "Ось чесний список того, що сайт зберігає у твоєму браузері.",
+    consentItemRequired:
+      "Обов’язково: localStorage для даних гри — профілі, статистика та черга синхронізації.",
+    consentItemAuth:
+      "Лише з акаунтом: сесія Supabase Auth зберігається в localStorage цього браузера.",
+    consentItemProviders:
+      "Google або Apple встановлюють cookies на своїх власних доменах під час входу.",
+    consentItemAnalytics: "Аналітика: немає.",
+    consentItemMarketing: "Маркетинг: немає.",
+    consentContinueLocal: "Грати локально",
+    consentSignIn: "Увійти з акаунтом",
+    consentSettings: "Налаштування даних",
+    consentChangeLater:
+      "Свій вибір можна будь-коли змінити в панелі профілю.",
     statBestScore: "Найкращий результат",
     statGamesPlayed: "Зіграно ігор",
     statTotalScore: "Усього очок",
@@ -770,6 +837,74 @@ export const GAME_COPY = {
     forgetProfile: "Profil auf diesem Gerät vergessen",
     forgetProfileConfirm:
       "Dieses Profil auf dem Gerät vergessen? Die Online-Statistik bleibt erhalten, aber du brauchst den Profilcode, um zurückzukehren.",
+    accountTitle: "Konto",
+    accountSubtitle:
+      "Melde dich an, um dein Profil ohne Code auf anderen Geräten zu öffnen.",
+    accountEmailLabel: "E-Mail-Adresse",
+    accountPasswordLabel: "Passwort",
+    accountNicknameLabel: "Spielername für das Profil",
+    accountSignIn: "Anmelden",
+    accountSignUp: "Konto erstellen",
+    accountSignOut: "Auf diesem Gerät abmelden",
+    accountSignOutAll: "Auf allen Geräten abmelden",
+    accountForgotPassword: "Passwort vergessen?",
+    accountResetSent:
+      "Die E-Mail zum Zurücksetzen des Passworts wurde gesendet. Prüfe dein Postfach.",
+    accountConfirmSent:
+      "Die Bestätigungs-E-Mail wurde gesendet. Prüfe dein Postfach.",
+    accountPasswordUpdated: "Das Passwort wurde aktualisiert.",
+    accountNewPasswordLabel: "Neues Passwort",
+    accountUpdatePassword: "Passwort aktualisieren",
+    accountGoogle: "Mit Google anmelden",
+    accountApple: "Mit Apple anmelden",
+    accountOrDivider: "oder",
+    accountLegacyCodeSummary: "Ich habe einen Profilcode",
+    accountLinked: "Das Profil ist mit dem Konto verknüpft",
+    accountNotLinked: "Das Profil ist nicht mit dem Konto verknüpft",
+    accountLinkProfile: "Profil mit dem Konto verknüpfen",
+    accountUnlinkProfile: "Profilverknüpfung mit dem Konto lösen",
+    accountLinkDone: "Das Profil wurde mit dem Konto verknüpft.",
+    accountAlreadyLinked:
+      "Dieses Profil ist bereits mit deinem Konto verknüpft.",
+    accountLinkConflictAccount:
+      "Mit diesem Konto ist bereits ein anderes Profil verknüpft.",
+    accountLinkConflictProfile:
+      "Dieses Profil ist bereits mit einem anderen Konto verknüpft.",
+    accountSessionExpired:
+      "Die Sitzung ist abgelaufen. Melde dich noch einmal an.",
+    accountAuthError:
+      "Die Kontoaktion konnte nicht ausgeführt werden. Versuche es noch einmal.",
+    accountEmailInvalid: "Überprüfe die E-Mail-Adresse.",
+    accountPasswordTooShort:
+      "Das Passwort muss mindestens 8 Zeichen lang sein.",
+    conflictTitle: "Zwei Profile gefunden",
+    conflictBody:
+      "Am Konto hängt bereits ein Profil, auf diesem Gerät liegt ein anderes. Wähle, mit welchem du weiterspielst; nichts wird zusammengeführt oder überschrieben.",
+    conflictKeepLocal: "Lokales Profil behalten",
+    conflictUseAccount: "Kontoprofil verwenden",
+    conflictVaultNote:
+      "Das andere Profil geht nicht verloren — es bleibt in der Profilliste auf diesem Gerät.",
+    profilesTitle: "Profile auf diesem Gerät",
+    profilesSwitch: "Wechseln",
+    profilesActive: "Aktiv",
+    profilesLocalOnly: "Nur auf diesem Gerät",
+    profilesAccount: "Konto",
+    consentTitle: "Daten und Privatsphäre",
+    consentIntro:
+      "Hier ist die ehrliche Liste dessen, was die Website in deinem Browser speichert.",
+    consentItemRequired:
+      "Erforderlich: localStorage für Spieldaten — Profile, Statistik und die Synchronisierungswarteschlange.",
+    consentItemAuth:
+      "Nur mit Konto: die Supabase-Auth-Sitzung wird im localStorage dieses Browsers gespeichert.",
+    consentItemProviders:
+      "Google oder Apple setzen während der Anmeldung Cookies auf ihren eigenen Domains.",
+    consentItemAnalytics: "Analyse: keine.",
+    consentItemMarketing: "Marketing: keins.",
+    consentContinueLocal: "Lokal weiterspielen",
+    consentSignIn: "Mit Konto anmelden",
+    consentSettings: "Dateneinstellungen",
+    consentChangeLater:
+      "Du kannst deine Wahl jederzeit im Profilbereich ändern.",
     statBestScore: "Bestpunktzahl",
     statGamesPlayed: "Gespielte Partien",
     statTotalScore: "Gesamtpunktzahl",
@@ -944,6 +1079,73 @@ export const GAME_COPY = {
     forgetProfile: "Forget profile on this device",
     forgetProfileConfirm:
       "Forget this profile on this device? Your online stats won’t be deleted, but you’ll need the profile code to return.",
+    accountTitle: "Account",
+    accountSubtitle:
+      "Sign in to open your profile on other devices without a code.",
+    accountEmailLabel: "Email address",
+    accountPasswordLabel: "Password",
+    accountNicknameLabel: "Nickname for the profile",
+    accountSignIn: "Sign in",
+    accountSignUp: "Create account",
+    accountSignOut: "Sign out on this device",
+    accountSignOutAll: "Sign out on all devices",
+    accountForgotPassword: "Forgot your password?",
+    accountResetSent:
+      "The password reset email has been sent. Check your inbox.",
+    accountConfirmSent:
+      "The confirmation email has been sent. Check your inbox.",
+    accountPasswordUpdated: "Your password has been updated.",
+    accountNewPasswordLabel: "New password",
+    accountUpdatePassword: "Update password",
+    accountGoogle: "Sign in with Google",
+    accountApple: "Sign in with Apple",
+    accountOrDivider: "or",
+    accountLegacyCodeSummary: "I have a profile code",
+    accountLinked: "Profile linked to the account",
+    accountNotLinked: "Profile not linked to the account",
+    accountLinkProfile: "Link profile to the account",
+    accountUnlinkProfile: "Unlink profile from the account",
+    accountLinkDone: "The profile is now linked to the account.",
+    accountAlreadyLinked:
+      "This profile is already linked to your account.",
+    accountLinkConflictAccount:
+      "Another profile is already linked to this account.",
+    accountLinkConflictProfile:
+      "This profile is already linked to another account.",
+    accountSessionExpired: "Your session has expired. Sign in again.",
+    accountAuthError:
+      "The account action could not be completed. Please try again.",
+    accountEmailInvalid: "Check the email address.",
+    accountPasswordTooShort:
+      "The password must be at least 8 characters long.",
+    conflictTitle: "Two profiles found",
+    conflictBody:
+      "The account already has one profile, and this device has another. Choose which one to continue with; nothing is merged or overwritten.",
+    conflictKeepLocal: "Keep the local profile",
+    conflictUseAccount: "Use the account profile",
+    conflictVaultNote:
+      "The other profile is not lost — it stays in the profile list on this device.",
+    profilesTitle: "Profiles on this device",
+    profilesSwitch: "Switch",
+    profilesActive: "Active",
+    profilesLocalOnly: "This device only",
+    profilesAccount: "Account",
+    consentTitle: "Data and privacy",
+    consentIntro:
+      "Here is the honest list of what this site stores in your browser.",
+    consentItemRequired:
+      "Required: localStorage for game data — profiles, stats and the sync queue.",
+    consentItemAuth:
+      "Only with an account: the Supabase Auth session is kept in this browser’s localStorage.",
+    consentItemProviders:
+      "Google or Apple set cookies on their own domains during sign-in.",
+    consentItemAnalytics: "Analytics: none.",
+    consentItemMarketing: "Marketing: none.",
+    consentContinueLocal: "Keep playing locally",
+    consentSignIn: "Sign in with an account",
+    consentSettings: "Data settings",
+    consentChangeLater:
+      "You can change your choice at any time in the profile panel.",
     statBestScore: "Best score",
     statGamesPlayed: "Games played",
     statTotalScore: "Total score",

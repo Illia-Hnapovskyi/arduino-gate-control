@@ -16,6 +16,7 @@
     "check": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.112.0",
     "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8"

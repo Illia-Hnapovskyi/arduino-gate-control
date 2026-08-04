@@ -105,8 +105,27 @@ npx vercel dev
   access code; цей код є паролем;
 - raw access code залишається в браузері та запиті, у PostgreSQL зберігається
   лише SHA-256 digest;
-- активне сховище статистики — `arduino-gate-game-stats:v2`; валідний v1
-  профіль, pending rename і pending runs мігрують без втрати access code;
+- активне сховище статистики — `arduino-gate-game-stats:v3`: сховище кількох
+  профілів з активним профілем; валідні v2 та v1 дані мігрують один раз без
+  втрати access code, pending rename або pending runs, а старі ключі ніколи не
+  видаляються й не перезаписуються;
+- кожен профіль має незмінний `checkpointOwnerId`: він створюється один раз і
+  ніколи не переобчислюється з серверних даних, тому старі checkpoint-и
+  переживають і прив'язку акаунта, і rollback коду;
+- checkpoint зберігається окремо для кожного власника:
+  `arduino-gate-space-defender-run:v2:<checkpointOwnerId>`, а безсуфіксний
+  `arduino-gate-space-defender-run:v2` лишається legacy-слотом (працює до
+  міграції й після rollback). Legacy-слот переноситься у власний ключ лише тим
+  профілем, який у ньому названий; чужий checkpoint не читається й не
+  видаляється;
+- профіль, прийнятий через акаунт, додатково зберігає `authUserId` — auth-user,
+  для якого його адоптували. Це не credential: воно потрібне, щоб bearer-sync не
+  відправив чергу одного акаунта сесією іншого після повторного входу;
+- під час deploy зі зміною версії сховища можлива змішана ситуація: стара
+  вкладка й далі пише у ключ `:v2`, а новий build читає його лише один раз під
+  час міграції. Такі результати не втрачаються (старі ключі ніколи не
+  видаляються), але з'являться тільки після перезавантаження тієї вкладки —
+  після deploy перезавантаж усі відкриті вкладки;
 - завершення спершу оптимістично записується локально як `run.completed` v2,
   потім відправляється чергою пакетами до п'яти подій;
 - `eventId === runId`; однакова повторна подія є idempotent, а повторне
@@ -122,6 +141,36 @@ npx vercel dev
 Таблиця лідерів показує top 25 профілів із `games_played > 0`. Порожній рейтинг
 не доводить, що `game_players` порожня.
 
+## Акаунт (Supabase Auth) — опційно
+
+Поряд із access code існує опційний акаунт через Supabase Auth
+(email+пароль або Google). Це дає відновлення доступу через email і вхід без
+коду; нік лишається єдиним публічним ім'ям, email ніде не показується.
+
+- акаунт і профіль зв'язуються строго 1:1 у приватній таблиці
+  `game_account_links`; сервер ніколи не зливає і не перепризначає профілі —
+  конфлікт повертає HTTP 409;
+- повністю без cookies: consent-вибір і auth-сесія живуть у localStorage;
+  Google/Apple ставлять cookies лише на власних доменах під час входу;
+- поки у `app/auth/supabaseConfig.ts` не вставлено публічний publishable key,
+  `authAvailable === false` і весь акаунтний UI прихований — гра працює як
+  раніше;
+- вбудований Supabase SMTP доставляє листи (підтвердження, скидання пароля)
+  лише учасникам команди проєкту, доки не налаштовано custom SMTP;
+- Apple sign-in вимкнено за замовчуванням: він потребує платної Apple
+  Developer Program, а client secret треба перевипускати приблизно кожні
+  6 місяців;
+- passkeys свідомо не реалізовані: API експериментальний, `rp_id` жорстко
+  прив'язує credential до одного домену, а Vercel preview deployments із цим
+  несумісні;
+- відмова від акаунта нічого не ламає: локальна й код-базована гра працюють
+  повністю.
+
+Нові коди помилок API: `AUTH_TOKEN_MISSING`, `AUTH_TOKEN_INVALID`,
+`AUTH_TOKEN_EXPIRED`, `AUTH_SESSION_REVOKED` (401), `AUTH_KEYS_UNAVAILABLE`
+(503), `AUTH_NOT_LINKED` (404), `ACCOUNT_PROFILE_CONFLICT`,
+`PROFILE_ACCOUNT_CONFLICT` (409), `MIXED_CREDENTIALS` (400).
+
 ## Supabase і Vercel
 
 Повний runbook: [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md).
@@ -131,9 +180,12 @@ npx vercel dev
 1. `db/migrations/0001_game_stats.sql`;
 2. `db/migrations/0002_game_progression.sql`;
 3. `db/migrations/0003_base_table_grants.sql` — лише `REVOKE`, без нових
-   об'єктів, тому порядок для нього не критичний.
+   об'єктів, тому порядок для нього не критичний;
+4. `db/migrations/0004_account_links.sql` — additive `public_id`, приватна
+   1:1 таблиця `game_account_links` і розширений allowlist rate-limit
+   buckets. **Застосована в production 2026-08-04.**
 
-Для вже налаштованої v1 production-бази виконай відсутні `0002` і `0003`.
+Для вже налаштованої v1 production-бази виконай відсутні `0002`—`0004`.
 До її застосування API лишає leaderboard/create/connect/rename і legacy record
 сумісними з `0001`, а новий `sync` повертає `SCHEMA_MIGRATION_REQUIRED`; браузер
 не втрачає run, а тримає його в offline queue. `0002` зберігає старі дані та backfill-ить чотири
@@ -148,12 +200,19 @@ Vercel потребує серверні secrets:
 Postgres.js використовує TLS, одну connection на теплий instance і
 `prepare: false`, що сумісно з transaction pooling. Не додавай префікс `VITE_`
 до secrets. Всі таблиці мають RLS deny-by-default і не мають публічних grants/policies:
-`0002` робить `REVOKE` для v2 таблиць, `0003` — для трьох базових. Браузер
-працює тільки через `/api/stats`.
+`0002` робить `REVOKE` для v2 таблиць, `0003` — для трьох базових, `0004` — для
+`game_account_links`. Браузер працює тільки через `/api/stats`; для auth він
+додатково звертається напряму лише до Supabase Auth (`/auth/v1`).
 
-Rate limits у фіксованому одногодинному вікні: 600 mutation events з IP,
-30 create з IP, 240 completed runs, 30 rename/create-upsert та 300 total v2
-sync events на профіль. Batch списує counters за кожну подію. Raw IP у БД не
+Rate limits у фіксованому одногодинному вікні: 600 mutation events з IP
+(`ip_write`), 30 create з IP (`ip_create`), 240 completed runs, 30
+rename/create-upsert, 300 total v2 sync events на профіль, 10 link/unlink з IP
+(`ip_link`) і 10 акаунтних операцій на auth-акаунт (`account_link`). Кожна
+акаунтна дія списує два buckets: bearer `create` — `ip_create` + `account_link`,
+`link` і `unlink` — `ip_link` + `account_link`; усі три ділять один і той самий
+ліміт 10/год на акаунт. Bearer `rename`/`record`/`sync` навмисно не є
+account-scoped: вони знаходять профіль через link і списують ті самі buckets, що
+й код-шлях. Batch списує counters за кожну подію. Raw IP у БД не
 потрапляє: scope спочатку HMAC-псевдонімізується.
 
 Leaderboard є дружнім, а не tournament-grade: сервер перевіряє формат,

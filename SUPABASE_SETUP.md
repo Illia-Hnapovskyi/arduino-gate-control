@@ -12,10 +12,12 @@ Supabase напряму: всі запити проходять через Verce
 - для повної integration-перевірки — окремий disposable Supabase project.
 
 Активний backend використовує Postgres.js і пряме серверне підключення через
-Supavisor Transaction Pooler. `SUPABASE_URL`, publishable/anon key і
-service-role key не потрібні. Ніколи не додавай database URL, пароль, access
-code, `RATE_LIMIT_SECRET`, service-role/secret key або дані користувачів у Git,
-логи, скриншоти чи чат.
+Supavisor Transaction Pooler; для нього publishable/anon і service-role keys
+не потрібні. Опційним акаунтам (Supabase Auth) потрібен лише **публічний**
+publishable key, який вставляється в `app/auth/supabaseConfig.ts` (розділ 13) —
+це публічне значення, його можна комітити. Ніколи не додавай database URL,
+пароль, access code, `RATE_LIMIT_SECRET`, service-role/secret key або дані
+користувачів у Git, логи, скриншоти чи чат.
 
 ## 1. Створи Supabase-проєкт
 
@@ -38,10 +40,16 @@ DDL ніколи не виконується під час API-запиту. С�
 
 1. [`db/migrations/0001_game_stats.sql`](db/migrations/0001_game_stats.sql);
 2. [`db/migrations/0002_game_progression.sql`](db/migrations/0002_game_progression.sql);
-3. [`db/migrations/0003_base_table_grants.sql`](db/migrations/0003_base_table_grants.sql).
+3. [`db/migrations/0003_base_table_grants.sql`](db/migrations/0003_base_table_grants.sql);
+4. [`db/migrations/0004_account_links.sql`](db/migrations/0004_account_links.sql).
 
 Не об'єднуй і не міняй їх місцями. Після кожного файлу дочекайся успішного
 завершення перед переходом далі.
+
+`0004` — additive: додає `game_players.public_id`, приватну 1:1 таблицю
+`game_account_links` для зв'язку профіль↔auth-акаунт і розширює allowlist
+rate-limit buckets до семи значень. Вона має бути застосована **до** deploy
+API з account-linking. **У production цю міграцію застосовано 2026-08-04.**
 
 `0003` не створює й не змінює жодного об'єкта: він лише робить `REVOKE` для
 базових таблиць з `0001`, які раніше трималися тільки на RLS. Його можна
@@ -82,6 +90,7 @@ constraints явно. `IF NOT EXISTS` не
 | `game_player_achievements` | Progress і перший `unlocked_at` для 12 stable achievement IDs. |
 | `game_player_unlocks` | Нормалізований журнал відкритих можливостей/нагород. |
 | `game_player_settings` | Revisioned volume/motion settings contract. |
+| `game_account_links` | Приватний 1:1 зв'язок профіль↔Supabase Auth user: `player_id` PRIMARY KEY, `auth_user_id` UNIQUE, обидва FK з `ON DELETE CASCADE`. Видалення auth-користувача прибирає лише зв'язок, не профіль. |
 
 Серверний ledger не обрізається до 512 runs: retained event ID забезпечує
 довготривалу ідемпотентність. Для великого обсягу спочатку спроєктуй безпечну
@@ -123,7 +132,8 @@ where n.nspname = 'public'
 order by c.relname, r.rolname, p.privilege;
 ```
 
-Очікується 12 таблиць, `rls_enabled = true` для кожної та відсутність public
+Очікується 13 таблиць (12 після `0002`/`0003`, плюс `game_account_links`
+після `0004`), `rls_enabled = true` для кожної та відсутність public
 policies. Останній запит має вернути **нуль рядків після застосування `0003`**;
 до нього три базові таблиці з `0001` ще мають Data API grants. Він свідомо
 використовує `has_table_privilege`, а не `information_schema.role_table_grants`:
@@ -151,7 +161,8 @@ select
        and c.relname like 'game_%' and not c.relrowsecurity)       as tables_without_rls;
 ```
 
-Здоровий стан: `12 | true | 0 | 0`. Якщо `migration_0002_applied = false`, то
+Здоровий стан після `0004`: `13 | true | 0 | 0` (до `0004` — `12`). Якщо
+`migration_0002_applied = false`, то
 `sync` повертає `503 SCHEMA_MIGRATION_REQUIRED`, а браузери накопичують
 завершені забіги в offline-черзі — дані не втрачені, але progression не працює.
 
@@ -202,7 +213,7 @@ openssl rand -hex 32
 ## 5. Безпечний порядок production deployment
 
 1. Зроби backup або підтвердь доступну point-in-time recovery.
-2. Застосуй відсутні міграції: `0001` → `0002` → `0003`.
+2. Застосуй відсутні міграції: `0001` → `0002` → `0003` → `0004`.
 3. Виконай read-only перевірку схеми/RLS/grants.
 4. Бажано лише після підтвердженої `0002` deploy v2 API/frontend.
 5. Виконай безпечні probes нижче.
@@ -264,7 +275,7 @@ mutation, яка не створила gameplay result, змінює rate-limit 
 
 ## 7. Повна інтеграційна перевірка — тільки disposable project
 
-Для persistence/API/SQL зміни застосуй `0001`, `0002` і `0003` до порожнього
+Для persistence/API/SQL зміни застосуй `0001`—`0004` до порожнього
 disposable Supabase project і перевір:
 
 1. GET порожнього leaderboard;
@@ -413,6 +424,24 @@ constraint-ів (наприклад `game_rate_limits_bucket_check`) лишає�
 `baseRevision` застарів. Потрібно перечитати profile/progression і сформувати
 новий settings event; не повторювати конфліктну ревізію нескінченно.
 
+### Auth-коди: `AUTH_*`, `MIXED_CREDENTIALS`, конфлікти 409
+
+- `AUTH_TOKEN_MISSING` (401) — дія вимагає bearer JWT, а заголовка
+  `Authorization` немає;
+- `AUTH_TOKEN_INVALID` / `AUTH_TOKEN_EXPIRED` (401) — токен не пройшов
+  верифікацію підпису/claims або протермінований; анонімні Supabase-сесії
+  також відхиляються цим кодом;
+- `AUTH_SESSION_REVOKED` (401) — сесію відкликано (наприклад, глобальний
+  sign-out); користувач має увійти знову;
+- `AUTH_KEYS_UNAVAILABLE` (503) — сервер не зміг отримати публічний JWKS;
+  тимчасова проблема, повтор пізніше;
+- `AUTH_NOT_LINKED` (404) — акаунт валідний, але не зв'язаний із жодним
+  профілем; клієнт має пройти link або create;
+- `ACCOUNT_PROFILE_CONFLICT` / `PROFILE_ACCOUNT_CONFLICT` (409) — спроба
+  порушити 1:1 зв'язок. Сервер ніколи не зливає і не перепризначає профілі;
+- `MIXED_CREDENTIALS` (400) — запит одночасно містить accessCode і bearer там,
+  де дозволено лише один спосіб (обидва потрібні тільки для `link`/`unlink`).
+
 ### API 200, але UI показує sync error
 
 У DevTools перевір конкретний operation у `stats.error.operation` і Network.
@@ -434,3 +463,50 @@ Profile sync та leaderboard ще ділять один hook-level status, то
 
 Довідка з міграції:
 [Migrate Postgres to Supabase](https://supabase.com/docs/guides/platform/migrating-to-supabase/postgres).
+
+## 13. Supabase Auth: чекліст у Dashboard (ручні кроки)
+
+Опційні акаунти вимагають разового ручного налаштування, яке неможливо
+закомітити. Поки крок 6 не виконано, `authAvailable === false` і акаунтний UI
+повністю прихований — це безпечний стан за замовчуванням.
+
+1. **Site URL.** Dashboard → **Authentication** → **URL Configuration** →
+   Site URL: `https://arduino-gate-game.vercel.app`.
+2. **Redirect URLs.** Там само додай у allowlist production-домен
+   `https://arduino-gate-game.vercel.app` (і, за потреби, локальний
+   `http://localhost:3000`). Auth-редиректи працюють лише на URL з цього
+   списку.
+3. **Google provider.** Dashboard → **Authentication** → **Sign In / Up** →
+   **Google** → Enable. У [Google Cloud Console](https://console.cloud.google.com/)
+   створи OAuth 2.0 Client ID (тип Web application) і вкажи **точний**
+   authorized redirect URI:
+
+   ```text
+   https://vullhduhswcnlpgnlrtp.supabase.co/auth/v1/callback
+   ```
+
+   Отримані Client ID і Client secret встав у форму провайдера в Supabase.
+   Client secret живе лише в Dashboard — не в Git.
+4. **Apple (опційно, за замовчуванням вимкнено).** Потребує платної Apple
+   Developer Program. Client secret для Apple — це підписаний JWT, який треба
+   перегенеровувати приблизно **кожні 6 місяців**, інакше вхід мовчки
+   зламається. Вмикай лише разом із зобов'язанням вести цю ротацію, і лише
+   тоді переключай `APPLE_ENABLED` у `app/auth/supabaseConfig.ts`.
+5. **Custom SMTP.** Dashboard → **Project Settings** → **Authentication** →
+   SMTP Settings. Вбудований SMTP доставляє листи (підтвердження email,
+   скидання пароля) **лише учасникам команди проєкту** — реальні користувачі
+   не отримають нічого, доки не налаштовано власний SMTP-провайдер.
+6. **Publishable key.** Dashboard → **Project Settings** → **API keys** →
+   скопіюй **публічний** publishable key і встав його значенням
+   `SUPABASE_PUBLISHABLE_KEY` у `app/auth/supabaseConfig.ts`. Це публічне
+   значення — його можна комітити. Ніколи не встав туди secret/service-role
+   key. Після коміту й deploy акаунтний UI з'явиться автоматично.
+
+Свідомі межі поточної реалізації:
+
+- **passkeys не реалізовані**: API Supabase для них експериментальний,
+  `rp_id` жорстко прив'язує credential до одного домену, а Vercel preview
+  deployments (окремий піддомен на кожен deploy) із таким binding несумісні;
+- cookies не використовуються взагалі: auth-сесія і consent-вибір живуть у
+  localStorage; Google/Apple ставлять власні cookies лише на своїх доменах
+  під час входу.
