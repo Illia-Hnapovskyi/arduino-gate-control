@@ -17,6 +17,8 @@ import {
   type PlayerStats,
 } from "../shared/gameStats";
 import { GAME_COPY, SPACE_DEFENDER_COPY, type Language } from "./i18n";
+import { getSupabaseAccessToken } from "./auth/client";
+import { isGameRunActive, setGameRunActive } from "./AccountPanel";
 import { LeaderboardPanel, PlayerStatsPanel } from "./PlayerStatsPanel";
 import { useGameStats } from "./useGameStats";
 import type { GameRunRecordResult } from "./useGameStats";
@@ -334,7 +336,11 @@ export default function GamePanel({
 }: GamePanelProps) {
   const legacyCopy = GAME_COPY[language];
   const copy = SPACE_DEFENDER_COPY[language];
-  const gameStats = useGameStats({ language });
+  const gameStats = useGameStats({
+    language,
+    getAccessToken: getSupabaseAccessToken,
+    isRunActive: isGameRunActive,
+  });
   const connected = isPlayableConnection(connection);
 
   const [uiStatus, setUiStatus] = useState<GameUiStatus>("menu");
@@ -349,7 +355,11 @@ export default function GamePanel({
   const [resumeSnapshot, setResumeSnapshot] = useState<RunSnapshot | null>(() => {
     const storage = getBrowserLocalStorage();
     if (!storage) return null;
-    const stored = loadRunSnapshot(storage, Date.now());
+    const stored = loadRunSnapshot(
+      storage,
+      Date.now(),
+      gameStats.profileOwnerId,
+    );
     return stored && canResumeRun(stored) ? stored : null;
   });
   const [preferences, setPreferences] = useState<GamePreferences>(() => {
@@ -442,6 +452,10 @@ export default function GamePanel({
 
   useEffect(() => {
     statusRef.current = uiStatus;
+    setGameRunActive(
+      uiStatus === "playing" || uiStatus === "paused" || uiStatus === "upgrade",
+    );
+    return () => setGameRunActive(false);
   }, [uiStatus]);
 
   const dataAtRisk = checkpointError || Boolean(result && !result.saved);
@@ -604,6 +618,18 @@ export default function GamePanel({
     physicalPowerTriggeredRef.current = false;
   }, []);
 
+  // Only the active profile's own checkpoint may gate the menu. A run parked by
+  // another profile stays on disk, untouched and invisible, until that profile is
+  // active again.
+  const activeResumeSnapshot = useMemo(
+    () =>
+      resumeSnapshot &&
+      resumeSnapshot.profileOwnerId === gameStats.profileOwnerId
+        ? resumeSnapshot
+        : null,
+    [gameStats.profileOwnerId, resumeSnapshot],
+  );
+
   const saveSafeCheckpoint = useCallback((updateUi = true) => {
     const world = worldRef.current;
     if (!world || world.status !== "upgrade") return false;
@@ -633,9 +659,9 @@ export default function GamePanel({
     }
   }, []);
 
-  const clearStoredCheckpoint = useCallback(() => {
+  const clearStoredCheckpoint = useCallback((ownerId: string | null) => {
     const storage = getBrowserLocalStorage();
-    if (!storage || !clearRunSnapshot(storage)) {
+    if (!storage || !clearRunSnapshot(storage, ownerId)) {
       setCheckpointError(true);
       return false;
     }
@@ -661,7 +687,7 @@ export default function GamePanel({
       const saved = recordStatus === "queued" || recordStatus === "duplicate";
       if (saved) {
         recordedRunIdsRef.current.add(gameResult.runId);
-        clearStoredCheckpoint();
+        clearStoredCheckpoint(activeProfileOwnerRef.current);
       }
       if (updateUi && !unmountingRef.current) {
         const resultView = resultToView(
@@ -962,7 +988,7 @@ export default function GamePanel({
       !gameStats.profile ||
       !gameStats.profileOwnerId ||
       !isPlayableConnection(connection) ||
-      resumeSnapshot ||
+      activeResumeSnapshot ||
       (result && !result.saved)
     ) return;
     const runId = generateRunId();
@@ -1016,6 +1042,7 @@ export default function GamePanel({
     );
     drawWorld(world);
   }, [
+    activeResumeSnapshot,
     connection,
     difficulty,
     drawWorld,
@@ -1025,18 +1052,17 @@ export default function GamePanel({
     mode,
     resetControls,
     result,
-    resumeSnapshot,
   ]);
 
   const continueGame = useCallback(() => {
     if (
-      !resumeSnapshot ||
+      !activeResumeSnapshot ||
       !gameStats.profile ||
       !gameStats.profileOwnerId ||
-      resumeSnapshot.profileOwnerId !== gameStats.profileOwnerId ||
+      activeResumeSnapshot.profileOwnerId !== gameStats.profileOwnerId ||
       !connected
     ) return;
-    const world = restoreGameWorld(resumeSnapshot);
+    const world = restoreGameWorld(activeResumeSnapshot);
     previousHighScoreRef.current = gameStats.profile.highScore;
     achievementBaselineRef.current = createAchievementBaseline(
       gameStats.profile,
@@ -1065,17 +1091,20 @@ export default function GamePanel({
     commandRef.current("GAME:1");
     commandRef.current("GAME:PAUSE");
   }, [
+    activeResumeSnapshot,
     connected,
     gameStats.profile,
     gameStats.profileOwnerId,
     gameStats.progression,
     resetControls,
-    resumeSnapshot,
   ]);
 
   const discardResume = useCallback(() => {
-    clearStoredCheckpoint();
-  }, [clearStoredCheckpoint]);
+    // Discarding only ever destroys the checkpoint the menu is showing, which is
+    // the active profile's own.
+    if (!activeResumeSnapshot) return;
+    clearStoredCheckpoint(activeResumeSnapshot.profileOwnerId);
+  }, [activeResumeSnapshot, clearStoredCheckpoint]);
 
   const chooseUpgrade = useCallback(
     (upgrade: UpgradeId) => {
@@ -1210,6 +1239,21 @@ export default function GamePanel({
     parkCheckpointInMenu,
     saveSafeCheckpoint,
   ]);
+
+  useEffect(() => {
+    // Checkpoints live in a per-owner slot, so the menu always reflects the active
+    // profile's own parked run. Switching profiles reads the new owner's slot and
+    // leaves every other slot on disk exactly as it was.
+    const storage = getBrowserLocalStorage();
+    if (!storage) return;
+    const stored = loadRunSnapshot(
+      storage,
+      Date.now(),
+      gameStats.profileOwnerId,
+    );
+    const parked = stored && canResumeRun(stored) ? stored : null;
+    queueMicrotask(() => setResumeSnapshot(parked));
+  }, [gameStats.profileOwnerId]);
 
   useEffect(() => {
     const unlocked = new Set(
@@ -1525,7 +1569,7 @@ export default function GamePanel({
               copy={copy}
               difficulty={difficulty}
               hasProfile={Boolean(gameStats.profile)}
-              hasResume={Boolean(resumeSnapshot)}
+              hasResume={Boolean(activeResumeSnapshot)}
               hasUnsavedResult={Boolean(result && !result.saved)}
               hardwareAudio={connection === "connected"}
               leaderboardPanel={(
@@ -1545,22 +1589,18 @@ export default function GamePanel({
               onRetryUnsavedResult={retryResultSave}
               onStart={startGame}
               preferences={preferences}
-              resumeCompatible={Boolean(
-                resumeSnapshot?.profileOwnerId &&
-                resumeSnapshot.profileOwnerId === gameStats.profileOwnerId
-              )}
-              resumeSummary={resumeSnapshot
+              resumeCompatible={Boolean(activeResumeSnapshot?.profileOwnerId)}
+              resumeSummary={activeResumeSnapshot
                 ? {
-                    difficulty: resumeSnapshot.run.difficulty,
-                    equippedPower: resumeSnapshot.run.equippedPowerUp,
-                    mode: resumeSnapshot.run.mode,
-                    upgrades: (Object.entries(resumeSnapshot.run.upgradeStacks) as Array<[
-                      UpgradeId,
-                      number,
-                    ]>)
+                    difficulty: activeResumeSnapshot.run.difficulty,
+                    equippedPower: activeResumeSnapshot.run.equippedPowerUp,
+                    mode: activeResumeSnapshot.run.mode,
+                    upgrades: (Object.entries(
+                      activeResumeSnapshot.run.upgradeStacks,
+                    ) as Array<[UpgradeId, number]>)
                       .filter(([, stacks]) => stacks > 0)
                       .map(([id, stacks]) => ({ id, stacks })),
-                    wave: resumeSnapshot.run.wave,
+                    wave: activeResumeSnapshot.run.wave,
                   }
                 : null}
               profilePanel={(
@@ -1619,7 +1659,7 @@ export default function GamePanel({
                     connected &&
                     Boolean(result?.saved) &&
                     !checkpointError &&
-                    !resumeSnapshot
+                    !activeResumeSnapshot
                   }
                   checkpointError={checkpointError}
                   copy={copy}

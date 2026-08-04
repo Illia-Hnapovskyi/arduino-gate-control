@@ -21,8 +21,15 @@ the user-facing setup guide.
   checked-in Postgres migrations synchronized when their contracts change.
 - Production schema setup is ordered: apply `0001_game_stats.sql`, then
   `0002_game_progression.sql` before deploying the matching v2 API, then the
-  privilege-only `0003_base_table_grants.sql`.
-- No cookies and no committed secrets. Profile codes are passwords.
+  privilege-only `0003_base_table_grants.sql`, then the additive
+  `0004_account_links.sql` (applied to production 2026-08-04) before the
+  account-linking API.
+- Optional Supabase Auth accounts (email/password + Google OAuth) exist beside
+  the legacy access codes. While `SUPABASE_PUBLISHABLE_KEY` in
+  `app/auth/supabaseConfig.ts` is the empty placeholder, `authAvailable` is
+  `false` and every account UI element must stay hidden; nothing else changes.
+- No cookies and no committed secrets. Profile codes are passwords. Auth
+  sessions and the consent choice live in localStorage only.
 - `worker/`, D1/Drizzle, Next.js, and vinext files are optional legacy paths,
   although they are still included in lint/type checking.
 
@@ -41,9 +48,14 @@ The active production shape is:
 ```text
 Browser (React 19 + Vite)
   ├─ Web Serial at 115200 baud ── Arduino UNO firmware
-  ├─ localStorage ─────────────── language, profile secret, offline event queue,
-  │                               device preferences, safe wave checkpoint
+  ├─ localStorage ─────────────── language, profile vault (v3), offline event
+  │                               queue, device preferences, safe wave
+  │                               checkpoint, consent choice, auth session
+  ├─ Supabase Auth (PKCE) ─────── https://vullhduhswcnlpgnlrtp.supabase.co/auth/v1
+  │                               (only after account consent; never at load)
   └─ /api/stats ───────────────── Vercel Function
+                                      ├─ server/authVerify.ts: bearer JWT verify
+                                      │  against the public JWKS (ES256/RS256)
                                       └─ Supabase PostgreSQL via Supavisor
                                                        and SUPABASE_DATABASE_URL
 ```
@@ -98,7 +110,10 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `app/page.tsx` | Main control panel, language state, Web Serial lifecycle, telemetry parsing, gate/radar/demo state. |
 | `app/GamePanel.tsx` | Space Defender orchestration: menu, runtime loop, lifecycle, checkpoint, stats, input, audio, and canvas composition. |
 | `app/PlayerStatsPanel.tsx` | Profile creation/import/rename UI, access-code UI, personal stats, leaderboard. |
-| `app/useGameStats.ts` | Offline-first v2 profile store, v1 migration, optimistic totals, event queue, reconnect and deduplication. |
+| `app/useGameStats.ts` | Offline-first v3 multi-profile store, v1/v2 migration, optimistic totals, event queue, bearer/code sync, reconnect and deduplication. |
+| `app/auth/supabaseConfig.ts` | Committed public Supabase URL, publishable-key placeholder, `authAvailable` and `APPLE_ENABLED` flags. |
+| `app/auth/client.ts`, `app/auth/useAuthSession.ts` | Lazy PKCE Supabase Auth client (constructed only under account consent) and the session/sign-in/sign-out/reset hook. |
+| `server/authVerify.ts` | Supabase JWT verification via cached public JWKS (ES256/RS256, `node:crypto`, no new deps). Helpers must live outside `api/` — files there become endpoints. |
 | `app/game/types.ts` | Canonical IDs and types for modes, difficulties, sectors, threats, bosses, upgrades, powers, and metrics. |
 | `app/game/balance.ts` | Typed numeric balance; treat it as the technical source of truth when tuning. |
 | `app/game/rng.ts`, `app/game/waves.ts` | Seeded RNG and deterministic telegraph/combat/rest wave plans. |
@@ -117,6 +132,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `db/migrations/0001_game_stats.sql` | Base profiles, runs, leaderboard aggregates, and rate-limit schema. |
 | `db/migrations/0002_game_progression.sql` | Additive v2 event ledger, detailed run facts, progression, achievements, unlocks, settings, RLS, and grants. |
 | `db/migrations/0003_base_table_grants.sql` | Privilege-only migration revoking the Data API roles from the three `0001` base tables and their sequences. |
+| `db/migrations/0004_account_links.sql` | Additive `game_players.public_id`, private `game_account_links` 1:1 mapping, and the extended seven-bucket rate-limit allowlist. Applied to production 2026-08-04. |
 | `GAME_DESIGN.md` | Implemented game loop, balance, validation invariants, known gaps, and test contract. |
 | `SUPABASE_SETUP.md` | Ukrainian step-by-step Supabase/Vercel provisioning, verification, troubleshooting, and rollback guide. |
 | `.agents/skills/supabase/` | Official Supabase agent workflow, current-docs, tooling, migration, and security guidance. |
@@ -126,6 +142,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `tests/game-engine.test.mjs`, `tests/game-runtime.test.mjs` | Deterministic balance/planner/power/achievement/persistence and combat runtime regression tests. |
 | `tests/game-input.test.mjs`, `tests/game-preferences.test.mjs`, `tests/game-resume.test.mjs` | Controls, device preferences, and safe checkpoint tests. |
 | `tests/game-stats*.test.mjs`, `tests/stats-api.test.mjs` | Shared validation, localStorage migration, adapter, API export/idempotency, and SQL contract tests. |
+| `tests/auth-verify.test.mjs` | Compiled-handler JWT tests: signature, alg↔key binding, claims, anonymous rejection, JWKS failure. |
 | `tests/arduino-protocol.test.mjs` | Static Serial compatibility, pin, buffer, and non-blocking SFX checks. |
 | `tests/rendered-html.test.mjs` | Production artifact and translation-key tests. |
 | `vite.config.ts` | Active frontend build configuration. |
@@ -198,13 +215,32 @@ Language state:
 
 Game profile state:
 
-- active localStorage key: `arduino-gate-game-stats:v2`; the v1 key is retained
-  as a safe migration fallback rather than deleted automatically;
-- the v2 object contains the local profile/access code, optional server
-  progression, pending `run.completed` events, and up to 100 known event IDs;
-- `migrateStoredGameStatsV1` preserves a valid profile, unconfirmed access code,
-  pending nickname, pending runs, and known run IDs while converting runs to v2
-  events;
+- active localStorage key: `arduino-gate-game-stats:v3`; the v2 AND v1 keys are
+  never deleted and never written to — they remain rollback fallbacks;
+- the v3 object is a multi-profile vault: `activeProfileId` plus an array of
+  profiles, each with local `profileId`, immutable `checkpointOwnerId`,
+  `accessCode` (`null` only for account-adopted profiles), server `publicId`,
+  `authUserId`, `accountLinked`, pending nickname, stats, optional progression,
+  pending `run.completed` events, and up to 100 known event IDs per profile;
+- `authUserId` binds an account profile to the auth user it was adopted for. It
+  is written once at adoption and is not a credential: it exists so a bearer
+  sync can refuse to push one account's queue with another account's session
+  after a sign-out/sign-in with a different user. Code-only profiles keep
+  `null`;
+- `checkpointOwnerId` is minted exactly once per profile and never recomputed:
+  for migrated/code profiles it is derived from the access code (so existing
+  checkpoints and an old-code rollback keep working), for account-adopted
+  profiles it is random. It is never derived from `publicId` or any server
+  state; the hook exposes it as `profileOwnerId` so `GamePanel` and
+  `persistence.ts` need no changes;
+- migration runs exactly once on first load (v2 → v3, else v1 → v2 shape → v3)
+  and preserves access code, pending nickname, `remoteConfirmed`, stats,
+  progression, every pending event, and known event IDs byte-for-byte;
+- cross-tab merges are a union by `profileId` — a profile the incoming blob
+  lacks is kept, never dropped — with per-profile pending-event union by
+  `eventId` and a read-modify-write publish;
+- auth events never clear or rewrite the store; sign-in/sign-out only changes
+  which sync credential (bearer token vs access code) is available;
 - local writes and optimistic totals happen synchronously before network sync;
 - online reconnect and the `online` event retry queued changes;
 - same-profile `storage` events merge and persist the union of pending run
@@ -227,6 +263,13 @@ Other game-local state:
 
 - `arduino-gate-space-defender-run:v2` stores at most one validated checkpoint,
   only at `wave-rest`/`upgrade`, with a seven-day lifetime;
+- checkpoints are per owner: `runSnapshotStorageKey(ownerId)` returns the
+  unsuffixed key for `null` (the legacy slot, so pre-v3 checkpoints and a code
+  rollback keep working) and `arduino-gate-space-defender-run:v2:<ownerId>`
+  otherwise, where `ownerId` is the profile's immutable `checkpointOwnerId`. A
+  scoped read falls back to the legacy slot, and a legacy snapshot is migrated
+  into the scoped key only when it names that same owner — another profile's
+  checkpoint is never read, adopted, or deleted;
 - game volumes, screen shake, reduced-motion override, and remapped keyboard
   controls use the key exported by `app/game/preferences.ts` and stay
   device-local in the current UI;
@@ -349,11 +392,50 @@ Public API at `/api/stats`:
 - legacy-compatible `POST { action: "record", accessCode, runId, score, level,
   durationMs }`; it is converted server-side to a v2 completed-run event;
 - `POST { action: "sync", accessCode, events }`, with 1-5 events. Supported
-  versions are `run.completed` v2 and revision-checked `settings.updated` v1.
+  versions are `run.completed` v2 and revision-checked `settings.updated` v1;
+- account actions: `POST { action: "link", accessCode }` and
+  `POST { action: "unlink", accessCode }` (both require bearer AND code) and
+  `POST { action: "session" }` (bearer only).
 
 Use the request/response types from `shared/gameStats.ts`; do not create a second
 slightly different contract. Responses are JSON with `no-store` headers. Only
 GET and POST are accepted, and request bodies are limited to 64 KiB.
+
+### Credential matrix (server-enforced)
+
+A request may carry an `accessCode` body field, an `Authorization: Bearer`
+Supabase JWT, both, or neither. The server enforces exactly:
+
+| action  | accessCode only | bearer only | both | neither |
+| --- | --- | --- | --- | --- |
+| `create` | legacy path (unchanged) | account path — server GENERATES the code | 400 `MIXED_CREDENTIALS` | 400 `INVALID_ACCESS_CODE` |
+| `connect` | yes (unchanged) | 400 `MIXED_CREDENTIALS` (bearer users call `session`) | 400 | 400 |
+| `rename` | yes | yes (player resolved via link) | 400 `MIXED_CREDENTIALS` | 400 |
+| `record` | yes | yes (player resolved via link) | 400 `MIXED_CREDENTIALS` | 400 |
+| `sync` | yes | yes (player resolved via link) | 400 `MIXED_CREDENTIALS` | 400 |
+| `link` | 401 `AUTH_TOKEN_MISSING` | 400 `INVALID_ACCESS_CODE` | REQUIRED (the only both-action) | 401 `AUTH_TOKEN_MISSING` |
+| `unlink` | 401 `AUTH_TOKEN_MISSING` | 400 `INVALID_ACCESS_CODE` | REQUIRED | 401 `AUTH_TOKEN_MISSING` |
+| `session` | 400 `MIXED_CREDENTIALS` | REQUIRED | — | 401 `AUTH_TOKEN_MISSING` |
+
+Unknown body fields that look like identity (`userId`, `email`, `authUserId`,
+`sub`) are stripped and ignored, never a hard failure: hard-failing froze the
+sync queue in the audit. Bearer verification happens before any SQL. For `link`
+and `unlink` only, the server additionally checks `auth.sessions` inside the
+transaction and returns 401 `AUTH_SESSION_REVOKED` for a revoked/absent
+session. Linking is strictly 1:1 and never merges or relinks: a conflicting
+pair returns 409 (`PROFILE_ACCOUNT_CONFLICT` when the profile already belongs
+to another account, `ACCOUNT_PROFILE_CONFLICT` when the account already owns
+another profile), while repeating the identical pair is idempotent 200.
+`session` never returns an access code — the server only stores its hash.
+
+Auth-specific error codes: `AUTH_TOKEN_MISSING` (401), `AUTH_TOKEN_INVALID`
+(401), `AUTH_TOKEN_EXPIRED` (401), `AUTH_SESSION_REVOKED` (401),
+`AUTH_KEYS_UNAVAILABLE` (503, JWKS fetch failed), `AUTH_NOT_LINKED` (404),
+`ACCOUNT_PROFILE_CONFLICT` (409), `PROFILE_ACCOUNT_CONFLICT` (409), and
+`MIXED_CREDENTIALS` (400). Error messages never include the token or claims.
+
+Profile responses gain optional `profilePublicId` (the opaque `public_id`
+UUID, not a credential) and `accountLinked` where cheaply known.
 
 Profile responses retain the original public aggregates and may add a
 `progression` object. The base aggregates are:
@@ -403,7 +485,18 @@ Apply the imperative migrations in filename order:
 3. `0003_base_table_grants.sql` revokes `anon`, `authenticated`, and
    `service_role` from `game_players`, `game_runs`, `game_rate_limits`, and the
    two base sequences. It changes privileges only: no object is created,
-   altered, or dropped, and it is safe to re-run.
+   altered, or dropped, and it is safe to re-run;
+4. `0004_account_links.sql` (applied to production 2026-08-04) additively adds
+   `game_players.public_id` (UUID, backfilled, NOT NULL via a `NOT VALID` +
+   `VALIDATE` check, unique), creates `game_account_links` — a private 1:1
+   mapping with `player_id BIGINT PRIMARY KEY` and `auth_user_id UUID NOT NULL
+   UNIQUE`, both FKs `ON DELETE CASCADE` so deleting the auth user removes only
+   the mapping, never the profile — and extends the rate-limit bucket
+   allowlist to seven values (`ip_create`, `ip_write`, `profile_record`,
+   `profile_rename`, `profile_sync`, `ip_link`, `account_link`). Like `0002`
+   and `0003` it enables RLS with zero policies, revokes the three Data API
+   roles, and never uses `FORCE ROW LEVEL SECURITY` (the owner relies on the
+   owner bypass). `tests/game-stats.test.mjs` pins these properties.
 
 The v2 event ledger is the permanent idempotency source. Do not reintroduce the
 old newest-512-run cleanup: pruning ledger rows would allow an old event to be
@@ -441,11 +534,25 @@ without a separate security review.
 
 Current fixed one-hour mutation limits:
 
-- 600 mutation events per Vercel client IP;
-- 30 create/create-upsert operations per client IP;
+- 600 mutation events per Vercel client IP (`ip_write`);
+- 30 create/create-upsert operations per client IP (`ip_create`);
 - 240 completed runs per profile, across legacy `record` and v2 sync;
 - 30 rename/create-upsert operations per profile;
-- 300 v2 sync events per profile (a batch consumes one unit per event).
+- 300 v2 sync events per profile (a batch consumes one unit per event);
+- 10 link/unlink operations per client IP (`ip_link`);
+- 10 account operations per auth account (`account_link`, scope
+  `account:<userId>` HMAC'd like every other scope).
+
+Which buckets an account action consumes is exact:
+
+- bearer `create` consumes `ip_create` + `account_link` (and not `ip_write`);
+- `link` and `unlink` consume `ip_link` + `account_link`;
+- all three share the one 10-per-hour `account_link` bucket, so a player's
+  create/link/unlink attempts add up against the same counter;
+- bearer `rename`/`record`/`sync` are deliberately *not* account-scoped: they
+  resolve the profile through the link and then reuse the code-path buckets
+  (`ip_write` plus the `profile_*` scopes), so their limits are identical for
+  both credentials.
 
 Rate-limit scopes are HMAC-SHA-256 values. The raw
 `x-forwarded-for` address is never inserted into Postgres. Vercel overwrites
@@ -598,8 +705,36 @@ Production prerequisites managed outside Git:
 - checked-in migrations `0001_game_stats.sql` then
   `0002_game_progression.sql` completed in Supabase SQL Editor before the
   matching production API deploy, plus `0003_base_table_grants.sql`, which can be
-  applied at any point because it only revokes privileges;
+  applied at any point because it only revokes privileges, plus
+  `0004_account_links.sql` before the account-linking API (applied to
+  production 2026-08-04);
 - a redeploy after environment changes.
+
+### Supabase Auth rollout facts
+
+- The Supabase project URL, issuer, and JWKS URL are public knowledge and are
+  committed in `app/auth/supabaseConfig.ts`. The PUBLIC publishable key is the
+  one manual paste (see the Dashboard checklist in `SUPABASE_SETUP.md`); until
+  it is pasted, `authAvailable === false` hides every account UI element and
+  the whole feature is dormant. Never commit the secret/service-role key.
+- Consent model: no cookies of any kind. The consent choice
+  (`arduino-gate-consent:v1`) and the Supabase Auth session live in
+  localStorage; the Supabase client is not even constructed until the user
+  picks account mode. Google/Apple set cookies only on their own domains
+  during sign-in, and the consent copy says so honestly.
+- Built-in Supabase SMTP delivers auth emails (confirmation, password reset)
+  ONLY to project team members until custom SMTP is configured in the
+  Dashboard. Public sign-ups silently receive nothing — configure custom SMTP
+  before announcing email auth to real users.
+- Apple sign-in is gated behind the `APPLE_ENABLED` flag (default `false`)
+  because it requires the paid Apple Developer Program, and the Apple client
+  secret is a short-lived signed JWT that must be regenerated roughly every
+  six months — an operational rotation trap: sign-in silently breaks when it
+  expires. Do not enable the flag without an owner commitment to that rotation.
+- Passkeys/WebAuthn are deliberately out of scope: Supabase's passkey API is
+  experimental, `rp_id` binds credentials to one exact domain, and Vercel
+  preview deployments (per-deploy subdomains) are unsupported by that binding.
+  Do not add them without revisiting those constraints.
 
 Without `SUPABASE_DATABASE_URL`, `/api/stats` intentionally returns HTTP 503 with
 `DATABASE_NOT_CONFIGURED`; the browser keeps local profile/runs and shows a sync
@@ -912,8 +1047,10 @@ results, deployment prerequisites, and any external step you could not perform.
   absent from Git.
 - The leaderboard is based on client-reported browser runs and is not suitable
   for prizes or adversarial competition.
-- There is no email/account recovery. Losing the access code means losing
-  access to the remote profile.
+- A profile without a linked Supabase Auth account has no recovery: losing the
+  access code means losing access to the remote profile. Linking an account
+  adds email-based recovery for that one profile, but only once the
+  publishable key is pasted and custom SMTP is configured.
 - There is no remote profile-deletion endpoint; “forget” is local only.
 - Plain Vite development does not run Vercel Functions.
 - Web Serial requires a compatible Chromium browser and a secure context; demo
@@ -925,6 +1062,13 @@ results, deployment prerequisites, and any external step you could not perform.
 - Same-code create retries preserve identity and statistics, but currently
   consume mutation-rate counters and can update `updated_at`. Avoid aggressive
   blind retry loops; the create/profile-rename limit is 30 per hour.
+- A mixed-version deploy window can strand events queued by an old tab. The v3
+  store reads the v2 key exactly once, at migration; a tab still running the old
+  build keeps queueing runs into `arduino-gate-game-stats:v2`, and anything it
+  writes after the new build migrated is not picked up until that tab reloads.
+  Nothing is lost — the v2 key is never deleted or overwritten — but such runs
+  stay invisible (and unsynced) meanwhile. After deploying a storage-version
+  change, reload every open tab.
 - Profile sync and leaderboard loading still share one hook status; a future UI
   refactor should separate those states and display the failing operation/code.
 - A deterministically rejected event blocks the head of the queue. `useGameStats`

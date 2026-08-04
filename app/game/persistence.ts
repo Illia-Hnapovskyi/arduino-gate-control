@@ -643,9 +643,47 @@ export function getRemainingRunDurationMs(snapshot: RunSnapshot) {
   return Math.max(0, MAX_RUN_DURATION_MS - snapshot.run.activeDurationMs);
 }
 
+export function runSnapshotStorageKey(ownerId: string | null) {
+  // The unsuffixed key stays the legacy slot: pre-v3 checkpoints keep working and a
+  // rollback to older code still finds a snapshot where it expects one.
+  return ownerId === null
+    ? RUN_SNAPSHOT_STORAGE_KEY
+    : `${RUN_SNAPSHOT_STORAGE_KEY}:${ownerId}`;
+}
+
+function readLegacySlotOwner(storage: StorageLike): string | null | undefined {
+  // TTL-free read: only the owner binding matters when reconciling the legacy slot.
+  try {
+    const serialized = storage.getItem(RUN_SNAPSHOT_STORAGE_KEY);
+    if (serialized === null) return undefined;
+    const snapshot = sanitizeRunSnapshot(JSON.parse(serialized) as unknown);
+    return snapshot ? snapshot.profileOwnerId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function adoptLegacyRunSnapshot(
+  storage: StorageLike,
+  scopedKey: string,
+  snapshot: RunSnapshot,
+) {
+  try {
+    storage.setItem(scopedKey, serializeRunSnapshot(snapshot));
+    storage.removeItem(RUN_SNAPSHOT_STORAGE_KEY);
+  } catch {
+    // Fail soft: the checkpoint stays readable from the legacy slot.
+  }
+}
+
 export function saveRunSnapshot(storage: StorageLike, snapshot: RunSnapshot) {
   try {
-    storage.setItem(RUN_SNAPSHOT_STORAGE_KEY, serializeRunSnapshot(snapshot));
+    // The snapshot owns its key: the profile that checkpointed it is the only
+    // profile whose slot may be written here.
+    storage.setItem(
+      runSnapshotStorageKey(snapshot.profileOwnerId),
+      serializeRunSnapshot(snapshot),
+    );
     return true;
   } catch {
     return false;
@@ -655,19 +693,48 @@ export function saveRunSnapshot(storage: StorageLike, snapshot: RunSnapshot) {
 export function loadRunSnapshot(
   storage: StorageLike,
   nowMs: number,
+  ownerId: string | null = null,
 ): RunSnapshot | null {
   try {
-    return parseRunSnapshot(storage.getItem(RUN_SNAPSHOT_STORAGE_KEY), nowMs);
+    const scopedKey = runSnapshotStorageKey(ownerId);
+    const scoped = storage.getItem(scopedKey);
+    if (scoped !== null || ownerId === null) {
+      return parseRunSnapshot(scoped, nowMs);
+    }
+    const legacy = parseRunSnapshot(
+      storage.getItem(RUN_SNAPSHOT_STORAGE_KEY),
+      nowMs,
+    );
+    // Only the owner named by the legacy snapshot may adopt it; every other
+    // profile leaves it exactly where it is.
+    if (!legacy || legacy.profileOwnerId !== ownerId) return null;
+    adoptLegacyRunSnapshot(storage, scopedKey, legacy);
+    return legacy;
   } catch {
     return null;
   }
 }
 
-export function clearRunSnapshot(storage: StorageLike) {
+export function clearRunSnapshot(
+  storage: StorageLike,
+  ownerId: string | null = null,
+) {
   try {
-    storage.removeItem(RUN_SNAPSHOT_STORAGE_KEY);
-    return true;
+    storage.removeItem(runSnapshotStorageKey(ownerId));
   } catch {
     return false;
   }
+  if (ownerId !== null) {
+    try {
+      // A legacy checkpoint naming this owner is the same slot before migration;
+      // leaving it behind would resurrect a finished run. Snapshots owned by other
+      // profiles (or by nobody) are never touched.
+      if (readLegacySlotOwner(storage) === ownerId) {
+        storage.removeItem(RUN_SNAPSHOT_STORAGE_KEY);
+      }
+    } catch {
+      // Fail soft: the requested owner's own slot is already gone.
+    }
+  }
+  return true;
 }

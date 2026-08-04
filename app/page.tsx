@@ -2,6 +2,7 @@
 
 import {
   type CSSProperties,
+  type FormEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -10,7 +11,16 @@ import {
   useSyncExternalStore,
 } from "react";
 import GamePanel from "./GamePanel";
-import { LANGUAGE_OPTIONS, PAGE_COPY, type Language } from "./i18n";
+import { GAME_COPY, LANGUAGE_OPTIONS, PAGE_COPY, type Language } from "./i18n";
+import { AccountDialog, setGameActivityBlocked } from "./AccountPanel";
+import ConsentPanel from "./ConsentPanel";
+import { getSupabaseClient, type ConsentChoice } from "./auth/client";
+import { authAvailable } from "./auth/supabaseConfig";
+import {
+  useAuthSession,
+  type AuthActionResult,
+} from "./auth/useAuthSession";
+import type { PlayerStatsCopy } from "./PlayerStatsPanel";
 
 type ConnectionState =
   | "disconnected"
@@ -71,6 +81,10 @@ function isGateStatusMessage(message: GateMessage) {
 
 const CLOSED_ANGLE = 10;
 const OPEN_ANGLE = 90;
+
+// PKCE/reset callbacks must run exactly once even under React StrictMode's
+// double-invoked effects — a module-level flag survives the remount.
+let authCallbackHandled = false;
 const RADAR_MIN_ANGLE = 15;
 const RADAR_MAX_ANGLE = 165;
 const RADAR_MAX_DISTANCE = 200;
@@ -124,6 +138,9 @@ export default function Home() {
     () => "uk",
   );
   const copy = PAGE_COPY[language];
+  const gameCopy = GAME_COPY[language];
+  const auth = useAuthSession();
+  const [passwordResetOpen, setPasswordResetOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SiteTab>("control");
   const [gameDataAtRisk, setGameDataAtRisk] = useState(false);
   const [connection, setConnection] =
@@ -183,6 +200,49 @@ export default function Home() {
     document.documentElement.lang = language;
     document.title = copy.documentTitle;
   }, [copy.documentTitle, language]);
+
+  // Profile switching is blocked while the game reports data at risk — the
+  // same signal that already locks the site tabs above.
+  useEffect(() => {
+    setGameActivityBlocked(gameDataAtRisk);
+    return () => setGameActivityBlocked(false);
+  }, [gameDataAtRisk]);
+
+  useEffect(() => {
+    if (authCallbackHandled) return;
+    authCallbackHandled = true;
+    const href = window.location.href;
+    const url = new URL(href);
+    const hasAuthParams =
+      url.searchParams.has("code") || url.searchParams.has("error");
+    const isPasswordReset = url.searchParams.get("reset") === "1";
+    if (!hasAuthParams && !isPasswordReset) return;
+    // Strip the query and hash immediately — success or error — so the
+    // one-time code never lingers in the address bar or browser history.
+    window.history.replaceState(null, "", url.pathname);
+    if (!authAvailable) return;
+    const client = getSupabaseClient();
+    if (!client) return;
+    if (hasAuthParams) {
+      client.auth
+        .exchangeCodeForSession(href)
+        .then(({ error }) => {
+          if (isPasswordReset && !error) setPasswordResetOpen(true);
+        })
+        .catch(() => {
+          // The URL is already clean; the account panel offers sign-in again.
+        });
+      return;
+    }
+    void client.auth
+      .getSession()
+      .then(({ data }) => {
+        if (data.session) setPasswordResetOpen(true);
+      })
+      .catch(() => {
+        // Without a session the reset dialog cannot update the password.
+      });
+  }, []);
 
   const applyMessage = useCallback((message: GateMessage) => {
     if (typeof message.distance === "number") {
@@ -838,6 +898,11 @@ export default function Home() {
   const gateStyle = {
     "--gate-rotation": `${-(angle / OPEN_ANGLE) * 78}deg`,
   } as CSSProperties;
+
+  const handleConsentChoice = (choice: ConsentChoice) => {
+    auth.chooseConsent(choice);
+    if (choice === "account") void selectTab("game");
+  };
 
   return (
     <main className="site-shell" lang={language}>
@@ -1584,6 +1649,125 @@ export default function Home() {
             : copy.footerControl}
         </p>
       </footer>
+
+      {authAvailable && auth.consent === null && (
+        <ConsentPanel
+          copy={gameCopy}
+          mode="banner"
+          onChoose={handleConsentChoice}
+        />
+      )}
+
+      {authAvailable && passwordResetOpen && (
+        <PasswordResetDialog
+          copy={gameCopy}
+          onClose={() => setPasswordResetOpen(false)}
+          onSubmit={auth.updatePassword}
+        />
+      )}
     </main>
+  );
+}
+
+type PasswordResetCopy = Pick<
+  PlayerStatsCopy,
+  | "accountNewPasswordLabel"
+  | "accountUpdatePassword"
+  | "accountPasswordUpdated"
+  | "accountPasswordTooShort"
+  | "accountAuthError"
+  | "cancelNicknameEdit"
+>;
+
+function PasswordResetDialog({
+  copy,
+  onClose,
+  onSubmit,
+}: {
+  copy: PasswordResetCopy;
+  onClose: () => void;
+  onSubmit: (newPassword: string) => Promise<AuthActionResult>;
+}) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+  const titleId = "password-reset-title";
+  const inputId = "password-reset-input";
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy || done) return;
+    setDialogError(null);
+    if (password.length < 8) {
+      setDialogError(copy.accountPasswordTooShort);
+      return;
+    }
+    setBusy(true);
+    const result = await onSubmit(password);
+    setBusy(false);
+    if (!result.ok) {
+      setDialogError(copy.accountAuthError);
+      return;
+    }
+    setPassword("");
+    setDone(true);
+  };
+
+  return (
+    <AccountDialog labelledBy={titleId}>
+      <h3 id={titleId}>{copy.accountUpdatePassword}</h3>
+      {done ? (
+        <>
+          <p aria-live="polite" className="profile-result-status" role="status">
+            {copy.accountPasswordUpdated}
+          </p>
+          <div className="account-dialog-actions">
+            <button
+              className="button primary"
+              onClick={onClose}
+              type="button"
+            >
+              {copy.cancelNicknameEdit}
+            </button>
+          </div>
+        </>
+      ) : (
+        <form className="account-form" onSubmit={(event) => void submit(event)}>
+          <label htmlFor={inputId}>{copy.accountNewPasswordLabel}</label>
+          <input
+            autoComplete="new-password"
+            data-dialog-initial-focus
+            disabled={busy}
+            id={inputId}
+            minLength={8}
+            onChange={(event) => {
+              setPassword(event.target.value);
+              setDialogError(null);
+            }}
+            type="password"
+            value={password}
+          />
+          {dialogError && (
+            <p className="profile-error" role="alert">
+              {dialogError}
+            </p>
+          )}
+          <div className="account-dialog-actions">
+            <button className="button primary" disabled={busy} type="submit">
+              {copy.accountUpdatePassword}
+            </button>
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={onClose}
+              type="button"
+            >
+              {copy.cancelNicknameEdit}
+            </button>
+          </div>
+        </form>
+      )}
+    </AccountDialog>
   );
 }

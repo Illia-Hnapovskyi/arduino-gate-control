@@ -4,7 +4,9 @@ import test from "node:test";
 
 import {
   GAME_ACHIEVEMENTS,
+  GAME_STATS_ACTIONS,
   canonicalJson,
+  evaluateCredentialMatrix,
   formatAccessCode,
   generateAccessCode,
   generateRandomNickname,
@@ -19,6 +21,7 @@ import {
   validateGameSyncResults,
   validateNickname,
   validatePlayerProgression,
+  validateProfilePublicId,
   validateRun,
   validateRunSummary,
 } from "../shared/gameStats.ts";
@@ -399,6 +402,137 @@ test("progression and sync-response parsers reject malformed nested data", () =>
   );
 });
 
+test("profile public IDs normalize case and whitespace but reject non-UUIDs", () => {
+  const canonical = "3f1a2b4c-5d6e-4f70-8912-a3b4c5d6e7f8";
+  assert.deepEqual(validateProfilePublicId(canonical), {
+    ok: true,
+    value: canonical,
+  });
+  // Uppercase input is normalized to lowercase, surrounding whitespace trimmed.
+  assert.deepEqual(validateProfilePublicId(canonical.toUpperCase()), {
+    ok: true,
+    value: canonical,
+  });
+  assert.deepEqual(
+    validateProfilePublicId(`  \t${canonical.toUpperCase()}\n `),
+    { ok: true, value: canonical },
+  );
+
+  for (const invalid of [
+    "",
+    "   ",
+    "not-a-uuid",
+    // Missing one hex digit in the last group.
+    "3f1a2b4c-5d6e-4f70-8912-a3b4c5d6e7f",
+    // One digit too many.
+    `${canonical}9`,
+    // Braced and unhyphenated forms are not accepted.
+    `{${canonical}}`,
+    canonical.replaceAll("-", ""),
+    // Non-hex character inside an otherwise well-shaped UUID.
+    "3f1a2b4c-5d6e-4f70-8912-a3b4c5d6e7fz",
+    // Interior whitespace survives the trim and must fail.
+    "3f1a2b4c-5d6e-4f70-8912-a3b4c5 d6e7f8",
+  ]) {
+    const result = validateProfilePublicId(invalid);
+    assert.equal(result.ok, false, JSON.stringify(invalid));
+    assert.match(result.error, /Profile public ID/);
+  }
+
+  for (const nonString of [
+    undefined,
+    null,
+    12,
+    true,
+    ["3f1a2b4c-5d6e-4f70-8912-a3b4c5d6e7f8"],
+    { value: "3f1a2b4c-5d6e-4f70-8912-a3b4c5d6e7f8" },
+  ]) {
+    assert.deepEqual(validateProfilePublicId(nonString), {
+      ok: false,
+      error: "Profile public ID must be text.",
+    });
+  }
+});
+
+test("the credential matrix decides every action against every credential pair", () => {
+  const ok = (credential) => ({ ok: true, credential });
+  const mixed = { ok: false, status: 400, code: "MIXED_CREDENTIALS" };
+  const codeMissing = { ok: false, status: 400, code: "INVALID_ACCESS_CODE" };
+  const bearerMissing = { ok: false, status: 401, code: "AUTH_TOKEN_MISSING" };
+
+  // Cells: [code only, bearer only, both, neither]. link/unlink are the only
+  // both-actions, so a lone credential is reported as the missing counterpart:
+  // a code alone is a missing token (401), a bearer alone a missing code (400).
+  const singleCredentialAction = {
+    code: ok("code"),
+    bearer: ok("bearer"),
+    both: mixed,
+    neither: codeMissing,
+  };
+  const expected = {
+    create: singleCredentialAction,
+    // connect stays code-only: bearer users call session instead.
+    connect: { code: ok("code"), bearer: mixed, both: mixed, neither: codeMissing },
+    rename: singleCredentialAction,
+    record: singleCredentialAction,
+    sync: singleCredentialAction,
+    link: {
+      code: bearerMissing,
+      bearer: codeMissing,
+      both: ok("both"),
+      neither: bearerMissing,
+    },
+    unlink: {
+      code: bearerMissing,
+      bearer: codeMissing,
+      both: ok("both"),
+      neither: bearerMissing,
+    },
+    // session is bearer-only: any access code is mixed credentials.
+    session: {
+      code: mixed,
+      bearer: ok("bearer"),
+      both: mixed,
+      neither: bearerMissing,
+    },
+  };
+
+  const combinations = {
+    code: [true, false],
+    bearer: [false, true],
+    both: [true, true],
+    neither: [false, false],
+  };
+
+  // Every action in the shared list must be covered by the table above.
+  assert.deepEqual(
+    Object.keys(expected).sort(),
+    [...GAME_STATS_ACTIONS].sort(),
+  );
+
+  for (const action of GAME_STATS_ACTIONS) {
+    for (const [name, [hasAccessCode, hasBearerToken]] of Object.entries(
+      combinations,
+    )) {
+      const decision = evaluateCredentialMatrix(
+        action,
+        hasAccessCode,
+        hasBearerToken,
+      );
+      const cell = expected[action][name];
+      const label = `${action} / ${name}`;
+      assert.equal(decision.ok, cell.ok, label);
+      if (cell.ok) {
+        assert.equal(decision.credential, cell.credential, label);
+      } else {
+        assert.equal(decision.status, cell.status, label);
+        assert.equal(decision.code, cell.code, label);
+        assert.equal(typeof decision.error, "string", label);
+      }
+    }
+  }
+});
+
 test("achievement catalog has stable unique IDs including accuracy progression", () => {
   assert.equal(
     new Set(GAME_ACHIEVEMENTS.map((achievement) => achievement.id)).size,
@@ -430,6 +564,67 @@ test("progression migration keeps permanent dedupe and deny-by-default RLS", asy
   assert.match(migration, /game_sync_events ENABLE ROW LEVEL SECURITY/);
   assert.match(migration, /FROM anon, authenticated, service_role/);
   assert.doesNotMatch(migration, /CREATE POLICY/i);
+});
+
+test("account-link migration keeps the 1:1 mapping private and deny-by-default", async () => {
+  const migration = await readFile(
+    new URL("../db/migrations/0004_account_links.sql", import.meta.url),
+    "utf8",
+  );
+
+  // Cardinality: PRIMARY KEY (player_id) = one profile → max one account;
+  // UNIQUE (auth_user_id) = one account → max one profile. Both FKs cascade so
+  // deleting the auth user removes only the mapping row, never the profile.
+  assert.match(
+    migration,
+    /player_id BIGINT PRIMARY KEY\s+REFERENCES game_players\(id\) ON DELETE CASCADE/,
+  );
+  assert.match(
+    migration,
+    /auth_user_id UUID NOT NULL UNIQUE\s+REFERENCES auth\.users\(id\) ON DELETE CASCADE/,
+  );
+
+  // public_id uses the two-step add + backfill pattern: the NOT NULL guarantee
+  // arrives as a CHECK added NOT VALID and then validated, never a blocking
+  // ALTER COLUMN ... SET NOT NULL rewrite.
+  assert.match(migration, /CHECK \(public_id IS NOT NULL\) NOT VALID/);
+  assert.match(
+    migration,
+    /VALIDATE CONSTRAINT game_players_public_id_not_null/,
+  );
+
+  // The rate-limit bucket allowlist must contain exactly the seven live
+  // buckets; a missing one turns that limiter's inserts into bogus 503s.
+  const bucketCheck = migration.match(/bucket IN \(([^)]*)\)/);
+  assert.ok(bucketCheck, "bucket allowlist CHECK missing");
+  const buckets = [...bucketCheck[1].matchAll(/'([a-z_]+)'/g)].map(
+    (entry) => entry[1],
+  );
+  assert.deepEqual(
+    [...buckets].sort(),
+    [
+      "account_link",
+      "ip_create",
+      "ip_link",
+      "ip_write",
+      "profile_record",
+      "profile_rename",
+      "profile_sync",
+    ],
+  );
+
+  // Deny-by-default: RLS on with zero policies plus explicit revokes, and
+  // never FORCE ROW LEVEL SECURITY — the owner relies on the owner bypass.
+  // Absence checks run on comment-stripped SQL: the migration's own comments
+  // legitimately warn about FORCE ROW LEVEL SECURITY.
+  assert.match(migration, /game_account_links ENABLE ROW LEVEL SECURITY/);
+  assert.match(
+    migration,
+    /REVOKE ALL ON TABLE game_account_links\s+FROM anon, authenticated, service_role/,
+  );
+  const statementsOnly = migration.replace(/--[^\n]*/g, "");
+  assert.doesNotMatch(statementsOnly, /CREATE POLICY/i);
+  assert.doesNotMatch(statementsOnly, /FORCE ROW LEVEL SECURITY/i);
 });
 
 test("base table migration closes the Data API grant gap left by 0001", async () => {

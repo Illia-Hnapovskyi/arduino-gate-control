@@ -1,13 +1,22 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 
 import postgres from "postgres";
 
 import {
+  verifySupabaseToken,
+  type VerifiedAuth,
+} from "../server/authVerify.js";
+import {
   GAME_ACHIEVEMENTS,
+  GAME_STATS_ACTIONS,
   canonicalJson,
+  evaluateCredentialMatrix,
   formatAccessCode,
+  generateAccessCode,
   generateRandomNickname,
+  normalizeAccessCode,
   type GameAchievementId,
+  type GameStatsAction,
   type GameStatsLanguage,
   type GameSyncResult,
   type LeaderboardEntry,
@@ -55,6 +64,8 @@ const RATE_LIMITS = {
     limit: 300,
     windowSeconds: 3_600,
   },
+  ipLink: { bucket: "ip_link", limit: 10, windowSeconds: 3_600 },
+  accountLink: { bucket: "account_link", limit: 10, windowSeconds: 3_600 },
 } as const;
 
 const JSON_HEADERS = {
@@ -66,8 +77,16 @@ const JSON_HEADERS = {
 
 type SqlClient = ReturnType<typeof postgres>;
 
+// postgres.js transactions expose savepoint(); the base cast used elsewhere
+// hides it, so the account-create retry loop uses this widened shape.
+type TransactionClient = SqlClient & {
+  savepoint<T>(callback: (sql: SqlClient) => T | Promise<T>): Promise<T>;
+};
+
 type DatabaseRow = {
   id?: unknown;
+  publicId?: unknown;
+  accountLinked?: unknown;
   nickname: unknown;
   gamesPlayed: unknown;
   totalScore: unknown;
@@ -90,7 +109,9 @@ type RateLimitBucket =
   | "ip_write"
   | "profile_record"
   | "profile_rename"
-  | "profile_sync";
+  | "profile_sync"
+  | "ip_link"
+  | "account_link";
 
 type RateLimitRule = {
   amount?: number;
@@ -199,6 +220,19 @@ async function pseudonymizeRateLimitScope(scope: string) {
   return createHmac("sha256", secret).update(scope, "utf8").digest("hex");
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Extracts the token from the Authorization header. A blank header, another
+// scheme, or a Bearer scheme without a single token yields null, which the
+// credential matrix then treats as "no bearer credential" — an unusable header
+// must never invalidate an otherwise valid access code. Bearer-required
+// actions still fail closed, because null makes the matrix reject them.
+function extractBearerToken(header: string) {
+  const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
+  return match ? match[1] : null;
+}
+
 function clientAddressScope(request: Request) {
   const address = request.headers
     .get("x-forwarded-for")
@@ -298,42 +332,59 @@ function rateLimitResponse(retryAfter: number) {
 async function enforceMutationRateLimits(
   request: Request,
   sql: SqlClient,
-  action: "create" | "record" | "rename" | "sync",
+  action: "create" | "record" | "rename" | "sync" | "link" | "unlink",
   accessCodeHash: string,
   eventCount = 1,
   recordEventCount = 0,
+  authUserId?: string,
 ) {
   await cleanExpiredRateLimits(sql);
-  const [ipScopeHash, profileScopeHash] = await Promise.all([
-    pseudonymizeRateLimitScope(clientAddressScope(request)),
-    pseudonymizeRateLimitScope(`profile:${accessCodeHash}`),
-  ]);
-  const rules: RateLimitRule[] = [{
-    ...RATE_LIMITS.ipWrite,
-    amount: action === "sync" ? eventCount : 1,
-    scopeHash: ipScopeHash,
-  }];
+  const rules: RateLimitRule[] = [];
 
-  if (action === "create") {
-    rules.push({ ...RATE_LIMITS.ipCreate, scopeHash: ipScopeHash });
-    rules.push({ ...RATE_LIMITS.profileRename, scopeHash: profileScopeHash });
-  } else if (action === "record") {
-    rules.push({ ...RATE_LIMITS.profileRecord, scopeHash: profileScopeHash });
-  } else if (action === "sync") {
+  if (authUserId !== undefined) {
+    // Account-scoped actions: bearer create uses ip_create, link/unlink use
+    // ip_link, and every one of them also consumes the account_link bucket.
+    const [ipScopeHash, accountScopeHash] = await Promise.all([
+      pseudonymizeRateLimitScope(clientAddressScope(request)),
+      pseudonymizeRateLimitScope(`account:${authUserId}`),
+    ]);
     rules.push({
-      ...RATE_LIMITS.profileSync,
-      amount: eventCount,
-      scopeHash: profileScopeHash,
+      ...(action === "create" ? RATE_LIMITS.ipCreate : RATE_LIMITS.ipLink),
+      scopeHash: ipScopeHash,
     });
-    if (recordEventCount > 0) {
+    rules.push({ ...RATE_LIMITS.accountLink, scopeHash: accountScopeHash });
+  } else {
+    const [ipScopeHash, profileScopeHash] = await Promise.all([
+      pseudonymizeRateLimitScope(clientAddressScope(request)),
+      pseudonymizeRateLimitScope(`profile:${accessCodeHash}`),
+    ]);
+    rules.push({
+      ...RATE_LIMITS.ipWrite,
+      amount: action === "sync" ? eventCount : 1,
+      scopeHash: ipScopeHash,
+    });
+
+    if (action === "create") {
+      rules.push({ ...RATE_LIMITS.ipCreate, scopeHash: ipScopeHash });
+      rules.push({ ...RATE_LIMITS.profileRename, scopeHash: profileScopeHash });
+    } else if (action === "record") {
+      rules.push({ ...RATE_LIMITS.profileRecord, scopeHash: profileScopeHash });
+    } else if (action === "sync") {
       rules.push({
-        ...RATE_LIMITS.profileRecord,
-        amount: recordEventCount,
+        ...RATE_LIMITS.profileSync,
+        amount: eventCount,
         scopeHash: profileScopeHash,
       });
+      if (recordEventCount > 0) {
+        rules.push({
+          ...RATE_LIMITS.profileRecord,
+          amount: recordEventCount,
+          scopeHash: profileScopeHash,
+        });
+      }
+    } else {
+      rules.push({ ...RATE_LIMITS.profileRename, scopeHash: profileScopeHash });
     }
-  } else {
-    rules.push({ ...RATE_LIMITS.profileRename, scopeHash: profileScopeHash });
   }
 
   for (const rule of rules) {
@@ -444,6 +495,8 @@ type PlayerRecord = {
   id: number;
   profile: PlayerStats;
   statsRevision: number;
+  publicId: string;
+  accountLinked: boolean;
 };
 
 async function selectPlayerRecord(
@@ -453,6 +506,12 @@ async function selectPlayerRecord(
   const rows = rowsFromResult(await sql`
     SELECT
       id,
+      public_id::text AS "publicId",
+      EXISTS (
+        SELECT 1
+        FROM game_account_links
+        WHERE game_account_links.player_id = game_players.id
+      ) AS "accountLinked",
       nickname,
       LEAST(games_played, ${MAX_SAFE_DATABASE_INTEGER}) AS "gamesPlayed",
       LEAST(total_score, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalScore",
@@ -471,6 +530,8 @@ async function selectPlayerRecord(
         id: databaseInteger(row.id),
         profile: playerFromRow(row),
         statsRevision: databaseInteger(row.statsRevision),
+        publicId: databaseString(row.publicId),
+        accountLinked: databaseBoolean(row.accountLinked),
       }
     : null;
 }
@@ -660,6 +721,8 @@ async function selectPlayerSnapshot(
           player.id,
           player.statsRevision,
         ),
+        publicId: player.publicId,
+        accountLinked: player.accountLinked,
       };
     },
   );
@@ -778,6 +841,7 @@ async function createPlayer(
           existingPlayer.statsRevision,
         ),
         accessCode: formatAccessCode(accessCode),
+        profilePublicId: existingPlayer.publicId,
       } satisfies ProfileResponse);
     }
   }
@@ -801,6 +865,7 @@ async function createPlayer(
           END
         RETURNING
           id,
+          public_id::text AS "publicId",
           nickname,
           LEAST(games_played, ${MAX_SAFE_DATABASE_INTEGER}) AS "gamesPlayed",
           LEAST(total_score, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalScore",
@@ -819,6 +884,7 @@ async function createPlayer(
           databaseInteger(rows[0].statsRevision),
         ),
         accessCode: formatAccessCode(accessCode),
+        profilePublicId: databaseString(rows[0].publicId),
       } satisfies ProfileResponse);
     } catch (error) {
       if (isUniqueNicknameError(error) && attempt + 1 < attempts) continue;
@@ -1449,8 +1515,354 @@ async function progressionResponse(
   return jsonResponse({
     profile: snapshot.profile,
     progression: snapshot.progression,
+    profilePublicId: snapshot.publicId,
     results,
   } satisfies SyncResponse);
+}
+
+function isAccountLinkUniqueError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const databaseError = error as DatabaseError;
+  const constraint =
+    typeof databaseError.constraint === "string"
+      ? databaseError.constraint
+      : typeof databaseError.constraint_name === "string"
+        ? databaseError.constraint_name
+        : "";
+  return (
+    databaseError.code === "23505" && constraint.includes("game_account_links")
+  );
+}
+
+type LinkedPlayer = { playerId: number; accessCodeHash: string };
+
+// Bearer resolution: maps a verified account to its linked player and reuses
+// the existing access_code_hash code paths so rate-limit scopes and behavior
+// stay identical to the code path.
+async function resolveLinkedPlayer(
+  sql: SqlClient,
+  authUserId: string,
+): Promise<LinkedPlayer | null> {
+  const rows = resultRows<Record<string, unknown>>(await sql`
+    SELECT player.id, player.access_code_hash AS "accessCodeHash"
+    FROM game_account_links AS link
+    INNER JOIN game_players AS player ON player.id = link.player_id
+    WHERE link.auth_user_id = ${authUserId}
+    LIMIT 1
+  `);
+  const row = rows[0];
+  return row
+    ? {
+        playerId: databaseInteger(row.id),
+        accessCodeHash: databaseString(row.accessCodeHash),
+      }
+    : null;
+}
+
+// Audited HIGH: link/unlink transfer profile ownership, so a token whose
+// session has been revoked (or that carries no session at all) must not pass.
+// The check runs inside the surrounding transaction.
+async function assertSessionActive(tx: SqlClient, auth: VerifiedAuth) {
+  const revoked = new SyncEventError(
+    401,
+    "AUTH_SESSION_REVOKED",
+    "The signed-in session is no longer active.",
+  );
+  if (!auth.sessionId || !UUID_PATTERN.test(auth.sessionId)) throw revoked;
+  const rows = resultRows<Record<string, unknown>>(await tx`
+    SELECT 1 AS active
+    FROM auth.sessions
+    WHERE id = ${auth.sessionId} AND user_id = ${auth.userId}
+    LIMIT 1
+  `);
+  if (!rows[0]) throw revoked;
+}
+
+// Explains why a link INSERT ... ON CONFLICT DO NOTHING (or an exact-match
+// unlink DELETE) affected zero rows. Returns null only for the same-pair case
+// (link idempotency); everything else maps to a conflict or missing link.
+async function classifyLinkConflict(
+  tx: SqlClient,
+  playerId: number,
+  authUserId: string,
+): Promise<Response | null> {
+  const links = resultRows<Record<string, unknown>>(await tx`
+    SELECT player_id AS "playerId", auth_user_id AS "authUserId"
+    FROM game_account_links
+    WHERE player_id = ${playerId} OR auth_user_id = ${authUserId}
+  `);
+  const samePair = links.some(
+    (row) =>
+      databaseInteger(row.playerId) === playerId &&
+      databaseString(row.authUserId) === authUserId,
+  );
+  if (samePair) return null;
+  if (links.some((row) => databaseInteger(row.playerId) === playerId)) {
+    return errorResponse(
+      409,
+      "PROFILE_ACCOUNT_CONFLICT",
+      "This profile is already linked to another account.",
+    );
+  }
+  if (links.some((row) => databaseString(row.authUserId) === authUserId)) {
+    return errorResponse(
+      409,
+      "ACCOUNT_PROFILE_CONFLICT",
+      "This account is already linked to another profile.",
+    );
+  }
+  return errorResponse(
+    404,
+    "AUTH_NOT_LINKED",
+    "This account is not linked to this profile.",
+  );
+}
+
+async function selectPlayerForUpdate(tx: SqlClient, accessCodeHash: string) {
+  const rows = resultRows<Record<string, unknown>>(await tx`
+    SELECT id, public_id::text AS "publicId"
+    FROM game_players
+    WHERE access_code_hash = ${accessCodeHash}
+    FOR UPDATE
+  `);
+  const row = rows[0];
+  return row
+    ? {
+        playerId: databaseInteger(row.id),
+        publicId: databaseString(row.publicId),
+      }
+    : null;
+}
+
+async function linkAccountProfile(
+  sql: SqlClient,
+  auth: VerifiedAuth,
+  accessCodeHash: string,
+): Promise<Response> {
+  try {
+    return await sql.begin(async (transaction) => {
+      const tx = transaction as unknown as SqlClient;
+      await assertSessionActive(tx, auth);
+      const player = await selectPlayerForUpdate(tx, accessCodeHash);
+      if (!player) {
+        return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
+      }
+      // No conflict target on purpose: DO NOTHING must cover both the
+      // player_id primary key and the auth_user_id unique constraint.
+      const inserted = resultRows<Record<string, unknown>>(await tx`
+        INSERT INTO game_account_links (player_id, auth_user_id, link_method)
+        VALUES (${player.playerId}, ${auth.userId}, 'code')
+        ON CONFLICT DO NOTHING
+        RETURNING player_id
+      `);
+      let status: "linked" | "already-linked" = "linked";
+      if (!inserted[0]) {
+        const conflict = await classifyLinkConflict(
+          tx,
+          player.playerId,
+          auth.userId,
+        );
+        // Never merge, never relink: only the exact same pair is idempotent.
+        if (conflict) return conflict;
+        status = "already-linked";
+      }
+      const record = await selectPlayerRecord(tx, accessCodeHash);
+      if (!record) {
+        return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
+      }
+      return jsonResponse({
+        status,
+        profile: record.profile,
+        profilePublicId: player.publicId,
+        accountLinked: true,
+      });
+    });
+  } catch (error) {
+    if (error instanceof SyncEventError) {
+      return errorResponse(error.status, error.code, error.message);
+    }
+    throw error;
+  }
+}
+
+async function unlinkAccountProfile(
+  sql: SqlClient,
+  auth: VerifiedAuth,
+  accessCodeHash: string,
+): Promise<Response> {
+  try {
+    return await sql.begin(async (transaction) => {
+      const tx = transaction as unknown as SqlClient;
+      await assertSessionActive(tx, auth);
+      const player = await selectPlayerForUpdate(tx, accessCodeHash);
+      if (!player) {
+        return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
+      }
+      // The row must match BOTH the profile (via its hash) and the account.
+      const deleted = resultRows<Record<string, unknown>>(await tx`
+        DELETE FROM game_account_links
+        WHERE player_id = ${player.playerId} AND auth_user_id = ${auth.userId}
+        RETURNING player_id
+      `);
+      if (!deleted[0]) {
+        const conflict = await classifyLinkConflict(
+          tx,
+          player.playerId,
+          auth.userId,
+        );
+        if (conflict) return conflict;
+      }
+      const record = await selectPlayerRecord(tx, accessCodeHash);
+      if (!record) {
+        return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
+      }
+      return jsonResponse({
+        profile: record.profile,
+        profilePublicId: player.publicId,
+        accountLinked: false,
+      } satisfies ProfileResponse);
+    });
+  } catch (error) {
+    if (error instanceof SyncEventError) {
+      return errorResponse(error.status, error.code, error.message);
+    }
+    throw error;
+  }
+}
+
+const MAX_ACCESS_CODE_ATTEMPTS = 3;
+
+// Bearer create (audited CRITICAL): never reuses the code-path upsert. The
+// server generates the access code itself and only ever INSERTs fresh rows —
+// a hash collision regenerates the code instead of adopting an existing row.
+async function createAccountPlayer(
+  sql: SqlClient,
+  auth: VerifiedAuth,
+  requestedNickname: string,
+  language: GameStatsLanguage,
+): Promise<Response> {
+  try {
+    return await sql.begin(async (transaction) => {
+      const tx = transaction as unknown as TransactionClient;
+      const linkedRows = resultRows<Record<string, unknown>>(await tx`
+        SELECT player.public_id::text AS "publicId"
+        FROM game_account_links AS link
+        INNER JOIN game_players AS player ON player.id = link.player_id
+        WHERE link.auth_user_id = ${auth.userId}
+        LIMIT 1
+      `);
+      if (linkedRows[0]) {
+        // The account already owns a profile; the client should reconnect
+        // through the `session` action instead of creating another one.
+        return jsonResponse(
+          {
+            code: "ACCOUNT_PROFILE_CONFLICT",
+            error: "This account is already linked to a profile.",
+            profilePublicId: databaseString(linkedRows[0].publicId),
+          },
+          409,
+        );
+      }
+
+      const hasRequestedNickname = requestedNickname.length > 0;
+      const nicknameAttempts = hasRequestedNickname ? 1 : 6;
+      for (
+        let codeAttempt = 0;
+        codeAttempt < MAX_ACCESS_CODE_ATTEMPTS;
+        codeAttempt += 1
+      ) {
+        const accessCode = generateAccessCode(randomBytes);
+        const accessCodeHash = await hashAccessCode(
+          normalizeAccessCode(accessCode),
+        );
+        for (
+          let nicknameAttempt = 0;
+          nicknameAttempt < nicknameAttempts;
+          nicknameAttempt += 1
+        ) {
+          const insertNickname = hasRequestedNickname
+            ? requestedNickname
+            : generateRandomNickname(language);
+          let rows: DatabaseRow[];
+          try {
+            // A savepoint keeps the transaction usable after a unique
+            // nickname violation so the random-nickname retry can proceed.
+            rows = await tx.savepoint(async (savepointSql) =>
+              rowsFromResult(await savepointSql`
+                INSERT INTO game_players (access_code_hash, nickname, language)
+                VALUES (${accessCodeHash}, ${insertNickname}, ${language})
+                ON CONFLICT (access_code_hash) DO NOTHING
+                RETURNING
+                  id,
+                  public_id::text AS "publicId",
+                  nickname,
+                  LEAST(games_played, ${MAX_SAFE_DATABASE_INTEGER}) AS "gamesPlayed",
+                  LEAST(total_score, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalScore",
+                  high_score AS "highScore",
+                  highest_level AS "highestLevel",
+                  LEAST(total_duration_ms, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalDurationMs",
+                  updated_at AS "updatedAt",
+                  LEAST(stats_revision, ${MAX_SAFE_DATABASE_INTEGER}) AS "statsRevision"
+              `),
+            );
+          } catch (error) {
+            if (isUniqueNicknameError(error)) {
+              if (hasRequestedNickname) {
+                return errorResponse(
+                  409,
+                  "NICKNAME_TAKEN",
+                  "Nickname is already in use.",
+                );
+              }
+              continue;
+            }
+            throw error;
+          }
+          // Zero rows means the generated hash collided with an existing row:
+          // regenerate the code, NEVER adopt someone else's profile.
+          if (!rows[0]) break;
+          const playerId = databaseInteger(rows[0].id);
+          await tx`
+            INSERT INTO game_account_links (player_id, auth_user_id, link_method)
+            VALUES (${playerId}, ${auth.userId}, 'create')
+          `;
+          return jsonResponse({
+            profile: playerFromRow(rows[0]),
+            progression: await getPlayerProgression(
+              tx,
+              playerId,
+              databaseInteger(rows[0].statsRevision),
+            ),
+            accessCode,
+            profilePublicId: databaseString(rows[0].publicId),
+            accountLinked: true,
+          } satisfies ProfileResponse);
+        }
+      }
+      return errorResponse(
+        503,
+        hasRequestedNickname
+          ? "ACCESS_CODE_UNAVAILABLE"
+          : "RANDOM_NICKNAME_UNAVAILABLE",
+        hasRequestedNickname
+          ? "A unique access code could not be allocated. Please try again."
+          : "A random nickname could not be allocated. Please try again.",
+      );
+    });
+  } catch (error) {
+    if (isAccountLinkUniqueError(error)) {
+      // A concurrent request linked this account first.
+      return errorResponse(
+        409,
+        "ACCOUNT_PROFILE_CONFLICT",
+        "This account is already linked to a profile.",
+      );
+    }
+    if (error instanceof SyncEventError) {
+      return errorResponse(error.status, error.code, error.message);
+    }
+    throw error;
+  }
 }
 
 async function readLimitedBody(request: Request) {
@@ -1525,22 +1937,103 @@ async function readJsonBody(
   }
 }
 
+// Resolves the profile hash a mutation should run against: bearer requests
+// map through game_account_links, code requests use the validated hash as-is.
+async function resolveAccessCodeHash(
+  sql: SqlClient,
+  auth: VerifiedAuth | null,
+  accessCodeHash: string | null,
+): Promise<string | Response> {
+  if (auth) {
+    const linked = await resolveLinkedPlayer(sql, auth.userId);
+    return (
+      linked?.accessCodeHash ??
+      errorResponse(
+        404,
+        "AUTH_NOT_LINKED",
+        "This account is not linked to a profile.",
+      )
+    );
+  }
+  if (accessCodeHash === null) {
+    return errorResponse(
+      400,
+      "INVALID_ACCESS_CODE",
+      "An access code is required for this action.",
+    );
+  }
+  return accessCodeHash;
+}
+
 async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
   const parsed = await readJsonBody(request);
   if ("response" in parsed) return parsed.response;
   const body = parsed.body;
 
-  if (typeof body.action !== "string") {
+  // Identity-looking fields are stripped and ignored — never a hard failure,
+  // because rejecting them outright would freeze queued offline sync events.
+  delete body.userId;
+  delete body.email;
+  delete body.authUserId;
+  delete body.sub;
+
+  if (
+    typeof body.action !== "string" ||
+    !(GAME_STATS_ACTIONS as readonly string[]).includes(body.action)
+  ) {
     return errorResponse(400, "INVALID_ACTION", "A valid action is required.");
   }
+  const action = body.action as GameStatsAction;
 
-  const accessCode = validateAccessCode(body.accessCode);
-  if (!accessCode.ok) {
-    return errorResponse(400, "INVALID_ACCESS_CODE", accessCode.error);
+  // The token is parsed before the matrix runs: deciding on header presence
+  // alone let any Authorization header (empty, Basic, garbage) turn a valid
+  // access-code request into 400 MIXED_CREDENTIALS.
+  const bearerToken = extractBearerToken(
+    request.headers.get("authorization") ?? "",
+  );
+  const hasAccessCode =
+    body.accessCode !== undefined &&
+    body.accessCode !== null &&
+    body.accessCode !== "";
+  const credentials = evaluateCredentialMatrix(
+    action,
+    hasAccessCode,
+    bearerToken !== null,
+  );
+  if (!credentials.ok) {
+    return errorResponse(credentials.status, credentials.code, credentials.error);
   }
-  const accessCodeHash = await hashAccessCode(accessCode.value);
 
-  switch (body.action) {
+  // Bearer verification runs before any SQL touches the database.
+  let auth: VerifiedAuth | null = null;
+  if (credentials.credential !== "code") {
+    if (!bearerToken) {
+      // Unreachable: the matrix only returns bearer/both once a token parsed.
+      return errorResponse(
+        401,
+        "AUTH_TOKEN_MISSING",
+        "A bearer token is required for this action.",
+      );
+    }
+    const verified = await verifySupabaseToken(bearerToken);
+    if (!verified.ok) {
+      return errorResponse(verified.status, verified.code, verified.error);
+    }
+    auth = verified.auth;
+  }
+
+  let accessCodeValue: string | null = null;
+  let accessCodeHash: string | null = null;
+  if (hasAccessCode) {
+    const accessCode = validateAccessCode(body.accessCode);
+    if (!accessCode.ok) {
+      return errorResponse(400, "INVALID_ACCESS_CODE", accessCode.error);
+    }
+    accessCodeValue = accessCode.value;
+    accessCodeHash = await hashAccessCode(accessCode.value);
+  }
+
+  switch (action) {
     case "create": {
       const language = validateLanguage(body.language);
       if (!language.ok) {
@@ -1551,6 +2044,33 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
         return errorResponse(400, "INVALID_NICKNAME", nickname.error);
       }
       const progressionAvailable = await hasProgressionSchema(sql);
+      if (auth) {
+        if (!progressionAvailable) {
+          return errorResponse(
+            503,
+            "SCHEMA_MIGRATION_REQUIRED",
+            "Game progression is queued until the database migration is applied.",
+          );
+        }
+        const rateLimited = await enforceMutationRateLimits(
+          request,
+          sql,
+          "create",
+          "",
+          1,
+          0,
+          auth.userId,
+        );
+        if (rateLimited) return rateLimited;
+        return createAccountPlayer(sql, auth, nickname.value, language.value);
+      }
+      if (accessCodeHash === null || accessCodeValue === null) {
+        return errorResponse(
+          400,
+          "INVALID_ACCESS_CODE",
+          "An access code is required for this action.",
+        );
+      }
       const rateLimited = await enforceMutationRateLimits(
         request,
         sql,
@@ -1562,20 +2082,27 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
         ? createPlayer(
             sql,
             accessCodeHash,
-            accessCode.value,
+            accessCodeValue,
             nickname.value,
             language.value,
           )
         : createLegacyPlayer(
             sql,
             accessCodeHash,
-            accessCode.value,
+            accessCodeValue,
             nickname.value,
             language.value,
           );
     }
 
     case "connect": {
+      if (accessCodeHash === null) {
+        return errorResponse(
+          400,
+          "INVALID_ACCESS_CODE",
+          "An access code is required for this action.",
+        );
+      }
       const progressionAvailable = await hasProgressionSchema(sql);
       if (!progressionAvailable) {
         const profile = await selectLegacyPlayer(sql, accessCodeHash);
@@ -1588,6 +2115,8 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
         ? jsonResponse({
             profile: snapshot.profile,
             progression: snapshot.progression,
+            profilePublicId: snapshot.publicId,
+            accountLinked: snapshot.accountLinked,
           } satisfies ProfileResponse)
         : errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
     }
@@ -1597,14 +2126,16 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
       if (!nickname.ok) {
         return errorResponse(400, "INVALID_NICKNAME", nickname.error);
       }
+      const resolvedHash = await resolveAccessCodeHash(sql, auth, accessCodeHash);
+      if (typeof resolvedHash !== "string") return resolvedHash;
       const rateLimited = await enforceMutationRateLimits(
         request,
         sql,
         "rename",
-        accessCodeHash,
+        resolvedHash,
       );
       if (rateLimited) return rateLimited;
-      return renamePlayer(sql, accessCodeHash, nickname.value);
+      return renamePlayer(sql, resolvedHash, nickname.value);
     }
 
     case "record": {
@@ -1612,11 +2143,13 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
       if (!run.ok) {
         return errorResponse(400, "INVALID_RUN", run.error);
       }
+      const resolvedHash = await resolveAccessCodeHash(sql, auth, accessCodeHash);
+      if (typeof resolvedHash !== "string") return resolvedHash;
       const rateLimited = await enforceMutationRateLimits(
         request,
         sql,
         "record",
-        accessCodeHash,
+        resolvedHash,
       );
       if (rateLimited) return rateLimited;
       const summary = validateRunSummary(run.value);
@@ -1625,16 +2158,16 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
       }
       const progressionAvailable = await hasProgressionSchema(sql);
       if (!progressionAvailable) {
-        return recordLegacyRun(sql, accessCodeHash, summary.value);
+        return recordLegacyRun(sql, resolvedHash, summary.value);
       }
       try {
-        const result = await applySyncEvent(sql, accessCodeHash, {
+        const result = await applySyncEvent(sql, resolvedHash, {
           eventId: summary.value.runId,
           kind: "run.completed",
           version: 2,
           payload: summary.value,
         });
-        const snapshot = await selectPlayerSnapshot(sql, accessCodeHash);
+        const snapshot = await selectPlayerSnapshot(sql, resolvedHash);
         if (!snapshot) {
           return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
         }
@@ -1642,6 +2175,7 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
           profile: snapshot.profile,
           progression: snapshot.progression,
           recorded: result.status === "applied",
+          profilePublicId: snapshot.publicId,
         } satisfies ProfileResponse);
       } catch (error) {
         const mapped = syncFailureResponse(error);
@@ -1666,11 +2200,13 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
           "Game progression is queued until the database migration is applied.",
         );
       }
+      const resolvedHash = await resolveAccessCodeHash(sql, auth, accessCodeHash);
+      if (typeof resolvedHash !== "string") return resolvedHash;
       const rateLimited = await enforceMutationRateLimits(
         request,
         sql,
         "sync",
-        accessCodeHash,
+        resolvedHash,
         events.value.length,
         events.value.filter((event) => event.kind === "run.completed").length,
       );
@@ -1678,9 +2214,9 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
       try {
         const results: GameSyncResult[] = [];
         for (const event of events.value) {
-          results.push(await applySyncEvent(sql, accessCodeHash, event));
+          results.push(await applySyncEvent(sql, resolvedHash, event));
         }
-        return progressionResponse(sql, accessCodeHash, results);
+        return progressionResponse(sql, resolvedHash, results);
       } catch (error) {
         const mapped = syncFailureResponse(error);
         if (mapped) {
@@ -1689,6 +2225,62 @@ async function handlePost(request: Request, sql: SqlClient): Promise<Response> {
         }
         throw error;
       }
+    }
+
+    case "link":
+    case "unlink": {
+      if (!auth || accessCodeHash === null) {
+        // The credential matrix guarantees both; this is a type-level guard.
+        return errorResponse(
+          401,
+          "AUTH_TOKEN_MISSING",
+          "A bearer token is required for this action.",
+        );
+      }
+      const rateLimited = await enforceMutationRateLimits(
+        request,
+        sql,
+        action,
+        accessCodeHash,
+        1,
+        0,
+        auth.userId,
+      );
+      if (rateLimited) return rateLimited;
+      return action === "link"
+        ? linkAccountProfile(sql, auth, accessCodeHash)
+        : unlinkAccountProfile(sql, auth, accessCodeHash);
+    }
+
+    case "session": {
+      if (!auth) {
+        // The credential matrix guarantees a bearer; type-level guard only.
+        return errorResponse(
+          401,
+          "AUTH_TOKEN_MISSING",
+          "A bearer token is required for this action.",
+        );
+      }
+      const linked = await resolveLinkedPlayer(sql, auth.userId);
+      if (!linked) {
+        return errorResponse(
+          404,
+          "AUTH_NOT_LINKED",
+          "This account is not linked to a profile.",
+        );
+      }
+      const snapshot = await selectPlayerSnapshot(sql, linked.accessCodeHash);
+      if (!snapshot) {
+        return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
+      }
+      // No accessCode here: the server only stores the hash and cannot
+      // return the raw code.
+      return jsonResponse({
+        profile: snapshot.profile,
+        progression: snapshot.progression,
+        profilePublicId: snapshot.publicId,
+        accountLinked: true,
+      } satisfies ProfileResponse);
     }
 
     default:

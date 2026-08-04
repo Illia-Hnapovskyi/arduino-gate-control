@@ -118,7 +118,10 @@ test("Space Defender overlays and compact HUD keep their accessibility contract"
   assert.match(overlays, /copy\.retrySave/);
   assert.match(panel, /if \(result && !result\.saved\) return;/);
   assert.match(panel, /window\.confirm\(copy\.discardRecoveryConfirm\)/);
-  assert.match(panel, /!clearRunSnapshot\(storage\)/);
+  // Checkpoints are stored per profile owner, so the clear call carries the owner
+  // id. The invariant being pinned is unchanged: a failed cleanup must block a new
+  // launch instead of silently restoring a stale run.
+  assert.match(panel, /!clearRunSnapshot\(storage, ownerId\)/);
   assert.match(progression, /aria-valuenow=\{progress\}/);
   assert.match(hud, /copy\.hud\.shield/);
   assert.match(
