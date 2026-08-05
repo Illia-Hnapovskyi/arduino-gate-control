@@ -544,10 +544,9 @@ export const GAME_COPY = {
     profileEyebrow: "ПРОФІЛЬ ГРАВЦЯ · СИНХРОНІЗАЦІЯ",
     profileTitle: "Твоя статистика на кожному пристрої",
     profileSetupExplanation:
-      "Створи профіль із власним або випадковим ніком. Результати зберігатимуться онлайн, а на іншому пристрої їх можна відкрити за кодом профілю.",
+      "Створи профіль із власним або випадковим ніком. Результати зберігатимуться онлайн, а на іншому пристрої їх видно після входу в акаунт.",
     nicknameLabel: "Твій нік",
     nicknamePlaceholder: "Наприклад, AstroIlya",
-    saveNickname: "Зберегти нік",
     useRandomNickname: "Згенерувати випадковий",
     nicknameRequiredError: "Введи нік або обери випадковий.",
     nicknameInvalidError:
@@ -556,13 +555,6 @@ export const GAME_COPY = {
     nicknameSaveError: "Не вдалося зберегти твій нік. Спробуй ще раз.",
     randomNicknameError:
       "Не вдалося створити випадковий нік. Спробуй ще раз.",
-    existingProfilePrompt: "Уже маєш профіль? Введи його код.",
-    profileCodePlaceholder: "Код профілю",
-    connectProfile: "Під’єднати профіль",
-    profileCodeInvalidError: "Перевір код профілю та спробуй ще раз.",
-    profileNotFoundError: "Профіль із таким кодом не знайдено.",
-    profileConnectError:
-      "Не вдалося під’єднати профіль. Перевір з’єднання й спробуй ще раз.",
     publicNicknameNotice:
       "Нік і результати будуть видимі в загальній таблиці. Не використовуй у ніку особисті дані.",
     syncSynced: "Синхронізовано",
@@ -575,19 +567,12 @@ export const GAME_COPY = {
     editNickname: "Редагувати",
     saveNicknameChanges: "Зберегти",
     cancelNicknameEdit: "Скасувати",
-    profileCodeLabel: "Код профілю",
-    showProfileCode: "Показати код",
-    hideProfileCode: "Сховати код",
-    copyProfileCode: "Копіювати код",
-    profileCodeCopied: "Код скопійовано",
-    profileCodeExplanation:
-      "Збережи цей код, щоб відкрити профіль на іншому пристрої. Він дає доступ до твоєї статистики — не публікуй його.",
     forgetProfile: "Забути профіль на цьому пристрої",
     forgetProfileConfirm:
-      "Забути цей профіль на пристрої? Онлайн-статистика не видалиться, але для повернення знадобиться код профілю.",
+      "Забути цей профіль на пристрої? Онлайн-статистика не видалиться — щоб повернутися, увійди в той самий акаунт.",
     accountTitle: "Акаунт",
     accountSubtitle:
-      "Увійди, щоб відкривати профіль на інших пристроях без коду.",
+      "Увійди, щоб мати профіль і бачити свою статистику на кожному пристрої.",
     accountEmailLabel: "Електронна пошта",
     accountPasswordLabel: "Пароль",
     accountNicknameLabel: "Нік для профілю",
@@ -606,31 +591,34 @@ export const GAME_COPY = {
     accountGoogle: "Увійти через Google",
     accountApple: "Увійти через Apple",
     accountOrDivider: "або",
-    accountLegacyCodeSummary: "У мене є код профілю",
-    accountLinked: "Профіль прив’язано до акаунта",
-    accountNotLinked: "Профіль не прив’язано до акаунта",
-    accountLinkProfile: "Прив’язати профіль до акаунта",
-    accountUnlinkProfile: "Відв’язати профіль від акаунта",
-    accountLinkDone: "Профіль прив’язано до акаунта.",
-    accountAlreadyLinked:
-      "Цей профіль уже прив’язано до твого акаунта.",
-    accountLinkConflictAccount:
-      "До цього акаунта вже прив’язано інший профіль.",
-    accountLinkConflictProfile:
-      "Цей профіль уже прив’язано до іншого акаунта.",
     accountSessionExpired: "Сесія завершилася. Увійди ще раз.",
     accountAuthError:
       "Не вдалося виконати дію з акаунтом. Спробуй ще раз.",
     accountEmailInvalid: "Перевір адресу електронної пошти.",
     accountPasswordTooShort:
       "Пароль має містити щонайменше 8 символів.",
-    conflictTitle: "Знайдено два профілі",
-    conflictBody:
-      "На акаунті вже є один профіль, а на цьому пристрої — інший. Обери, з яким продовжити; нічого не об’єднується й не перезаписується.",
-    conflictKeepLocal: "Залишити локальний профіль",
-    conflictUseAccount: "Використати профіль акаунта",
-    conflictVaultNote:
-      "Другий профіль не зникне — він залишиться у списку профілів на цьому пристрої.",
+    accountRequiredTitle: "Увійди або створи акаунт",
+    accountRequiredBody:
+      "Профіль існує лише разом з акаунтом: увійди або створи акаунт, щоб зберігати статистику й почати виліт. Шлагбаум, радар і деморежим працюють без акаунта.",
+    accountCreateProfileTitle: "Створи профіль для цього акаунта",
+    accountCreateProfileAction: "Створити профіль",
+    accountProviderUnavailable:
+      "Цей спосіб входу для цього проєкту ще не налаштовано. Скористайся електронною поштою та паролем.",
+    accountCodeRetiredNotice:
+      "Вхід за кодом профілю більше не працює. Дані цього профілю залишаються в браузері й нікуди не зникли — увійди в акаунт, щоб грати далі та зберігати результати онлайн.",
+    accountOfflineNotice:
+      "Якщо ти вже входив у цьому браузері, гра працює й без інтернету: результати чекають у черзі та синхронізуються пізніше. Для першого входу потрібне з’єднання.",
+    accountPasskeyTitle: "Ключі доступу (passkeys)",
+    accountPasskeyAddAction: "Додати ключ доступу",
+    accountPasskeySignInAction: "Увійти ключем доступу",
+    accountPasskeyUnavailable:
+      "Ключі доступу для цього проєкту ще не увімкнено. Скористайся електронною поштою та паролем.",
+    accountPasskeyEmpty: "Ключів доступу ще немає.",
+    accountPasskeyRecoveryHint:
+      "Ключ доступу зберігається на одному пристрої або в менеджері паролів. Залиш електронну пошту та пароль як запасний спосіб входу.",
+    accountPasskeyDeleteAction: "Видалити ключ",
+    accountPasskeyDeleteConfirm:
+      "Видалити цей ключ доступу? Вхід ним більше не працюватиме, але електронна пошта й пароль залишаються.",
     profilesTitle: "Профілі на цьому пристрої",
     profilesSwitch: "Перемкнутися",
     profilesActive: "Активний",
@@ -791,10 +779,9 @@ export const GAME_COPY = {
     profileEyebrow: "SPIELERPROFIL · SYNCHRONISIERUNG",
     profileTitle: "Deine Statistik auf jedem Gerät",
     profileSetupExplanation:
-      "Erstelle ein Profil mit deinem eigenen oder einem zufälligen Namen. Deine Ergebnisse werden online gespeichert und lassen sich auf einem anderen Gerät mit dem Profilcode öffnen.",
+      "Erstelle ein Profil mit deinem eigenen oder einem zufälligen Namen. Deine Ergebnisse werden online gespeichert und sind auf einem anderen Gerät nach der Anmeldung sichtbar.",
     nicknameLabel: "Dein Spielername",
     nicknamePlaceholder: "Zum Beispiel AstroIlya",
-    saveNickname: "Spielernamen speichern",
     useRandomNickname: "Zufälligen Namen wählen",
     nicknameRequiredError:
       "Gib einen Spielernamen ein oder wähle einen zufälligen.",
@@ -806,15 +793,6 @@ export const GAME_COPY = {
       "Dein Spielername konnte nicht gespeichert werden. Versuche es noch einmal.",
     randomNicknameError:
       "Es konnte kein zufälliger Spielername erstellt werden. Versuche es noch einmal.",
-    existingProfilePrompt:
-      "Du hast bereits ein Profil? Gib den Profilcode ein.",
-    profileCodePlaceholder: "Profilcode",
-    connectProfile: "Profil verbinden",
-    profileCodeInvalidError:
-      "Überprüfe den Profilcode und versuche es noch einmal.",
-    profileNotFoundError: "Unter diesem Code wurde kein Profil gefunden.",
-    profileConnectError:
-      "Das Profil konnte nicht verbunden werden. Prüfe die Verbindung und versuche es noch einmal.",
     publicNicknameNotice:
       "Spielername und Ergebnisse sind in der öffentlichen Bestenliste sichtbar. Verwende im Namen keine persönlichen Daten.",
     syncSynced: "Synchronisiert",
@@ -827,19 +805,12 @@ export const GAME_COPY = {
     editNickname: "Bearbeiten",
     saveNicknameChanges: "Speichern",
     cancelNicknameEdit: "Abbrechen",
-    profileCodeLabel: "Profilcode",
-    showProfileCode: "Code anzeigen",
-    hideProfileCode: "Code ausblenden",
-    copyProfileCode: "Code kopieren",
-    profileCodeCopied: "Code kopiert",
-    profileCodeExplanation:
-      "Bewahre diesen Code auf, um dein Profil auf einem anderen Gerät zu öffnen. Er gewährt Zugriff auf deine Statistik — veröffentliche ihn nicht.",
     forgetProfile: "Profil auf diesem Gerät vergessen",
     forgetProfileConfirm:
-      "Dieses Profil auf dem Gerät vergessen? Die Online-Statistik bleibt erhalten, aber du brauchst den Profilcode, um zurückzukehren.",
+      "Dieses Profil auf dem Gerät vergessen? Die Online-Statistik bleibt erhalten — melde dich mit demselben Konto an, um zurückzukehren.",
     accountTitle: "Konto",
     accountSubtitle:
-      "Melde dich an, um dein Profil ohne Code auf anderen Geräten zu öffnen.",
+      "Melde dich an, um ein Profil zu haben und deine Statistik auf jedem Gerät zu sehen.",
     accountEmailLabel: "E-Mail-Adresse",
     accountPasswordLabel: "Passwort",
     accountNicknameLabel: "Spielername für das Profil",
@@ -858,18 +829,6 @@ export const GAME_COPY = {
     accountGoogle: "Mit Google anmelden",
     accountApple: "Mit Apple anmelden",
     accountOrDivider: "oder",
-    accountLegacyCodeSummary: "Ich habe einen Profilcode",
-    accountLinked: "Das Profil ist mit dem Konto verknüpft",
-    accountNotLinked: "Das Profil ist nicht mit dem Konto verknüpft",
-    accountLinkProfile: "Profil mit dem Konto verknüpfen",
-    accountUnlinkProfile: "Profilverknüpfung mit dem Konto lösen",
-    accountLinkDone: "Das Profil wurde mit dem Konto verknüpft.",
-    accountAlreadyLinked:
-      "Dieses Profil ist bereits mit deinem Konto verknüpft.",
-    accountLinkConflictAccount:
-      "Mit diesem Konto ist bereits ein anderes Profil verknüpft.",
-    accountLinkConflictProfile:
-      "Dieses Profil ist bereits mit einem anderen Konto verknüpft.",
     accountSessionExpired:
       "Die Sitzung ist abgelaufen. Melde dich noch einmal an.",
     accountAuthError:
@@ -877,13 +836,28 @@ export const GAME_COPY = {
     accountEmailInvalid: "Überprüfe die E-Mail-Adresse.",
     accountPasswordTooShort:
       "Das Passwort muss mindestens 8 Zeichen lang sein.",
-    conflictTitle: "Zwei Profile gefunden",
-    conflictBody:
-      "Am Konto hängt bereits ein Profil, auf diesem Gerät liegt ein anderes. Wähle, mit welchem du weiterspielst; nichts wird zusammengeführt oder überschrieben.",
-    conflictKeepLocal: "Lokales Profil behalten",
-    conflictUseAccount: "Kontoprofil verwenden",
-    conflictVaultNote:
-      "Das andere Profil geht nicht verloren — es bleibt in der Profilliste auf diesem Gerät.",
+    accountRequiredTitle: "Melde dich an oder erstelle ein Konto",
+    accountRequiredBody:
+      "Ein Profil gibt es nur zusammen mit einem Konto: melde dich an oder erstelle ein Konto, um Statistik zu speichern und einen Flug zu starten. Schranke, Radar und Demomodus funktionieren auch ohne Konto.",
+    accountCreateProfileTitle: "Erstelle ein Profil für dieses Konto",
+    accountCreateProfileAction: "Profil erstellen",
+    accountProviderUnavailable:
+      "Diese Anmeldeart ist für dieses Projekt noch nicht eingerichtet. Nutze E-Mail und Passwort.",
+    accountCodeRetiredNotice:
+      "Die Anmeldung mit einem Profilcode funktioniert nicht mehr. Die Daten dieses Profils bleiben in diesem Browser erhalten — melde dich mit einem Konto an, um weiterzuspielen und Ergebnisse online zu speichern.",
+    accountOfflineNotice:
+      "Wenn du in diesem Browser schon angemeldet warst, funktioniert das Spiel auch ohne Internet: Ergebnisse warten in der Warteschlange und werden später synchronisiert. Für die erste Anmeldung brauchst du eine Verbindung.",
+    accountPasskeyTitle: "Passkeys",
+    accountPasskeyAddAction: "Passkey hinzufügen",
+    accountPasskeySignInAction: "Mit Passkey anmelden",
+    accountPasskeyUnavailable:
+      "Passkeys sind für dieses Projekt noch nicht aktiviert. Nutze E-Mail und Passwort.",
+    accountPasskeyEmpty: "Noch keine Passkeys vorhanden.",
+    accountPasskeyRecoveryHint:
+      "Ein Passkey liegt auf einem Gerät oder in einem Passwortmanager. Behalte E-Mail und Passwort als Ausweichweg.",
+    accountPasskeyDeleteAction: "Passkey löschen",
+    accountPasskeyDeleteConfirm:
+      "Diesen Passkey löschen? Die Anmeldung damit funktioniert dann nicht mehr, E-Mail und Passwort bleiben aber erhalten.",
     profilesTitle: "Profile auf diesem Gerät",
     profilesSwitch: "Wechseln",
     profilesActive: "Aktiv",
@@ -1035,10 +1009,9 @@ export const GAME_COPY = {
     profileEyebrow: "PLAYER PROFILE · SYNC",
     profileTitle: "Your stats on every device",
     profileSetupExplanation:
-      "Create a profile with your own nickname or a random one. Your results will be saved online, and you can open them on another device with your profile code.",
+      "Create a profile with your own nickname or a random one. Your results will be saved online, and you can see them on another device after signing in.",
     nicknameLabel: "Your nickname",
     nicknamePlaceholder: "For example, AstroIlya",
-    saveNickname: "Save nickname",
     useRandomNickname: "Use a random nickname",
     nicknameRequiredError: "Enter a nickname or choose a random one.",
     nicknameInvalidError:
@@ -1048,15 +1021,6 @@ export const GAME_COPY = {
       "We couldn’t save your nickname. Please try again.",
     randomNicknameError:
       "We couldn’t create a random nickname. Please try again.",
-    existingProfilePrompt:
-      "Already have a profile? Enter its profile code.",
-    profileCodePlaceholder: "Profile code",
-    connectProfile: "Connect profile",
-    profileCodeInvalidError:
-      "Check the profile code and try again.",
-    profileNotFoundError: "No profile was found with that code.",
-    profileConnectError:
-      "We couldn’t connect the profile. Check your connection and try again.",
     publicNicknameNotice:
       "Your nickname and results will appear on the public leaderboard. Don’t include personal information in your nickname.",
     syncSynced: "Synced",
@@ -1069,19 +1033,12 @@ export const GAME_COPY = {
     editNickname: "Edit",
     saveNicknameChanges: "Save",
     cancelNicknameEdit: "Cancel",
-    profileCodeLabel: "Profile code",
-    showProfileCode: "Show code",
-    hideProfileCode: "Hide code",
-    copyProfileCode: "Copy code",
-    profileCodeCopied: "Code copied",
-    profileCodeExplanation:
-      "Keep this code to open your profile on another device. It gives access to your stats, so don’t share it publicly.",
     forgetProfile: "Forget profile on this device",
     forgetProfileConfirm:
-      "Forget this profile on this device? Your online stats won’t be deleted, but you’ll need the profile code to return.",
+      "Forget this profile on this device? Your online stats won’t be deleted — sign in with the same account to return.",
     accountTitle: "Account",
     accountSubtitle:
-      "Sign in to open your profile on other devices without a code.",
+      "Sign in to have a profile and see your stats on every device.",
     accountEmailLabel: "Email address",
     accountPasswordLabel: "Password",
     accountNicknameLabel: "Nickname for the profile",
@@ -1100,31 +1057,34 @@ export const GAME_COPY = {
     accountGoogle: "Sign in with Google",
     accountApple: "Sign in with Apple",
     accountOrDivider: "or",
-    accountLegacyCodeSummary: "I have a profile code",
-    accountLinked: "Profile linked to the account",
-    accountNotLinked: "Profile not linked to the account",
-    accountLinkProfile: "Link profile to the account",
-    accountUnlinkProfile: "Unlink profile from the account",
-    accountLinkDone: "The profile is now linked to the account.",
-    accountAlreadyLinked:
-      "This profile is already linked to your account.",
-    accountLinkConflictAccount:
-      "Another profile is already linked to this account.",
-    accountLinkConflictProfile:
-      "This profile is already linked to another account.",
     accountSessionExpired: "Your session has expired. Sign in again.",
     accountAuthError:
       "The account action could not be completed. Please try again.",
     accountEmailInvalid: "Check the email address.",
     accountPasswordTooShort:
       "The password must be at least 8 characters long.",
-    conflictTitle: "Two profiles found",
-    conflictBody:
-      "The account already has one profile, and this device has another. Choose which one to continue with; nothing is merged or overwritten.",
-    conflictKeepLocal: "Keep the local profile",
-    conflictUseAccount: "Use the account profile",
-    conflictVaultNote:
-      "The other profile is not lost — it stays in the profile list on this device.",
+    accountRequiredTitle: "Sign in or create an account",
+    accountRequiredBody:
+      "A profile only exists together with an account: sign in or create one to keep your stats and to start a flight. The gate, the radar and demo mode work without an account.",
+    accountCreateProfileTitle: "Create a profile for this account",
+    accountCreateProfileAction: "Create profile",
+    accountProviderUnavailable:
+      "This sign-in method is not set up for this project yet. Use your email and password.",
+    accountCodeRetiredNotice:
+      "Signing in with a profile code no longer works. This profile’s data stays in your browser and is not lost — sign in with an account to keep playing and to save results online.",
+    accountOfflineNotice:
+      "After you have signed in once in this browser, the game also works offline: results wait in the queue and sync later. Only the first sign-in needs a connection.",
+    accountPasskeyTitle: "Passkeys",
+    accountPasskeyAddAction: "Add a passkey",
+    accountPasskeySignInAction: "Sign in with a passkey",
+    accountPasskeyUnavailable:
+      "Passkeys are not switched on for this project yet. Use your email and password.",
+    accountPasskeyEmpty: "No passkeys yet.",
+    accountPasskeyRecoveryHint:
+      "A passkey lives on one device or in a password manager. Keep your email and password as the fallback.",
+    accountPasskeyDeleteAction: "Delete passkey",
+    accountPasskeyDeleteConfirm:
+      "Delete this passkey? Signing in with it will stop working, but your email and password stay.",
     profilesTitle: "Profiles on this device",
     profilesSwitch: "Switch",
     profilesActive: "Active",
@@ -1358,7 +1318,7 @@ export const SPACE_DEFENDER_COPY = {
     controller: "Керування",
     controllerArduino: "Фізичний джойстик Arduino",
     controllerDemo: "Клавіатура / touch · деморежим",
-    profileNeeded: "Створи або під’єднай профіль, щоб почати виліт.",
+    profileNeeded: "Увійди та створи профіль, щоб почати виліт.",
     connectionNeeded: "Під’єднай Arduino або запусти деморежим.",
     startRun: "Почати виліт",
     continueRun: "Продовжити забіг",
@@ -1562,7 +1522,7 @@ export const SPACE_DEFENDER_COPY = {
       pilot: { name: "Pilot", description: "Ausgewogenes Tempo mit allen Mechaniken." },
       ace: { name: "Ass", description: "Dichte Wellen, schnelle Geschosse, höhere Belohnung." },
     },
-    preflightTitle: "Check vor dem Start", savedRunTitle: "Gespeicherter Run", bestScore: "Rekord", bestWave: "Höchste Welle", activeUpgrades: "Startfähigkeiten", controller: "Steuerung", controllerArduino: "Physischer Arduino-Joystick", controllerDemo: "Tastatur / Touch · Demo", profileNeeded: "Erstelle oder verbinde ein Profil, um zu starten.", connectionNeeded: "Verbinde Arduino oder starte den Demomodus.", startRun: "Mission starten", continueRun: "Run fortsetzen", discardRun: "Gespeicherten Run verwerfen", resumeProfileMismatch: "Dieser Run gehört zu einem anderen oder veralteten Profil. Verbinde das richtige Profil oder verwirf den Spielstand.",
+    preflightTitle: "Check vor dem Start", savedRunTitle: "Gespeicherter Run", bestScore: "Rekord", bestWave: "Höchste Welle", activeUpgrades: "Startfähigkeiten", controller: "Steuerung", controllerArduino: "Physischer Arduino-Joystick", controllerDemo: "Tastatur / Touch · Demo", profileNeeded: "Melde dich an und erstelle ein Profil, um zu starten.", connectionNeeded: "Verbinde Arduino oder starte den Demomodus.", startRun: "Mission starten", continueRun: "Run fortsetzen", discardRun: "Gespeicherten Run verwerfen", resumeProfileMismatch: "Dieser Run gehört zu einem anderen oder veralteten Profil. Verbinde das richtige Profil oder verwirf den Spielstand.",
     pauseTitle: "Flug pausiert", pauseHint: "Uhr und Cooldowns stehen still.", resume: "Fortsetzen", finishRun: "Run beenden", resultTitle: "Flugauswertung", victoryTitle: "Expedition abgeschlossen", defeatTitle: "Schiff verloren", durationLimitTitle: "Fluglimit erreicht", runEndedTitle: "Flug beendet",
     endReasons: { victory: "Der finale Wächter ist besiegt und die Expeditionsroute abgeschlossen.", defeat: "Die Hülle hielt dem letzten Treffer nicht stand.", "duration-limit": "Das sichere Run-Limit von sechs Stunden wurde erreicht.", stopped: "Du hast den Flug im Pausenmenü beendet.", disconnected: "Die Arduino-Verbindung wurde getrennt; das Ergebnis wurde vor dem erneuten Verbinden erfasst.", "profile-changed": "Das lokale Profil wurde während des Flugs gewechselt; der Bericht bleibt dem ursprünglichen Profil zugeordnet.", pagehide: "Die Seite wurde geschlossen oder in einen anderen Zustand versetzt.", unmount: "Der Spielbildschirm wurde verlassen.", unknown: "Der Run ist beendet und die Auswertung wurde erstellt." },
     newRecord: "Neuer Rekord!", bossDefeated: "Boss besiegt", achievementUnlocked: "Erfolg freigeschaltet", powerUnlocked: "Neue Superkraft freigeschaltet", powerCollected: "Superkraft aufgenommen", powerActivated: "Superkraft aktiviert", powerCooldown: "Superkraft lädt noch", powerLowEnergy: "Nicht genug Energie", powerNotNeeded: "Hülle und Schild sind bereits voll", sectorCleared: "Sektor gesäubert", playAgain: "Noch einmal", backToMenu: "Zum Menü", runSaved: "Das Ergebnis ist lokal gespeichert und wird synchronisiert.", runSaveFailed: "Das Ergebnis konnte nicht in den lokalen Speicher geschrieben werden. Bleibe auf diesem Bildschirm und versuche es erneut, damit der Run nicht verloren geht.", runSaveProfileMismatch: "Das Profil wurde während des Runs gewechselt. Öffne die Wiederherstellung, verbinde das ursprüngliche Profil und versuche erneut zu speichern.", runSaveStorageError: "Der lokale Speicher ist nicht verfügbar. Schließe die Seite nicht; gib Speicher frei oder erlaube ihn und versuche es erneut.", runSaveInvalid: "Die interne Prüfung hat den Bericht abgelehnt. Bleibe auf der Seite, versuche es erneut und bewahre diesen Bildschirm zur Diagnose auf.", retrySave: "Speichern erneut versuchen", resolveSave: "Profil und Wiederherstellung", exportRecovery: "Recovery-Datei herunterladen", discardExportedResult: "Nach Export verwerfen", unsavedResultTitle: "Ergebnis noch nicht gesichert", unsavedResultRecovery: "Ein neuer Flug und der Wechsel zur Schranke sind gesperrt. Verbinde bei Bedarf unter Profil das ursprüngliche Profil und speichere erneut.", checkpointSaveFailed: "Der Zwischenstand konnte nicht sicher gespeichert werden. Upgrade-Auswahl und Verlassen bleiben bis zum erfolgreichen Speichern gesperrt.", upgradeStack: "Stufe", playAgainUnavailable: "Ein neuer Flug benötigt einen aktiven Controller und ein sicher gespeichertes aktuelles Ergebnis.",
@@ -1610,7 +1570,7 @@ export const SPACE_DEFENDER_COPY = {
       pilot: { name: "Pilot", description: "Balanced pacing with the full mechanics set." },
       ace: { name: "Ace", description: "Dense waves, fast projectiles, and higher rewards." },
     },
-    preflightTitle: "Pre-flight check", savedRunTitle: "Saved run", bestScore: "Best score", bestWave: "Highest wave", activeUpgrades: "Starting abilities", controller: "Controls", controllerArduino: "Physical Arduino joystick", controllerDemo: "Keyboard / touch · demo", profileNeeded: "Create or connect a profile before launch.", connectionNeeded: "Connect Arduino or start demo mode.", startRun: "Launch mission", continueRun: "Continue run", discardRun: "Discard saved run", resumeProfileMismatch: "This run belongs to another or legacy profile. Connect the correct profile or discard the save.",
+    preflightTitle: "Pre-flight check", savedRunTitle: "Saved run", bestScore: "Best score", bestWave: "Highest wave", activeUpgrades: "Starting abilities", controller: "Controls", controllerArduino: "Physical Arduino joystick", controllerDemo: "Keyboard / touch · demo", profileNeeded: "Sign in and create a profile before launch.", connectionNeeded: "Connect Arduino or start demo mode.", startRun: "Launch mission", continueRun: "Continue run", discardRun: "Discard saved run", resumeProfileMismatch: "This run belongs to another or legacy profile. Connect the correct profile or discard the save.",
     pauseTitle: "Flight paused", pauseHint: "The clock and every cooldown are stopped.", resume: "Continue", finishRun: "Finish run", resultTitle: "Flight report", victoryTitle: "Expedition complete", defeatTitle: "Ship lost", durationLimitTitle: "Flight limit reached", runEndedTitle: "Flight ended",
     endReasons: { victory: "The final warden is defeated and the expedition route is complete.", defeat: "The hull could not withstand the final impact.", "duration-limit": "The safe six-hour run limit was reached.", stopped: "You ended the flight from the pause menu.", disconnected: "The Arduino connection was lost; the result was captured before reconnecting.", "profile-changed": "The local profile changed during flight; the report remains bound to the profile that started it.", pagehide: "The page was closed or moved into another state.", unmount: "The game screen was left.", unknown: "The run ended and its flight report is ready." },
     newRecord: "New record!", bossDefeated: "Boss defeated", achievementUnlocked: "Achievement unlocked", powerUnlocked: "New superpower unlocked", powerCollected: "Superpower collected", powerActivated: "Superpower activated", powerCooldown: "Superpower recharging", powerLowEnergy: "Not enough energy", powerNotNeeded: "Hull and shield are already full", sectorCleared: "Sector cleared", playAgain: "Play again", backToMenu: "Back to menu", runSaved: "The result is saved locally and will sync.", runSaveFailed: "The result could not be written to local storage. Stay on this screen and retry so the run is not lost.", runSaveProfileMismatch: "The profile changed during the run. Open recovery, reconnect the original profile, and retry the save.", runSaveStorageError: "Local storage is unavailable. Do not close the page; free space or allow storage, then retry.", runSaveInvalid: "Internal validation rejected the report. Stay on this page, retry, and keep this screen for diagnosis.", retrySave: "Retry save", resolveSave: "Profile and recovery", exportRecovery: "Download recovery file", discardExportedResult: "Discard after export", unsavedResultTitle: "Result not secured yet", unsavedResultRecovery: "A new flight and the gate tab are locked. If needed, reconnect the original profile under Profile, then retry the save.", checkpointSaveFailed: "The between-wave checkpoint could not be secured. Upgrade selection and leaving stay locked until saving succeeds.", upgradeStack: "Level", playAgainUnavailable: "A new flight requires an active controller and a safely stored current result.",

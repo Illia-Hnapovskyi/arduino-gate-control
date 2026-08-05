@@ -93,6 +93,84 @@ test("Space Defender formatters use the selected locale and remapped controls", 
   );
 });
 
+test("the profile UI is account-only and never touches an access code", async () => {
+  const [statsPanel, accountPanel, page, css] = await Promise.all([
+    readFile(path.join(projectRoot, "app/PlayerStatsPanel.tsx"), "utf8"),
+    readFile(path.join(projectRoot, "app/AccountPanel.tsx"), "utf8"),
+    readFile(path.join(projectRoot, "app/page.tsx"), "utf8"),
+    readFile(path.join(projectRoot, "app/globals.css"), "utf8"),
+  ]);
+
+  // No component may read, render, validate or send an access code any more.
+  for (const source of [statsPanel, accountPanel, page]) {
+    assert.doesNotMatch(source, /accessCode|AccessCode/);
+    assert.doesNotMatch(source, /connectProfile|linkActiveProfile/);
+  }
+  assert.doesNotMatch(css, /\.profile-code-box|\.profile-connect-form/);
+
+  // A profile now requires a session: without one the panel only explains that,
+  // and the nickname prompt is reachable for a signed-in player alone.
+  assert.match(statsPanel, /!profile && !auth\.hasSession &&/);
+  assert.match(
+    statsPanel,
+    /auth\.hasSession && \(profile === null \|\| profile\.orphaned\)/,
+  );
+  assert.match(statsPanel, /copy\.accountRequiredTitle/);
+  assert.match(statsPanel, /stats\.createAccountProfile\(validated\.value\)/);
+  assert.match(statsPanel, /stats\.hasOrphanedProfiles &&/);
+  assert.match(statsPanel, /copy\.accountCodeRetiredNotice/);
+
+  // The Google provider is not configured yet, so its failure must read as
+  // "unavailable" instead of surfacing the provider's own error.
+  assert.match(accountPanel, /copy\.accountProviderUnavailable/);
+
+  // Sessions and the consent choice stay in localStorage; nothing sets cookies
+  // and the one-time PKCE code is stripped before it is exchanged.
+  for (const source of [statsPanel, accountPanel, page]) {
+    assert.doesNotMatch(source, /document\.cookie/);
+  }
+  assert.match(accountPanel, /credentials: "omit"/);
+  const stripIndex = page.indexOf("window.history.replaceState");
+  const exchangeIndex = page.indexOf("exchangeCodeForSession");
+  assert.ok(
+    stripIndex > 0 && stripIndex < exchangeIndex,
+    "the callback URL is stripped before the code is exchanged",
+  );
+});
+
+test("the passkey UI degrades gracefully and never lists on mount", async () => {
+  const accountPanel = await readFile(
+    path.join(projectRoot, "app/AccountPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(
+    accountPanel,
+    /auth\.passkeySupported && !auth\.passkeyUnavailable/,
+  );
+  assert.match(accountPanel, /copy\.accountPasskeySignInAction/);
+  assert.match(accountPanel, /copy\.accountPasskeyUnavailable/);
+  assert.match(accountPanel, /copy\.accountPasskeyAddAction/);
+  assert.match(accountPanel, /copy\.accountPasskeyEmpty/);
+  assert.match(accountPanel, /copy\.accountPasskeyRecoveryHint/);
+  assert.match(
+    accountPanel,
+    /window\.confirm\(copy\.accountPasskeyDeleteConfirm\)/,
+  );
+
+  // The list is one network call behind a disclosure: it must be requested when
+  // the section is first opened, never while the panel mounts.
+  assert.equal(
+    [...accountPanel.matchAll(/auth\.listPasskeys\(\)/g)].length,
+    1,
+    "the passkey list has exactly one call site",
+  );
+  assert.match(
+    accountPanel,
+    /passkeysRequestedRef\.current = true;\s*void auth\.listPasskeys\(\)/,
+  );
+});
+
 test("Space Defender overlays and compact HUD keep their accessibility contract", async () => {
   const [panel, menu, hud, overlays, progression, css] = await Promise.all([
     readFile(path.join(projectRoot, "app/GamePanel.tsx"), "utf8"),

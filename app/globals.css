@@ -2045,12 +2045,22 @@ footer > p {
   color: #8a621c;
 }
 
+.profile-setup-title {
+  font-size: 15px;
+  letter-spacing: -0.02em;
+  margin: 18px 0 0;
+}
+
 .profile-setup-copy {
   color: #52605b;
   font-size: 14px;
   line-height: 1.58;
-  margin: 18px 0;
+  margin: 10px 0 0;
   max-width: 720px;
+}
+
+.profile-setup-copy + .profile-create-form {
+  margin-top: 14px;
 }
 
 .profile-create-form,
@@ -2068,8 +2078,7 @@ footer > p {
   text-transform: uppercase;
 }
 
-.profile-input-action,
-.profile-connect-form {
+.profile-input-action {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2079,8 +2088,7 @@ footer > p {
   grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
-.profile-input-action input,
-.profile-connect-form input {
+.profile-input-action input {
   background: white;
   border: 1px solid #cdd5cb;
   border-radius: 12px;
@@ -2091,15 +2099,12 @@ footer > p {
   width: 100%;
 }
 
-.profile-input-action input::placeholder,
-.profile-connect-form input::placeholder {
+.profile-input-action input::placeholder {
   color: #929b97;
 }
 
 .profile-input-action button:not(.button),
-.profile-name-row button,
-.profile-code-heading button,
-.profile-code-value button {
+.profile-name-row button {
   background: rgba(8, 127, 120, 0.09);
   border: 1px solid rgba(8, 127, 120, 0.15);
   border-radius: 10px;
@@ -2136,29 +2141,6 @@ footer > p {
 
 .profile-random-button span {
   color: var(--orange);
-}
-
-.profile-connect-divider {
-  align-items: center;
-  color: #77817d;
-  display: flex;
-  font-size: 10px;
-  font-weight: 750;
-  gap: 12px;
-  margin: 17px 0 10px;
-}
-
-.profile-connect-divider::after {
-  background: var(--line);
-  content: "";
-  flex: 1;
-  height: 1px;
-}
-
-.profile-connect-form input {
-  font-family: var(--font-geist-mono), monospace;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .profile-privacy-note {
@@ -2266,54 +2248,15 @@ footer > p {
   font-size: clamp(22px, 3vw, 32px);
 }
 
-.profile-code-box {
-  background: rgba(8, 127, 120, 0.055);
-  border: 1px solid rgba(8, 127, 120, 0.14);
+.profile-retired-notice {
+  background: rgba(215, 164, 75, 0.12);
+  border: 1px solid rgba(173, 122, 32, 0.2);
   border-radius: 14px;
-  padding: 13px;
-}
-
-.profile-code-heading,
-.profile-code-value {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-}
-
-.profile-code-heading label {
-  color: var(--teal-dark);
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.profile-code-heading button {
-  background: transparent;
-  border: 0;
-  min-height: 28px;
-  padding: 0;
-}
-
-.profile-code-value {
-  margin-top: 8px;
-}
-
-.profile-code-value code {
-  color: var(--ink);
-  font-family: var(--font-geist-mono), monospace;
-  font-size: clamp(11px, 2vw, 16px);
-  font-weight: 850;
-  letter-spacing: 0.055em;
-  overflow-wrap: anywhere;
-}
-
-.profile-code-box > p {
-  color: #64716b;
-  font-size: 9px;
-  line-height: 1.45;
-  margin: 9px 0 0;
+  color: #74531a;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 16px 0 0;
+  padding: 12px 13px;
 }
 
 .profile-result-status {
@@ -3985,13 +3928,11 @@ kbd {
   }
 
   .profile-input-action,
-  .profile-connect-form,
   .profile-rename-form .profile-input-action {
     grid-template-columns: 1fr;
   }
 
-  .profile-input-action .button,
-  .profile-connect-form .button {
+  .profile-input-action .button {
     width: 100%;
   }
 
@@ -4001,15 +3942,6 @@ kbd {
 
   .stats-grid .stats-primary {
     grid-row: auto;
-  }
-
-  .profile-code-value {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .profile-code-value code {
-    min-height: 28px;
   }
 
   .game-hud {
@@ -6008,21 +5940,67 @@ kbd {
   text-transform: uppercase;
 }
 
-.profile-legacy-connect {
+.account-offline-note,
+.account-passkey-note {
+  color: #65716c;
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 12px 0 0;
+}
+
+.account-passkeys {
   border-top: 1px solid var(--line);
   margin-top: 16px;
   padding-top: 12px;
 }
 
-.profile-legacy-connect summary {
+.account-passkeys summary {
   color: var(--teal-dark);
   cursor: pointer;
   font-size: 11px;
   font-weight: 850;
 }
 
-.profile-legacy-connect .profile-connect-form {
+.account-passkeys .button {
   margin-top: 12px;
+}
+
+.account-passkey-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.account-passkey-row {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.account-passkey-row > div {
+  min-width: 0;
+}
+
+.account-passkey-row strong {
+  display: block;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.account-passkey-row small {
+  color: var(--muted);
+  display: block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  margin-top: 2px;
 }
 
 .account-dialog-backdrop {
@@ -6063,14 +6041,6 @@ kbd {
   font-size: 13px;
   line-height: 1.55;
   margin: 0 0 10px;
-}
-
-.account-conflict-nickname {
-  font-size: 14px;
-}
-
-.account-dialog-note {
-  font-size: 11px;
 }
 
 .account-dialog-actions {
@@ -6178,7 +6148,8 @@ kbd {
     justify-items: stretch;
   }
 
-  .account-profile-row {
+  .account-profile-row,
+  .account-passkey-row {
     align-items: flex-start;
     flex-direction: column;
   }

@@ -4,13 +4,10 @@ import {
   type FormEvent,
   useId,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import {
-  formatAccessCode,
   type GameStatsLanguage,
-  validateAccessCode,
   validateNickname,
 } from "../shared/gameStats";
 import {
@@ -20,6 +17,7 @@ import {
   type UseGameStatsResult,
 } from "./useGameStats";
 import AccountPanel from "./AccountPanel";
+import { useAuthSession } from "./auth/useAuthSession";
 import { authAvailable } from "./auth/supabaseConfig";
 
 export type PlayerStatsCopy = {
@@ -28,19 +26,12 @@ export type PlayerStatsCopy = {
   profileSetupExplanation: string;
   nicknameLabel: string;
   nicknamePlaceholder: string;
-  saveNickname: string;
   useRandomNickname: string;
   nicknameRequiredError: string;
   nicknameInvalidError: string;
   nicknameTakenError: string;
   nicknameSaveError: string;
   randomNicknameError: string;
-  existingProfilePrompt: string;
-  profileCodePlaceholder: string;
-  connectProfile: string;
-  profileCodeInvalidError: string;
-  profileNotFoundError: string;
-  profileConnectError: string;
   publicNicknameNotice: string;
   syncSynced: string;
   syncSyncing: string;
@@ -52,12 +43,6 @@ export type PlayerStatsCopy = {
   editNickname: string;
   saveNicknameChanges: string;
   cancelNicknameEdit: string;
-  profileCodeLabel: string;
-  showProfileCode: string;
-  hideProfileCode: string;
-  copyProfileCode: string;
-  profileCodeCopied: string;
-  profileCodeExplanation: string;
   forgetProfile: string;
   forgetProfileConfirm: string;
   statBestScore: string;
@@ -90,24 +75,25 @@ export type PlayerStatsCopy = {
   accountGoogle: string;
   accountApple: string;
   accountOrDivider: string;
-  accountLegacyCodeSummary: string;
-  accountLinked: string;
-  accountNotLinked: string;
-  accountLinkProfile: string;
-  accountUnlinkProfile: string;
-  accountLinkDone: string;
-  accountAlreadyLinked: string;
-  accountLinkConflictAccount: string;
-  accountLinkConflictProfile: string;
+  accountRequiredTitle: string;
+  accountRequiredBody: string;
+  accountCreateProfileTitle: string;
+  accountCreateProfileAction: string;
+  accountProviderUnavailable: string;
+  accountCodeRetiredNotice: string;
+  accountOfflineNotice: string;
+  accountPasskeyTitle: string;
+  accountPasskeyAddAction: string;
+  accountPasskeySignInAction: string;
+  accountPasskeyUnavailable: string;
+  accountPasskeyEmpty: string;
+  accountPasskeyRecoveryHint: string;
+  accountPasskeyDeleteAction: string;
+  accountPasskeyDeleteConfirm: string;
   accountSessionExpired: string;
   accountAuthError: string;
   accountEmailInvalid: string;
   accountPasswordTooShort: string;
-  conflictTitle: string;
-  conflictBody: string;
-  conflictKeepLocal: string;
-  conflictUseAccount: string;
-  conflictVaultNote: string;
   profilesTitle: string;
   profilesSwitch: string;
   profilesActive: string;
@@ -146,9 +132,7 @@ function localizedError(error: GameStatsError, copy: PlayerStatsCopy) {
   if (code === "RANDOM_NICKNAME_UNAVAILABLE") {
     return copy.randomNicknameError;
   }
-  if (code === "PROFILE_NOT_FOUND") return copy.profileNotFoundError;
-  if (code === "INVALID_ACCESS_CODE") return copy.profileCodeInvalidError;
-  if (error.operation === "connect") return copy.profileConnectError;
+  if (code === "CODE_LOGIN_RETIRED") return copy.accountCodeRetiredNotice;
   if (error.operation === "create" || error.operation === "rename") {
     return copy.nicknameSaveError;
   }
@@ -169,9 +153,10 @@ function actionError(error: unknown, fallback: string, copy: PlayerStatsCopy) {
   return fallback;
 }
 
-// Codes that mean the account session behind a code-less profile is gone or no
-// longer owns it. Such a profile can never drain its queue again, so the
-// otherwise hidden forget action must stay reachable.
+// Codes that mean the account session behind a profile is gone or no longer
+// owns it. Such a profile can never drain its queue again, so the otherwise
+// hidden forget action must stay reachable — as it must for an orphaned legacy
+// profile, whose retired code the API refuses outright.
 const SESSION_LOST_CODES = new Set([
   "auth_session_missing",
   "AUTH_NOT_LINKED",
@@ -265,21 +250,17 @@ export function PlayerStatsPanel({
   language,
   stats,
 }: PlayerStatsPanelProps) {
+  const auth = useAuthSession();
+  const sectionId = useId();
   const nicknameId = useId();
-  const connectCodeId = useId();
   const renameId = useId();
-  const profileCodeId = useId();
-  const [nickname, setNickname] = useState("");
-  const [accessCode, setAccessCode] = useState("");
+  const [nicknameDraft, setNicknameDraft] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [formError, setFormError] = useState<FormError>(null);
   const [busyAction, setBusyAction] = useState<
-    "create" | "random" | "connect" | "rename" | null
+    "create" | "random" | "rename" | null
   >(null);
   const [editingNickname, setEditingNickname] = useState(false);
-  const [showCode, setShowCode] = useState(false);
-  const [codeCopied, setCodeCopied] = useState(false);
-  const copiedTimerRef = useRef<number | null>(null);
   const numberFormatter = useMemo(
     () => new Intl.NumberFormat(localeFor(language)),
     [language],
@@ -290,17 +271,21 @@ export function PlayerStatsPanel({
   const serviceError = stats.error
     ? localizedError(stats.error, copy)
     : null;
+  // The sign-up nickname arrives in the session metadata, so the create prompt
+  // starts from it while still being fully editable.
+  const nickname = nicknameDraft ?? auth.sessionNickname ?? "";
   const protectPendingProfile =
     stats.pendingCount > 0 && stats.status !== "synced";
-  // An account-adopted profile has no access code: without a usable session its
-  // queue is permanently stuck, so forgetting it must be possible — explicitly
-  // and destructively.
-  const sessionLostProfile =
+  const stuckQueueProfile =
     profile !== null &&
-    !profile.accessCode &&
-    stats.error !== null &&
-    SESSION_LOST_CODES.has(stats.error.code);
-  const forceForgetProfile = protectPendingProfile && sessionLostProfile;
+    (profile.orphaned ||
+      (stats.error !== null && SESSION_LOST_CODES.has(stats.error.code)));
+  const forceForgetProfile = protectPendingProfile && stuckQueueProfile;
+  // An orphaned legacy profile stays readable but can never sync again, so the
+  // account prompt is offered beside it: creating the account profile is the
+  // only way forward.
+  const canCreateProfile =
+    auth.hasSession && (profile === null || profile.orphaned);
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -318,8 +303,8 @@ export function PlayerStatsPanel({
     setBusyAction("create");
     setFormError(null);
     try {
-      await stats.createProfile(validated.value);
-      setNickname("");
+      await stats.createAccountProfile(validated.value);
+      setNicknameDraft("");
     } catch (error) {
       setFormError(actionError(error, copy.nicknameSaveError, copy));
     } finally {
@@ -332,31 +317,10 @@ export function PlayerStatsPanel({
     setBusyAction("random");
     setFormError(null);
     try {
-      await stats.createProfile();
-      setNickname("");
+      await stats.createAccountProfile();
+      setNicknameDraft("");
     } catch (error) {
       setFormError(actionError(error, copy.randomNicknameError, copy));
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const handleConnect = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (actionsDisabled) return;
-    const validated = validateAccessCode(accessCode);
-    if (!validated.ok) {
-      setFormError(copy.profileCodeInvalidError);
-      return;
-    }
-
-    setBusyAction("connect");
-    setFormError(null);
-    try {
-      await stats.connectProfile(validated.value);
-      setAccessCode("");
-    } catch (error) {
-      setFormError(actionError(error, copy.profileConnectError, copy));
     } finally {
       setBusyAction(null);
     }
@@ -401,43 +365,26 @@ export function PlayerStatsPanel({
     }
   };
 
-  const copyAccessCode = async () => {
-    if (!profile?.accessCode) return;
-    try {
-      await navigator.clipboard.writeText(formatAccessCode(profile.accessCode));
-      setCodeCopied(true);
-      if (copiedTimerRef.current !== null) {
-        window.clearTimeout(copiedTimerRef.current);
-      }
-      copiedTimerRef.current = window.setTimeout(
-        () => setCodeCopied(false),
-        2200,
-      );
-    } catch {
-      setShowCode(true);
-    }
-  };
-
   const forgetProfile = () => {
     if (actionsDisabled) return;
     if (forceForgetProfile) {
       // Spell out what is lost: this path drops queued runs that no session can
       // ever deliver, so the confirmation names their exact number.
       const confirmation = [
-        copy.accountSessionExpired,
+        profile?.orphaned
+          ? copy.accountCodeRetiredNotice
+          : copy.accountSessionExpired,
         `${copy.resultPending}: ${stats.pendingCount}`,
         copy.forgetProfileConfirm,
       ].join("\n\n");
       if (!window.confirm(confirmation)) return;
       setEditingNickname(false);
-      setShowCode(false);
       setFormError(null);
       stats.forgetProfile({ force: true });
       return;
     }
     if (!window.confirm(copy.forgetProfileConfirm)) return;
     setEditingNickname(false);
-    setShowCode(false);
     setFormError(null);
     stats.forgetProfile();
   };
@@ -447,45 +394,16 @@ export function PlayerStatsPanel({
     void stats.retrySync();
   };
 
-  const connectForm = (
-    <form className="profile-connect-form" onSubmit={handleConnect}>
-      <label className="sr-only" htmlFor={connectCodeId}>
-        {copy.profileCodeLabel}
-      </label>
-      <input
-        autoCapitalize="characters"
-        autoComplete="off"
-        disabled={actionsDisabled}
-        id={connectCodeId}
-        inputMode="text"
-        onChange={(event) => {
-          setAccessCode(event.target.value);
-          setFormError(null);
-        }}
-        placeholder={copy.profileCodePlaceholder}
-        spellCheck={false}
-        value={accessCode}
-      />
-      <button
-        className="button secondary"
-        disabled={actionsDisabled}
-        type="submit"
-      >
-        {copy.connectProfile}
-      </button>
-    </form>
-  );
-
   return (
     <section
-      aria-labelledby={`${profileCodeId}-section-title`}
+      aria-labelledby={`${sectionId}-section-title`}
       className="player-stats-section"
     >
       <article className="player-profile-card">
         <div className="profile-heading">
           <div>
             <p className="eyebrow">{copy.profileEyebrow}</p>
-            <h2 id={`${profileCodeId}-section-title`}>{copy.profileTitle}</h2>
+            <h2 id={`${sectionId}-section-title`}>{copy.profileTitle}</h2>
           </div>
           {profile && (
             <span
@@ -499,61 +417,7 @@ export function PlayerStatsPanel({
           )}
         </div>
 
-        {!profile ? (
-          <div className="profile-setup">
-            <p className="profile-setup-copy">
-              {copy.profileSetupExplanation}
-            </p>
-
-            <form className="profile-create-form" onSubmit={handleCreate}>
-              <label htmlFor={nicknameId}>{copy.nicknameLabel}</label>
-              <div className="profile-input-action">
-                <input
-                  autoComplete="nickname"
-                  disabled={actionsDisabled}
-                  id={nicknameId}
-                  maxLength={20}
-                  onChange={(event) => {
-                    setNickname(event.target.value);
-                    setFormError(null);
-                  }}
-                  placeholder={copy.nicknamePlaceholder}
-                  value={nickname}
-                />
-                <button
-                  className="button primary"
-                  disabled={actionsDisabled}
-                  type="submit"
-                >
-                  {copy.saveNickname}
-                </button>
-              </div>
-              <button
-                className="profile-random-button"
-                disabled={actionsDisabled}
-                onClick={() => void handleRandomProfile()}
-                type="button"
-              >
-                <span aria-hidden="true">✦</span>
-                {copy.useRandomNickname}
-              </button>
-            </form>
-
-            {!authAvailable && (
-              <>
-                <div className="profile-connect-divider">
-                  <span>{copy.existingProfilePrompt}</span>
-                </div>
-                {connectForm}
-              </>
-            )}
-
-            <p className="profile-privacy-note">
-              <span aria-hidden="true">i</span>
-              {copy.publicNicknameNotice}
-            </p>
-          </div>
-        ) : (
+        {profile && (
           <div className="profile-details">
             <div className="profile-identity">
               {editingNickname ? (
@@ -626,38 +490,6 @@ export function PlayerStatsPanel({
               </div>
             </dl>
 
-            {Boolean(profile.accessCode) && (
-              <div className="profile-code-box">
-                <div className="profile-code-heading">
-                  <label id={`${profileCodeId}-label`}>
-                    {copy.profileCodeLabel}
-                  </label>
-                  <button
-                    aria-controls={profileCodeId}
-                    aria-expanded={showCode}
-                    onClick={() => setShowCode((current) => !current)}
-                    type="button"
-                  >
-                    {showCode ? copy.hideProfileCode : copy.showProfileCode}
-                  </button>
-                </div>
-                <div className="profile-code-value">
-                  <code
-                    aria-labelledby={`${profileCodeId}-label`}
-                    id={profileCodeId}
-                  >
-                    {showCode
-                      ? formatAccessCode(profile.accessCode)
-                      : "•••••-•••••-•••••-•••••"}
-                  </code>
-                  <button onClick={() => void copyAccessCode()} type="button">
-                    {codeCopied ? copy.profileCodeCopied : copy.copyProfileCode}
-                  </button>
-                </div>
-                <p>{copy.profileCodeExplanation}</p>
-              </div>
-            )}
-
             {profile.gamesPlayed > 0 && (
               <div aria-live="polite" className="profile-result-status">
                 {stats.pendingCount > 0
@@ -679,21 +511,74 @@ export function PlayerStatsPanel({
           </div>
         )}
 
+        {stats.hasOrphanedProfiles && (
+          <p className="profile-retired-notice">
+            {copy.accountCodeRetiredNotice}
+          </p>
+        )}
+
+        {!profile && !auth.hasSession && (
+          <div className="profile-setup">
+            <h3 className="profile-setup-title">{copy.accountRequiredTitle}</h3>
+            <p className="profile-setup-copy">{copy.accountRequiredBody}</p>
+          </div>
+        )}
+
+        {canCreateProfile && (
+          <div className="profile-setup">
+            <h3 className="profile-setup-title">
+              {copy.accountCreateProfileTitle}
+            </h3>
+            <p className="profile-setup-copy">{copy.profileSetupExplanation}</p>
+
+            <form className="profile-create-form" onSubmit={handleCreate}>
+              <label htmlFor={nicknameId}>{copy.nicknameLabel}</label>
+              <div className="profile-input-action">
+                <input
+                  autoComplete="nickname"
+                  disabled={actionsDisabled}
+                  id={nicknameId}
+                  maxLength={20}
+                  onChange={(event) => {
+                    setNicknameDraft(event.target.value);
+                    setFormError(null);
+                  }}
+                  placeholder={copy.nicknamePlaceholder}
+                  value={nickname}
+                />
+                <button
+                  className="button primary"
+                  disabled={actionsDisabled}
+                  type="submit"
+                >
+                  {copy.accountCreateProfileAction}
+                </button>
+              </div>
+              <button
+                className="profile-random-button"
+                disabled={actionsDisabled}
+                onClick={() => void handleRandomProfile()}
+                type="button"
+              >
+                <span aria-hidden="true">✦</span>
+                {copy.useRandomNickname}
+              </button>
+            </form>
+
+            <p className="profile-privacy-note">
+              <span aria-hidden="true">i</span>
+              {copy.publicNicknameNotice}
+            </p>
+          </div>
+        )}
+
         {authAvailable && (
-          <>
-            <AccountPanel
-              copy={copy}
-              disabled={disabled}
-              language={language}
-              stats={stats}
-            />
-            {!profile && (
-              <details className="profile-legacy-connect">
-                <summary>{copy.accountLegacyCodeSummary}</summary>
-                {connectForm}
-              </details>
-            )}
-          </>
+          <AccountPanel
+            copy={copy}
+            disabled={disabled}
+            language={language}
+            stats={stats}
+          />
         )}
 
         {(formError || serviceError) && (

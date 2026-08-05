@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import type { Session } from "@supabase/supabase-js";
+import type { PasskeyListItem, Session } from "@supabase/supabase-js";
 import {
   getSupabaseAccessToken,
   getSupabaseClient,
@@ -17,6 +17,13 @@ export type AuthActionResult = { ok: boolean };
 export type AuthSignUpResult = {
   ok: boolean;
   needsConfirmation: boolean;
+};
+
+export type PasskeySummary = {
+  id: string;
+  friendlyName: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
 };
 
 export type UseAuthSessionResult = {
@@ -41,10 +48,59 @@ export type UseAuthSessionResult = {
   updatePassword: (newPassword: string) => Promise<AuthActionResult>;
   signOutLocal: () => Promise<AuthActionResult>;
   signOutGlobal: () => Promise<AuthActionResult>;
+  passkeySupported: boolean;
+  passkeyUnavailable: boolean;
+  passkeys: PasskeySummary[];
+  passkeysLoading: boolean;
+  registerPasskey: () => Promise<AuthActionResult>;
+  signInWithPasskey: () => Promise<AuthActionResult>;
+  listPasskeys: () => Promise<AuthActionResult>;
+  deletePasskey: (passkeyId: string) => Promise<AuthActionResult>;
 };
+
+// Supabase reports the project-side passkey toggle being off with this code, so
+// the client discovers the feature at call time instead of shipping a flag.
+const PASSKEY_DISABLED_CODE = "passkey_disabled";
+
+// Structural view of the two error classes a passkey call can return; the
+// WebAuthn one is not exported from "@supabase/supabase-js".
+type PasskeyCallError = { code?: string };
+
+// Only the disabled toggle is remembered. Everything else — a dismissed browser
+// prompt (NotAllowedError/AbortError) included — is a one-off failure that must
+// not take the passkey buttons away.
+function isPasskeyDisabled(error: PasskeyCallError): boolean {
+  return error.code === PASSKEY_DISABLED_CODE;
+}
+
+function toPasskeySummary(item: PasskeyListItem): PasskeySummary {
+  return {
+    id: item.id,
+    friendlyName: item.friendly_name ?? null,
+    createdAt: item.created_at,
+    lastUsedAt: item.last_used_at ?? null,
+  };
+}
 
 function serverConsentSnapshot(): ConsentChoice | null {
   return null;
+}
+
+// Browser WebAuthn support cannot change while the page is open, so this store
+// only ever delivers its initial snapshot.
+function subscribeToPasskeySupport(): () => void {
+  return () => {};
+}
+
+function passkeySupportSnapshot(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.PublicKeyCredential === "function"
+  );
+}
+
+function serverPasskeySupportSnapshot(): boolean {
+  return false;
 }
 
 function metadataNickname(session: Session | null): string | null {
@@ -61,7 +117,15 @@ export function useAuthSession(): UseAuthSessionResult {
     readConsentChoice,
     serverConsentSnapshot,
   );
+  const passkeySupported = useSyncExternalStore(
+    subscribeToPasskeySupport,
+    passkeySupportSnapshot,
+    serverPasskeySupportSnapshot,
+  );
   const [session, setSession] = useState<Session | null>(null);
+  const [passkeyUnavailable, setPasskeyUnavailable] = useState(false);
+  const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [passkeysLoading, setPasskeysLoading] = useState(false);
 
   useEffect(() => {
     if (!authAvailable || consent !== "account") return;
@@ -86,6 +150,12 @@ export function useAuthSession(): UseAuthSessionResult {
       subscription.subscription.unsubscribe();
     };
   }, [consent]);
+
+  // The session is only surfaced while account mode is active; flipping the
+  // consent back to local hides it without wiping auth storage.
+  const activeSession =
+    authAvailable && consent === "account" ? session : null;
+  const hasSession = activeSession !== null;
 
   const chooseConsent = useCallback((choice: ConsentChoice) => {
     saveConsentChoice(choice);
@@ -213,17 +283,85 @@ export function useAuthSession(): UseAuthSessionResult {
   const signOutLocal = useCallback(() => signOut("local"), [signOut]);
   const signOutGlobal = useCallback(() => signOut("global"), [signOut]);
 
-  // The session is only surfaced while account mode is active; flipping the
-  // consent back to local hides it without wiping auth storage.
-  const activeSession =
-    authAvailable && consent === "account" ? session : null;
+  // Listing is a network call the panel triggers when its passkey section
+  // becomes visible; it never runs on mount.
+  const listPasskeys = useCallback(async (): Promise<AuthActionResult> => {
+    const client = getSupabaseClient();
+    if (!client || !hasSession) return { ok: false };
+    setPasskeysLoading(true);
+    try {
+      const { data, error } = await client.auth.passkey.list();
+      if (error) {
+        if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
+        return { ok: false };
+      }
+      setPasskeys((data ?? []).map(toPasskeySummary));
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    } finally {
+      setPasskeysLoading(false);
+    }
+  }, [hasSession]);
+
+  const registerPasskey = useCallback(async (): Promise<AuthActionResult> => {
+    const client = getSupabaseClient();
+    if (!client || !hasSession) return { ok: false };
+    try {
+      const { error } = await client.auth.registerPasskey();
+      if (error) {
+        if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
+        return { ok: false };
+      }
+    } catch {
+      return { ok: false };
+    }
+    await listPasskeys();
+    return { ok: true };
+  }, [hasSession, listPasskeys]);
+
+  // A discoverable credential carries the account, so this is the one passkey
+  // call that works without a session; onAuthStateChange picks the result up.
+  const signInWithPasskey = useCallback(async (): Promise<AuthActionResult> => {
+    const client = getSupabaseClient();
+    if (!client) return { ok: false };
+    try {
+      const { error } = await client.auth.signInWithPasskey();
+      if (error) {
+        if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
+        return { ok: false };
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  }, []);
+
+  const deletePasskey = useCallback(
+    async (passkeyId: string): Promise<AuthActionResult> => {
+      const client = getSupabaseClient();
+      if (!client || !hasSession) return { ok: false };
+      try {
+        const { error } = await client.auth.passkey.delete({ passkeyId });
+        if (error) {
+          if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
+          return { ok: false };
+        }
+      } catch {
+        return { ok: false };
+      }
+      await listPasskeys();
+      return { ok: true };
+    },
+    [hasSession, listPasskeys],
+  );
 
   return {
     appleEnabled: authAvailable && APPLE_ENABLED,
     authAvailable,
     consent,
     chooseConsent,
-    hasSession: activeSession !== null,
+    hasSession,
     sessionEmail: activeSession?.user?.email ?? null,
     sessionUserId: activeSession?.user?.id ?? null,
     sessionNickname: metadataNickname(activeSession),
@@ -236,6 +374,15 @@ export function useAuthSession(): UseAuthSessionResult {
     updatePassword,
     signOutLocal,
     signOutGlobal,
+    passkeySupported,
+    passkeyUnavailable,
+    // A signed-out panel must never still render the ended session's passkeys.
+    passkeys: hasSession ? passkeys : [],
+    passkeysLoading,
+    registerPasskey,
+    signInWithPasskey,
+    listPasskeys,
+    deletePasskey,
   };
 }
 
