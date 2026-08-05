@@ -45,3 +45,6 @@ next-env.d.ts
 /.sites-runtime/
 /outputs/
 /work/
+
+# database backups: point-in-time user data, never committed (repo is public)
+/db/backups/
