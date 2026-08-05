@@ -2,10 +2,10 @@
 // public knowledge and safe to commit — access control happens server-side.
 export const SUPABASE_URL = "https://vullhduhswcnlpgnlrtp.supabase.co";
 
-// Paste the PUBLIC publishable key from Supabase Dashboard → Settings → API
-// keys. While this placeholder stays empty, authAvailable is false, the whole
-// account UI stays hidden and demo/offline/local play works unchanged.
-export const SUPABASE_PUBLISHABLE_KEY = "";
+// The PUBLIC publishable key from Supabase Dashboard → Settings → API keys.
+// Supabase states these "can be safely shared publicly"; the sb_publishable_
+// prefix marks it. Never put a secret/service_role key here.
+export const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_HPs8PPP-soq1AcmSZnnczA_ZjO8o0EQ";
 
 export const authAvailable = SUPABASE_PUBLISHABLE_KEY.length > 0;
 
