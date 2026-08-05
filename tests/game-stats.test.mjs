@@ -455,46 +455,25 @@ test("profile public IDs normalize case and whitespace but reject non-UUIDs", ()
 });
 
 test("the credential matrix decides every action against every credential pair", () => {
-  const ok = (credential) => ({ ok: true, credential });
-  const mixed = { ok: false, status: 400, code: "MIXED_CREDENTIALS" };
-  const codeMissing = { ok: false, status: 400, code: "INVALID_ACCESS_CODE" };
+  const ok = { ok: true };
+  const codeRetired = { ok: false, status: 400, code: "ACCESS_CODE_RETIRED" };
   const bearerMissing = { ok: false, status: 401, code: "AUTH_TOKEN_MISSING" };
 
-  // Cells: [code only, bearer only, both, neither]. link/unlink are the only
-  // both-actions, so a lone credential is reported as the missing counterpart:
-  // a code alone is a missing token (401), a bearer alone a missing code (400).
-  const singleCredentialAction = {
-    code: ok("code"),
-    bearer: ok("bearer"),
-    both: mixed,
-    neither: codeMissing,
+  // Cells: [code only, bearer only, both, neither]. The account is the only
+  // identity, so every action is bearer-only and a body access code is refused
+  // explicitly whatever else the request carries.
+  const bearerOnlyAction = {
+    code: codeRetired,
+    bearer: ok,
+    both: codeRetired,
+    neither: bearerMissing,
   };
   const expected = {
-    create: singleCredentialAction,
-    // connect stays code-only: bearer users call session instead.
-    connect: { code: ok("code"), bearer: mixed, both: mixed, neither: codeMissing },
-    rename: singleCredentialAction,
-    record: singleCredentialAction,
-    sync: singleCredentialAction,
-    link: {
-      code: bearerMissing,
-      bearer: codeMissing,
-      both: ok("both"),
-      neither: bearerMissing,
-    },
-    unlink: {
-      code: bearerMissing,
-      bearer: codeMissing,
-      both: ok("both"),
-      neither: bearerMissing,
-    },
-    // session is bearer-only: any access code is mixed credentials.
-    session: {
-      code: mixed,
-      bearer: ok("bearer"),
-      both: mixed,
-      neither: bearerMissing,
-    },
+    create: bearerOnlyAction,
+    rename: bearerOnlyAction,
+    record: bearerOnlyAction,
+    sync: bearerOnlyAction,
+    session: bearerOnlyAction,
   };
 
   const combinations = {
@@ -504,11 +483,16 @@ test("the credential matrix decides every action against every credential pair",
     neither: [false, false],
   };
 
-  // Every action in the shared list must be covered by the table above.
+  // Every action in the shared list must be covered by the table above, and the
+  // retired code-era actions must be gone from that list entirely: they now
+  // fail the action allowlist with INVALID_ACTION instead of reaching here.
   assert.deepEqual(
     Object.keys(expected).sort(),
     [...GAME_STATS_ACTIONS].sort(),
   );
+  for (const retired of ["connect", "link", "unlink"]) {
+    assert.equal(GAME_STATS_ACTIONS.includes(retired), false, retired);
+  }
 
   for (const action of GAME_STATS_ACTIONS) {
     for (const [name, [hasAccessCode, hasBearerToken]] of Object.entries(
@@ -522,9 +506,7 @@ test("the credential matrix decides every action against every credential pair",
       const cell = expected[action][name];
       const label = `${action} / ${name}`;
       assert.equal(decision.ok, cell.ok, label);
-      if (cell.ok) {
-        assert.equal(decision.credential, cell.credential, label);
-      } else {
+      if (!cell.ok) {
         assert.equal(decision.status, cell.status, label);
         assert.equal(decision.code, cell.code, label);
         assert.equal(typeof decision.error, "string", label);
@@ -625,6 +607,44 @@ test("account-link migration keeps the 1:1 mapping private and deny-by-default",
   const statementsOnly = migration.replace(/--[^\n]*/g, "");
   assert.doesNotMatch(statementsOnly, /CREATE POLICY/i);
   assert.doesNotMatch(statementsOnly, /FORCE ROW LEVEL SECURITY/i);
+});
+
+test("account-only migration retires the code without losing its column", async () => {
+  const migration = await readFile(
+    new URL("../db/migrations/0005_account_only_identity.sql", import.meta.url),
+    "utf8",
+  );
+  const statementsOnly = migration.replace(/--[^\n]*/g, "");
+
+  // The digest column becomes nullable but must survive: dropping it is
+  // irreversible and would break a rollback to the 0004 API.
+  assert.match(
+    migration,
+    /ALTER TABLE game_players\s+ALTER COLUMN access_code_hash DROP NOT NULL/,
+  );
+  assert.doesNotMatch(statementsOnly, /DROP COLUMN/i);
+
+  // A codeless profile is reachable only through its account link, so this
+  // CHECK is what forces profile_schema_version 3 on every account-only insert.
+  // NOT VALID first, then a separate VALIDATE, to keep the lock short.
+  assert.match(
+    migration,
+    /ADD CONSTRAINT game_players_reachable_check\s+CHECK \(\s*access_code_hash IS NOT NULL\s+OR profile_schema_version >= 3\s*\) NOT VALID/,
+  );
+  assert.match(
+    migration,
+    /VALIDATE CONSTRAINT game_players_reachable_check/,
+  );
+
+  // Version 3 marks an account-only profile, so the 0002 range must widen.
+  assert.match(migration, /CHECK \(profile_schema_version BETWEEN 1 AND 3\)/);
+
+  // Rate-limit scopes move from the code digest to the auth user. The old
+  // counters can never be recomputed, so the migration purges them.
+  assert.match(
+    migration,
+    /DELETE FROM game_rate_limits\s+WHERE bucket IN \('profile_record', 'profile_rename'\)/,
+  );
 });
 
 test("base table migration closes the Data API grant gap left by 0001", async () => {

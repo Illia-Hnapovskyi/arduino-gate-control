@@ -8,6 +8,7 @@ import {
   canForgetProfile,
   emptyStoredGameStatsV3,
   forgetActiveProfileInStore,
+  isOrphanedProfile,
   mergeProfilePublicId,
   mergeStoredGameStatsV2,
   mergeStoredGameStatsV3,
@@ -260,10 +261,11 @@ test("v2 to v3 migration is zero-loss for every stored field", () => {
     JSON.stringify(v2.knownEventIds),
   );
 
-  // New account fields start inert.
+  // New account fields start inert, which makes the profile orphaned.
   assert.equal(profile.publicId, null);
   assert.equal(profile.authUserId, null);
   assert.equal(profile.accountLinked, false);
+  assert.equal(isOrphanedProfile(profile), true);
 });
 
 test("v1 to v3 chain keeps the queue and derives the same checkpoint owner", () => {
@@ -422,23 +424,39 @@ test("union merge unions each shared profile's offline queue", () => {
   );
 });
 
-test("checkpointOwnerId survives adoption and a late publicId arrival", () => {
-  const store = migrateStoredGameStatsV2ToV3(v2StoreWithEverything());
-  const original = store.profiles[0];
+test("adoption and a later merge never re-mint the checkpoint owner id", () => {
   const publicId = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
+  const migrated = migrateStoredGameStatsV2ToV3(v2StoreWithEverything());
+  // A legacy profile that had already learned its server id before codes were
+  // retired: signing in with the owning account reaches it again.
+  const original = { ...migrated.profiles[0], publicId };
+  const store = upsertProfileInStore(migrated, original, true);
 
-  // The server now reports the public id for the same code profile.
-  const adopted = buildAdoptedProfile(store, {
-    profile: { ...original.stats, nickname: "Renamed Ace" },
-    accessCode,
-    profilePublicId: publicId,
-    accountLinked: true,
-  });
+  const adopted = buildAdoptedProfile(
+    store,
+    {
+      profile: { ...original.stats, nickname: "Renamed Ace" },
+      profilePublicId: publicId,
+      accountLinked: true,
+    },
+    accountUserId,
+  );
   assert.equal(adopted.profileId, original.profileId);
   assert.equal(
     adopted.checkpointOwnerId,
     original.checkpointOwnerId,
     "adoption must never recompute the checkpoint owner id",
+  );
+  assert.equal(
+    adopted.accessCode,
+    original.accessCode,
+    "a retained legacy code is kept as-is, never rewritten",
+  );
+  assert.equal(adopted.authUserId, accountUserId);
+  assert.equal(
+    isOrphanedProfile(adopted),
+    false,
+    "an account owns it again, so it can sync with the bearer token",
   );
   assert.equal(adopted.publicId, publicId);
   assert.equal(adopted.accountLinked, true);
@@ -663,7 +681,7 @@ test("a response public id is persisted for a profile whose queue never drains",
 
   // Both drain paths must persist it, otherwise the profile duplicates later.
   const renameSection = hookSource.slice(
-    hookSource.indexOf('{ action: "rename", accessCode, nickname }'),
+    hookSource.indexOf('{ action: "rename", nickname }'),
     hookSource.indexOf("while (true)"),
   );
   const drainSection = hookSource.slice(hookSource.indexOf("await postSync("));
@@ -794,14 +812,13 @@ test("adopting during an active run stores the entry without switching profiles"
   );
 
   const adoptSection = hookSource.slice(
-    hookSource.indexOf("const adoptSessionProfile ="),
-    hookSource.indexOf("const linkActiveProfile ="),
+    hookSource.indexOf("const adoptProfileResponse ="),
+    hookSource.indexOf("const createAccountProfile ="),
   );
-  assert.match(adoptSection, /const activate = !isRunActiveRef\.current\?\.\(\);/);
   assert.match(
     adoptSection,
-    /choice === "use-account" && !isRunActiveRef\.current\?\.\(\)/,
-    "resolveConflict('use-account') honours the same mid-run guard",
+    /upsertProfileInStore\(current, adopted, !isRunActiveRef\.current\?\.\(\)\)/,
+    "both adoption entry points share the mid-run guard",
   );
 });
 
@@ -839,6 +856,136 @@ test("forcing forget releases an account profile whose session is gone", () => {
     "the surviving vault entry keeps its queue and checkpoint owner",
   );
   assert.match(hookSource, /canForgetProfile\(active, options\?\.force\)/);
+});
+
+test("a migrated code profile is orphaned: readable, queued, never sent", () => {
+  const store = migrateStoredGameStatsV2ToV3(v2StoreWithEverything());
+  const orphan = store.profiles[0];
+  assert.equal(isOrphanedProfile(orphan), true);
+  assert.equal(orphan.accessCode, normalizedAccessCode, "the code still loads");
+  assert.equal(orphan.authUserId, null);
+  assert.equal(orphan.stats.gamesPlayed, 1, "its statistics stay readable");
+  assert.equal(orphan.pendingEvents.length, 1, "its queue stays intact");
+  assert.equal(isOrphanedProfile(accountProfileFixture()), false);
+  assert.equal(
+    isOrphanedProfile(accountProfileFixture({ accessCode: normalizedAccessCode })),
+    false,
+    "a legacy profile an account owns still syncs with the bearer token",
+  );
+  assert.equal(store.profiles.some(isOrphanedProfile), true);
+  assert.match(
+    hookSource,
+    /hasOrphanedProfiles: store\.profiles\.some\(isOrphanedProfile\)/,
+    "the snapshot flag covers the whole vault, not just the active profile",
+  );
+
+  // The sync pass skips such a profile entirely and reports the retired code.
+  const syncSection = hookSource.slice(
+    hookSource.indexOf("const runSyncPass = useCallback("),
+    hookSource.indexOf("const retrySync = useCallback("),
+  );
+  assert.match(
+    syncSection,
+    /const retired = active !== null && isOrphanedProfile\(active\);/,
+  );
+  assert.match(syncSection, /if \(active && !retired\) \{/);
+  assert.match(syncSection, /code: "code_login_retired"/);
+});
+
+test("no outgoing request can carry an access code", () => {
+  // Everything from the request helpers down is the network layer.
+  const requestSection = hookSource.slice(
+    hookSource.indexOf("async function fetchGameStats("),
+  );
+  assert.match(
+    requestSection,
+    /headers\.authorization = `Bearer \$\{accessToken\}`;/,
+    "the bearer token is the only credential a request carries",
+  );
+  assert.doesNotMatch(
+    requestSection,
+    /accessCode/,
+    "a retained code never reaches a request body",
+  );
+  assert.deepEqual(
+    Array.from(new Set(hookSource.match(/action: "[a-z]+"/g))).sort(),
+    ['action: "create"', 'action: "rename"', 'action: "session"', 'action: "sync"'],
+    "only the bearer-only actions are ever built",
+  );
+  assert.doesNotMatch(hookSource, /generateAccessCode/, "nothing mints a code");
+  assert.doesNotMatch(
+    hookSource,
+    /connectProfile|linkActiveProfile|unlinkActiveProfile|resolveConflict/,
+    "the code-login and linking entry points are gone",
+  );
+});
+
+test("account creation needs a session and stores no code", () => {
+  const createSection = hookSource.slice(
+    hookSource.indexOf("const createAccountProfile = useCallback("),
+    hookSource.indexOf("const renameProfile = useCallback("),
+  );
+  assert.match(createSection, /const accessToken = await acquireAccessToken\(\);/);
+  assert.match(createSection, /"auth_session_missing"/);
+  assert.match(createSection, /action: "create",/);
+  assert.match(
+    createSection,
+    /readAccessTokenSubject\(accessToken\)/,
+    "the new profile is bound to the signed-in account",
+  );
+  assert.doesNotMatch(createSection, /accessCode/);
+
+  // Even a stale server echoing a code leaves the vault entry code-less.
+  const created = buildAdoptedProfile(
+    emptyStoredGameStatsV3(),
+    {
+      profile: accountProfileFixture().stats,
+      accessCode,
+      profilePublicId: accountProfileFixture().publicId,
+      accountLinked: true,
+    },
+    accountUserId,
+  );
+  assert.equal(created.accessCode, null);
+  assert.equal(isOrphanedProfile(created), false);
+});
+
+test("signing in beside an orphaned profile keeps both entries", () => {
+  const store = migrateStoredGameStatsV2ToV3(v2StoreWithEverything());
+  const orphan = store.profiles[0];
+  const adopted = buildAdoptedProfile(
+    store,
+    {
+      profile: accountProfileFixture().stats,
+      profilePublicId: accountProfileFixture().publicId,
+      accountLinked: true,
+    },
+    accountUserId,
+  );
+  assert.notEqual(
+    adopted.profileId,
+    orphan.profileId,
+    "no credential proves the orphan belongs to this account, so it is not adopted",
+  );
+
+  const next = upsertProfileInStore(store, adopted, true);
+  assert.equal(next.profiles.length, 2);
+  assert.equal(next.activeProfileId, adopted.profileId);
+  const keptOrphan = next.profiles.find(
+    (profile) => profile.profileId === orphan.profileId,
+  );
+  assert.equal(
+    JSON.stringify(keptOrphan),
+    JSON.stringify(orphan),
+    "the orphan keeps its statistics and its queue byte-for-byte",
+  );
+  assert.equal(next.profiles.some(isOrphanedProfile), true);
+  assert.equal(
+    canForgetProfile(keptOrphan),
+    false,
+    "its queued runs are still protected",
+  );
+  assert.equal(canForgetProfile(keptOrphan, true), true, "forcing is the way out");
 });
 
 test("v2 merge helpers keep their pre-v3 behavior for rollback safety", () => {

@@ -72,6 +72,10 @@ export function getSupabaseClient(): SupabaseClient | null {
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: false,
+        // Supabase still ships the passkey API behind this opt-in; without it
+        // every passkey call throws instead of reaching the server, which then
+        // reports whether the project toggle is on.
+        experimental: { passkey: true },
       },
     });
   }

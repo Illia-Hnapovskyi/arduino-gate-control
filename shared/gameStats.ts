@@ -4,12 +4,9 @@ export const GAME_STATS_LANGUAGES = ["uk", "de", "en"] as const;
 
 export const GAME_STATS_ACTIONS = [
   "create",
-  "connect",
   "rename",
   "record",
   "sync",
-  "link",
-  "unlink",
   "session",
 ] as const;
 
@@ -113,29 +110,21 @@ export type LeaderboardEntry = PlayerStats & {
   rank: number;
 };
 
+// Every request below is authenticated by an `Authorization: Bearer` Supabase
+// JWT. The access code is retired: no request carries one any more.
 export type CreateStatsRequest = {
   action: "create";
-  // Absent access code selects the bearer/account path: the server generates a
-  // fresh code itself. When present, the legacy code path runs unchanged.
-  accessCode?: string;
   nickname?: string;
   language: GameStatsLanguage;
 };
 
-export type ConnectStatsRequest = {
-  action: "connect";
-  accessCode: string;
-};
-
 export type RenameStatsRequest = {
   action: "rename";
-  accessCode: string;
   nickname: string;
 };
 
 export type RecordStatsRequest = {
   action: "record";
-  accessCode: string;
   runId: string;
   score: number;
   level: number;
@@ -232,18 +221,7 @@ export type ValidatedGameSyncEvent =
 
 export type SyncStatsRequest = {
   action: "sync";
-  accessCode: string;
   events: GameSyncEvent[];
-};
-
-export type LinkStatsRequest = {
-  action: "link";
-  accessCode: string;
-};
-
-export type UnlinkStatsRequest = {
-  action: "unlink";
-  accessCode: string;
 };
 
 export type SessionStatsRequest = {
@@ -252,12 +230,9 @@ export type SessionStatsRequest = {
 
 export type GameStatsRequest =
   | CreateStatsRequest
-  | ConnectStatsRequest
   | RenameStatsRequest
   | RecordStatsRequest
   | SyncStatsRequest
-  | LinkStatsRequest
-  | UnlinkStatsRequest
   | SessionStatsRequest;
 
 export type PlayerExtendedTotals = {
@@ -328,7 +303,6 @@ export type LeaderboardResponse = {
 
 export type ProfileResponse = {
   profile: PlayerStats;
-  accessCode?: string;
   recorded?: boolean;
   progression?: PlayerProgression;
   profilePublicId?: string;
@@ -528,29 +502,20 @@ export function validateProfilePublicId(
   return { ok: true, value: publicId };
 }
 
-export type CredentialMode = "code" | "bearer" | "both";
-
 export type CredentialDecision =
-  | { ok: true; credential: CredentialMode }
+  | { ok: true }
   | {
       ok: false;
       status: 400 | 401;
-      code: "MIXED_CREDENTIALS" | "INVALID_ACCESS_CODE" | "AUTH_TOKEN_MISSING";
+      code: "ACCESS_CODE_RETIRED" | "AUTH_TOKEN_MISSING";
       error: string;
     };
 
-const MIXED_CREDENTIALS_DECISION: CredentialDecision = {
+const ACCESS_CODE_RETIRED_DECISION: CredentialDecision = {
   ok: false,
   status: 400,
-  code: "MIXED_CREDENTIALS",
-  error: "Provide either an access code or a bearer token, not both.",
-};
-
-const ACCESS_CODE_MISSING_DECISION: CredentialDecision = {
-  ok: false,
-  status: 400,
-  code: "INVALID_ACCESS_CODE",
-  error: "An access code is required for this action.",
+  code: "ACCESS_CODE_RETIRED",
+  error: "Access codes are no longer accepted. Sign in instead.",
 };
 
 const BEARER_MISSING_DECISION: CredentialDecision = {
@@ -560,34 +525,17 @@ const BEARER_MISSING_DECISION: CredentialDecision = {
   error: "A bearer token is required for this action.",
 };
 
-// Server-enforced credential matrix. `link`/`unlink` are the only both-actions;
-// `session` is bearer-only; `connect` stays code-only (bearer users call
-// `session` instead); the remaining actions accept exactly one credential.
+// Server-enforced credential matrix: the account is the only identity, so every
+// action in GAME_STATS_ACTIONS is bearer-only. A leftover access code is
+// refused explicitly instead of ignored, so an old cached bundle gets a
+// diagnosable 400 rather than a confusing 401.
 export function evaluateCredentialMatrix(
   action: GameStatsAction,
   hasAccessCode: boolean,
   hasBearerToken: boolean,
 ): CredentialDecision {
-  if (action === "link" || action === "unlink") {
-    if (hasAccessCode && hasBearerToken) return { ok: true, credential: "both" };
-    return hasBearerToken ? ACCESS_CODE_MISSING_DECISION : BEARER_MISSING_DECISION;
-  }
-
-  if (action === "session") {
-    if (hasAccessCode) return MIXED_CREDENTIALS_DECISION;
-    return hasBearerToken
-      ? { ok: true, credential: "bearer" }
-      : BEARER_MISSING_DECISION;
-  }
-
-  if (hasAccessCode && hasBearerToken) return MIXED_CREDENTIALS_DECISION;
-  if (hasAccessCode) return { ok: true, credential: "code" };
-  if (hasBearerToken) {
-    return action === "connect"
-      ? MIXED_CREDENTIALS_DECISION
-      : { ok: true, credential: "bearer" };
-  }
-  return ACCESS_CODE_MISSING_DECISION;
+  if (hasAccessCode) return ACCESS_CODE_RETIRED_DECISION;
+  return hasBearerToken ? { ok: true } : BEARER_MISSING_DECISION;
 }
 
 function validateInteger(

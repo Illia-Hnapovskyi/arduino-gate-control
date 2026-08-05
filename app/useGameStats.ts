@@ -19,8 +19,6 @@ import {
   type SyncResponse,
   type ValidatedRun,
   type ValidatedRunSummary,
-  generateAccessCode,
-  generateRandomNickname,
   normalizeAccessCode,
   validateAccessCode,
   validateNickname,
@@ -53,14 +51,11 @@ export type GameStatsSyncStatus =
 
 export type GameStatsOperation =
   | "create"
-  | "connect"
   | "rename"
   | "record"
   | "sync"
   | "leaderboard"
   | "storage"
-  | "link"
-  | "unlink"
   | "session";
 
 export type GameStatsError = {
@@ -70,9 +65,11 @@ export type GameStatsError = {
 };
 
 export type GameStatsProfile = PlayerStats & {
-  accessCode: string | null;
   accountLinked: boolean;
   publicId: string | null;
+  // A migrated profile whose only credential was an access code; see
+  // isOrphanedProfile. The raw code is never exposed to the UI.
+  orphaned: boolean;
 };
 
 export type GameRunInput = GameRunSummaryInput;
@@ -95,6 +92,8 @@ export type StoredGameStatsV2 = {
 export type StoredProfileV3 = {
   profileId: string;
   checkpointOwnerId: string;
+  // Read-only legacy field: v1/v2/v3 data still loads losslessly, but nothing
+  // writes a new code and no request body ever carries one.
   accessCode: string | null;
   publicId: string | null;
   // The verified account that owns this profile; null for code-only profiles
@@ -119,7 +118,7 @@ export type GameStatsProfileSummary = {
   profileId: string;
   nickname: string;
   accountLinked: boolean;
-  hasAccessCode: boolean;
+  orphaned: boolean;
   publicId: string | null;
 };
 
@@ -128,22 +127,9 @@ export type AdoptableProfileResponse = ProfileResponse & {
   accountLinked?: boolean;
 };
 
-export type LinkProfileResult =
-  | "linked"
-  | "already-linked"
-  | "account-conflict"
-  | "profile-conflict";
-
-export type AdoptProfileResult = "adopted" | "conflict";
-
-export type ConflictResolution = "keep-local" | "use-account";
-
-export type GameStatsAccountConflict = {
-  accountProfile: GameStatsProfileSummary;
-};
-
 type HookSnapshot = {
   activeProfileId: string | null;
+  hasOrphanedProfiles: boolean;
   leaderboard: LeaderboardEntry[];
   pendingCount: number;
   profile: GameStatsProfile | null;
@@ -162,24 +148,19 @@ export type GameRunRecordResult =
 export type UseGameStatsResult = HookSnapshot & {
   status: GameStatsSyncStatus;
   error: GameStatsError | null;
-  createProfile: (nickname?: string) => Promise<GameStatsProfile>;
-  connectProfile: (accessCode: string) => Promise<GameStatsProfile>;
+  createAccountProfile: (nickname?: string) => Promise<GameStatsProfile>;
+  adoptSessionProfile: (
+    response: AdoptableProfileResponse,
+    authUserId?: string | null,
+  ) => void;
   renameProfile: (nickname: string) => Promise<void>;
-  forgetProfile: (options?: { force?: boolean }) => void;
-  retrySync: () => Promise<void>;
   recordRun: (
     run: GameRunInput,
     expectedProfileOwnerId?: string | null,
   ) => GameRunRecordResult;
+  retrySync: () => Promise<void>;
+  forgetProfile: (options?: { force?: boolean }) => void;
   switchProfile: (profileId: string) => boolean;
-  adoptSessionProfile: (
-    response: AdoptableProfileResponse,
-    authUserId?: string | null,
-  ) => AdoptProfileResult;
-  linkActiveProfile: () => Promise<LinkProfileResult>;
-  unlinkActiveProfile: () => Promise<void>;
-  accountConflict: GameStatsAccountConflict | null;
-  resolveConflict: (choice: ConflictResolution) => void;
 };
 
 export type UseGameStatsOptions = {
@@ -199,23 +180,6 @@ export class GameStatsClientError extends Error {
     this.code = code;
   }
 }
-
-// The backend request bodies for the account actions are declared inline so this
-// file compiles before the shared LinkStatsRequest/UnlinkStatsRequest/
-// SessionStatsRequest types land; action names and fields match the server
-// credential matrix exactly.
-type LinkRequestBody = { action: "link"; accessCode: string };
-type UnlinkRequestBody = { action: "unlink"; accessCode: string };
-type SessionRequestBody = { action: "session" };
-type BearerRenameRequestBody = { action: "rename"; nickname: string };
-type BearerSyncRequestBody = { action: "sync"; events: GameSyncEvent[] };
-type HookStatsRequest =
-  | GameStatsRequest
-  | LinkRequestBody
-  | UnlinkRequestBody
-  | SessionRequestBody
-  | BearerRenameRequestBody
-  | BearerSyncRequestBody;
 
 function emptyStoredGameStats(): StoredGameStatsV2 {
   return {
@@ -311,18 +275,6 @@ export function readAccessTokenSubject(accessToken: string): string | null {
   }
 }
 
-function emptyPlayerStats(nickname: string): PlayerStats {
-  return {
-    nickname,
-    gamesPlayed: 0,
-    totalScore: 0,
-    highScore: 0,
-    highestLevel: 0,
-    totalDurationMs: 0,
-    updatedAt: new Date().toISOString(),
-  };
-}
-
 function isNonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
@@ -350,10 +302,6 @@ function isLeaderboardEntry(value: unknown): value is LeaderboardEntry {
     isNonNegativeSafeInteger((value as Partial<LeaderboardEntry>).rank) &&
     (value as LeaderboardEntry).rank > 0
   );
-}
-
-function isPlayerProgression(value: unknown): value is PlayerProgression {
-  return validatePlayerProgression(value).ok;
 }
 
 function sanitizePendingEvents(value: unknown): RunCompletedSyncEvent[] {
@@ -736,12 +684,31 @@ function activeProfileOf(store: StoredGameStatsV3): StoredProfileV3 | null {
   );
 }
 
+/**
+ * A migrated profile whose only credential was an access code, with no account
+ * behind it. Access codes are retired, so such a profile can never be reached
+ * on the server again: it stays readable in the vault and keeps its queue, but
+ * nothing about it is ever sent.
+ */
+export function isOrphanedProfile(profile: StoredProfileV3): boolean {
+  return profile.accessCode !== null && profile.authUserId === null;
+}
+
+function toProfileView(profile: StoredProfileV3): GameStatsProfile {
+  return {
+    ...profile.stats,
+    accountLinked: profile.accountLinked,
+    publicId: profile.publicId,
+    orphaned: isOrphanedProfile(profile),
+  };
+}
+
 function profileSummary(profile: StoredProfileV3): GameStatsProfileSummary {
   return {
     profileId: profile.profileId,
     nickname: profile.stats.nickname,
     accountLinked: profile.accountLinked,
-    hasAccessCode: profile.accessCode !== null,
+    orphaned: isOrphanedProfile(profile),
     publicId: profile.publicId,
   };
 }
@@ -751,19 +718,12 @@ function toHookSnapshot(
   leaderboard: LeaderboardEntry[],
 ): HookSnapshot {
   const active = activeProfileOf(store);
-  const profile = active
-    ? {
-        ...active.stats,
-        accessCode: active.accessCode,
-        accountLinked: active.accountLinked,
-        publicId: active.publicId,
-      }
-    : null;
   return {
     activeProfileId: active ? active.profileId : null,
+    hasOrphanedProfiles: store.profiles.some(isOrphanedProfile),
     leaderboard,
     pendingCount: active ? active.pendingEvents.length : 0,
-    profile,
+    profile: active ? toProfileView(active) : null,
     profileOwnerId: active ? active.checkpointOwnerId : null,
     profiles: store.profiles.map(profileSummary),
     progression: active
@@ -1272,18 +1232,6 @@ export function buildAdoptedProfile(
       "The statistics service returned an invalid response.",
     );
   }
-  let accessCode: string | null = null;
-  if (response.accessCode !== undefined) {
-    const validated = validateAccessCode(response.accessCode);
-    if (!validated.ok) {
-      throw new GameStatsClientError(
-        "session",
-        "invalid_response",
-        "The statistics service returned an invalid profile code.",
-      );
-    }
-    accessCode = validated.value;
-  }
   let progression: PlayerProgression | null = null;
   if (response.progression !== undefined) {
     const validated = validatePlayerProgression(response.progression);
@@ -1298,17 +1246,11 @@ export function buildAdoptedProfile(
   }
   const publicId = normalizeProfilePublicId(response.profilePublicId);
   const sessionUserId = normalizeAuthUserId(authUserId);
-  const derivedId =
-    accessCode !== null ? profileOwnerIdFromAccessCode(accessCode) : null;
-  // Dedup first by the server public id, then by the code-derived local id, so
-  // adopting the same profile twice can never create a duplicate vault entry.
-  const existing =
-    (publicId
-      ? store.profiles.find((profile) => profile.publicId === publicId)
-      : undefined) ??
-    (derivedId
-      ? store.profiles.find((profile) => profile.profileId === derivedId)
-      : undefined);
+  // Dedup by the server public id so adopting the same profile twice can never
+  // create a duplicate vault entry.
+  const existing = publicId
+    ? store.profiles.find((profile) => profile.publicId === publicId)
+    : undefined;
   if (existing) {
     const optimisticStats = addEventsToStats(
       response.profile,
@@ -1316,8 +1258,8 @@ export function buildAdoptedProfile(
     );
     return {
       ...existing,
-      // checkpointOwnerId stays untouched: adoption never re-mints it.
-      accessCode: existing.accessCode ?? accessCode,
+      // checkpointOwnerId and a retained legacy code stay untouched: adoption
+      // never re-mints the owner id and never writes a code.
       publicId: existing.publicId ?? publicId,
       // Adoption follows a freshly verified session, so its user id wins over a
       // stale one; without a session id the stored owner is kept.
@@ -1334,11 +1276,11 @@ export function buildAdoptedProfile(
         : existing.progression,
     };
   }
-  const profileId = derivedId ?? mintProfileId();
+  const profileId = mintProfileId();
   return {
     profileId,
     checkpointOwnerId: profileId,
-    accessCode,
+    accessCode: null,
     publicId,
     authUserId: sessionUserId,
     accountLinked: response.accountLinked ?? true,
@@ -1482,7 +1424,7 @@ async function fetchGameStats(
 }
 
 async function postProfile(
-  request: HookStatsRequest,
+  request: GameStatsRequest,
   accessToken: string | null = null,
 ): Promise<AdoptableProfileResponse> {
   const headers: Record<string, string> = {
@@ -1527,18 +1469,6 @@ async function postProfile(
     }
     progression = validatedProgression.value;
   }
-  let accessCode: string | undefined;
-  if (result.accessCode !== undefined) {
-    const validatedAccessCode = validateAccessCode(result.accessCode);
-    if (!validatedAccessCode.ok) {
-      throw new GameStatsClientError(
-        request.action,
-        "invalid_response",
-        "The statistics service returned an invalid profile code.",
-      );
-    }
-    accessCode = validatedAccessCode.value;
-  }
   if (result.recorded !== undefined && typeof result.recorded !== "boolean") {
     throw new GameStatsClientError(
       request.action,
@@ -1571,7 +1501,6 @@ async function postProfile(
   }
   return {
     profile: result.profile,
-    ...(accessCode ? { accessCode } : {}),
     ...(result.recorded === undefined ? {} : { recorded: result.recorded }),
     ...(progression ? { progression } : {}),
     ...(profilePublicId ? { profilePublicId } : {}),
@@ -1583,17 +1512,11 @@ async function postProfile(
 
 async function postSync(
   events: GameSyncEvent[],
-  credentials: { accessCode: string | null; accessToken: string | null },
+  accessToken: string,
 ): Promise<SyncResponse & { profilePublicId?: string }> {
-  // The credential matrix forbids mixing: either the access code or the bearer
-  // token identifies the profile, never both.
-  const request: HookStatsRequest =
-    credentials.accessCode !== null
-      ? { action: "sync", accessCode: credentials.accessCode, events }
-      : { action: "sync", events };
   const result = (await postProfile(
-    request,
-    credentials.accessCode !== null ? null : credentials.accessToken,
+    { action: "sync", events },
+    accessToken,
   )) as Partial<SyncResponse> & { profilePublicId?: string };
   const results = validateGameSyncResults(result.results);
   const progression = validatePlayerProgression(result.progression);
@@ -1656,14 +1579,11 @@ export function useGameStats({
   const languageRef = useRef(language);
   const getAccessTokenRef = useRef(getAccessToken);
   const isRunActiveRef = useRef(isRunActive);
-  const pendingAdoptionRef = useRef<{
-    response: AdoptableProfileResponse;
-    authUserId: string | null;
-  } | null>(null);
   const syncPromiseRef = useRef<Promise<void> | null>(null);
   const syncAgainRef = useRef(false);
   const [snapshot, setSnapshot] = useState<HookSnapshot>({
     activeProfileId: null,
+    hasOrphanedProfiles: false,
     leaderboard: [],
     pendingCount: 0,
     profile: null,
@@ -1673,8 +1593,6 @@ export function useGameStats({
   });
   const [status, setStatus] = useState<GameStatsSyncStatus>("loading");
   const [error, setError] = useState<GameStatsError | null>(null);
-  const [accountConflict, setAccountConflict] =
-    useState<GameStatsAccountConflict | null>(null);
 
   const publishStore = useCallback(
     (
@@ -1743,92 +1661,78 @@ export function useGameStats({
 
     try {
       let active = activeProfileOf(storeRef.current);
-      if (active) {
+      // A migrated profile whose only credential was an access code can no
+      // longer be reached: it is skipped entirely instead of being synced.
+      const retired = active !== null && isOrphanedProfile(active);
+      if (active && !retired) {
         const profileId = active.profileId;
-        const accessCode = active.accessCode;
-        let accessToken: string | null = null;
-        if (accessCode === null) {
-          // Account-adopted profile: the injected token provider is the only
-          // credential. Without a session the queue stays untouched.
-          accessToken = await acquireAccessToken();
-          if (!accessToken) {
-            if (mountedRef.current) {
-              setError({
-                code: "auth_session_missing",
-                message: "Sign in to sync this account profile.",
-                operation: "sync",
-              });
-              setStatus("error");
-            }
-            return;
+        // Every action is bearer-only now, so the injected token provider is the
+        // only credential. Without a session the queue stays untouched.
+        const accessToken = await acquireAccessToken();
+        if (!accessToken) {
+          if (mountedRef.current) {
+            setError({
+              code: "auth_session_missing",
+              message: "Sign in to sync this account profile.",
+              operation: "sync",
+            });
+            setStatus("error");
           }
-          const authorization = await authorizeBearerProfile(
-            active,
-            accessToken,
-            (token) => postProfile({ action: "session" }, token),
+          return;
+        }
+        const authorization = await authorizeBearerProfile(
+          active,
+          accessToken,
+          (token) => postProfile({ action: "session" }, token),
+        );
+        if (authorization.kind === "mismatch") {
+          // A session for another account must not touch this queue: nothing
+          // is sent, nothing is dropped, the player just has to sign back in.
+          if (mountedRef.current) {
+            setError({
+              code: "auth_session_mismatch",
+              message:
+                "This profile belongs to a different account. Sign in with that account to sync it.",
+              operation: "sync",
+            });
+            setStatus("error");
+          }
+          return;
+        }
+        if (
+          authorization.authUserId !== active.authUserId ||
+          authorization.publicId !== active.publicId
+        ) {
+          // The verified owner is recorded once so later passes compare the
+          // session directly instead of probing again.
+          publishStore((current) =>
+            updateProfileInStore(current, profileId, (profile) => ({
+              ...profile,
+              authUserId: profile.authUserId ?? authorization.authUserId,
+              publicId: profile.publicId ?? authorization.publicId,
+            })),
           );
-          if (authorization.kind === "mismatch") {
-            // A session for another account must not touch this queue: nothing
-            // is sent, nothing is dropped, the player just has to sign back in.
-            if (mountedRef.current) {
-              setError({
-                code: "auth_session_mismatch",
-                message:
-                  "This profile belongs to a different account. Sign in with that account to sync it.",
-                operation: "sync",
-              });
-              setStatus("error");
-            }
+          if (storeRef.current.activeProfileId !== profileId) {
+            syncAgainRef.current = true;
             return;
           }
-          if (
-            authorization.authUserId !== active.authUserId ||
-            authorization.publicId !== active.publicId
-          ) {
-            // The verified owner is recorded once so later passes compare the
-            // session directly instead of probing again.
-            publishStore((current) =>
-              updateProfileInStore(current, profileId, (profile) => ({
-                ...profile,
-                authUserId: profile.authUserId ?? authorization.authUserId,
-                publicId: profile.publicId ?? authorization.publicId,
-              })),
-            );
-            if (storeRef.current.activeProfileId !== profileId) {
-              syncAgainRef.current = true;
-              return;
-            }
-            active = activeProfileOf(storeRef.current) ?? active;
-          }
+          active = activeProfileOf(storeRef.current) ?? active;
         }
 
-        const wasRemoteConfirmed = active.remoteConfirmed;
-        const submittedNickname = active.stats.nickname;
         const hasPendingChanges =
           active.pendingNickname !== null || active.pendingEvents.length > 0;
-        const shouldCreate = !wasRemoteConfirmed && accessCode !== null;
-        const shouldRefresh = wasRemoteConfirmed && !hasPendingChanges;
 
-        if (shouldCreate || shouldRefresh) {
-          const response = shouldCreate
-            ? await postProfile({
-                action: "create",
-                accessCode: accessCode as string,
-                nickname: submittedNickname,
-                language: languageRef.current,
-              })
-            : accessCode !== null
-              ? await postProfile({ action: "connect", accessCode })
-              : await postProfile({ action: "session" }, accessToken);
+        if (active.remoteConfirmed && !hasPendingChanges) {
+          const response = await postProfile(
+            { action: "session" },
+            accessToken,
+          );
 
           publishStore((current) =>
             updateProfileInStore(current, profileId, (profile) => {
-              const latestNickname = profile.stats.nickname;
-              const needsRename = wasRemoteConfirmed
-                ? profile.pendingNickname
-                : latestNickname !== submittedNickname
-                  ? latestNickname
-                  : null;
+              // A rename queued while the request was in flight wins over the
+              // nickname the server just reported.
+              const needsRename = profile.pendingNickname;
               const remoteStats = {
                 ...response.profile,
                 nickname: needsRename ?? response.profile.nickname,
@@ -1839,14 +1743,6 @@ export function useGameStats({
               );
               return {
                 ...profile,
-                accessCode:
-                  profile.accessCode !== null
-                    ? normalizeAccessCode(
-                        response.accessCode ?? profile.accessCode,
-                      )
-                    : response.accessCode !== undefined
-                      ? normalizeAccessCode(response.accessCode)
-                      : null,
                 publicId: mergeProfilePublicId(
                   profile,
                   response.profilePublicId,
@@ -1874,13 +1770,10 @@ export function useGameStats({
 
         if (active?.pendingNickname) {
           const nickname = active.pendingNickname;
-          const response =
-            accessCode !== null
-              ? await postProfile({ action: "rename", accessCode, nickname })
-              : await postProfile(
-                  { action: "rename", nickname },
-                  accessToken,
-                );
+          const response = await postProfile(
+            { action: "rename", nickname },
+            accessToken,
+          );
           publishStore((current) =>
             updateProfileInStore(current, profileId, (profile) => {
               const hasNewerRename = profile.pendingNickname !== nickname;
@@ -1925,10 +1818,7 @@ export function useGameStats({
             0,
             MAX_GAME_SYNC_EVENTS,
           );
-          const response = await postSync(storedEvents, {
-            accessCode,
-            accessToken,
-          });
+          const response = await postSync(storedEvents, accessToken);
           publishStore((current) =>
             updateProfileInStore(current, profileId, (profile) => {
               const completedIds = new Set(
@@ -1970,18 +1860,29 @@ export function useGameStats({
         }
       }
 
+      // The public leaderboard carries no profile data, so it is still refreshed
+      // for a retired profile; only its own state is reported as an error.
       publishLeaderboard(await getLeaderboard());
       if (mountedRef.current) {
-        setStatus(
-          activeProfileOf(storeRef.current)?.remoteConfirmed === false
-            ? "local-only"
-            : "synced",
-        );
-        setError(null);
+        if (retired) {
+          setError({
+            code: "code_login_retired",
+            message: "Profile codes are retired. Sign in to keep syncing.",
+            operation: "sync",
+          });
+          setStatus("error");
+        } else {
+          setStatus(
+            activeProfileOf(storeRef.current)?.remoteConfirmed === false
+              ? "local-only"
+              : "synced",
+          );
+          setError(null);
+        }
       }
     } catch (syncError) {
       if (!mountedRef.current) return;
-      const nextError = asGameStatsError(syncError, "connect");
+      const nextError = asGameStatsError(syncError, "sync");
       setError(nextError);
       setStatus(isOfflineError(syncError) ? "offline" : "error");
     }
@@ -2012,76 +1913,52 @@ export function useGameStats({
     window.queueMicrotask(() => void retrySync());
   }, [retrySync]);
 
-  const createProfile = useCallback(
-    async (requestedNickname?: string) => {
-      if (activeProfileOf(storeRef.current)) {
-        throw new GameStatsClientError(
-          "create",
-          "profile_active",
-          "Forget the current profile before creating another one.",
-        );
+  const adoptProfileResponse = useCallback(
+    (
+      response: AdoptableProfileResponse,
+      authUserId: string | null,
+    ): StoredProfileV3 => {
+      const adopted = buildAdoptedProfile(
+        storeRef.current,
+        response,
+        authUserId,
+      );
+      // Mid-run the entry is stored but never activated: switching the active
+      // profile would attribute the running game to the wrong profile.
+      publishStore((current) =>
+        upsertProfileInStore(current, adopted, !isRunActiveRef.current?.()),
+      );
+      if (mountedRef.current) {
+        setStatus("syncing");
+        setError(null);
       }
+      requestSync();
+      return adopted;
+    },
+    [publishStore, requestSync],
+  );
 
-      const nickname =
+  const createAccountProfile = useCallback(
+    async (requestedNickname?: string) => {
+      const validatedNickname =
         requestedNickname === undefined
-          ? generateRandomNickname(languageRef.current)
-          : requestedNickname;
-      const validatedNickname = validateNickname(nickname);
-      if (!validatedNickname.ok) {
+          ? null
+          : validateNickname(requestedNickname);
+      if (validatedNickname && !validatedNickname.ok) {
         throw new GameStatsClientError(
           "create",
           "invalid_nickname",
           validatedNickname.error,
         );
       }
-      const accessCode = normalizeAccessCode(generateAccessCode());
-      const profileId = profileOwnerIdFromAccessCode(accessCode);
-      const stats = emptyPlayerStats(validatedNickname.value);
-      publishStore((current) =>
-        upsertProfileInStore(
-          current,
-          {
-            profileId,
-            checkpointOwnerId: profileId,
-            accessCode,
-            publicId: null,
-            authUserId: null,
-            accountLinked: false,
-            pendingNickname: null,
-            remoteConfirmed: false,
-            stats,
-            progression: null,
-            pendingEvents: [],
-            knownEventIds: [],
-          },
-          true,
-        ),
-      );
-      if (mountedRef.current) {
-        setStatus("local-only");
-        setError(null);
-      }
-      requestSync();
-      return { ...stats, accessCode, accountLinked: false, publicId: null };
-    },
-    [publishStore, requestSync],
-  );
-
-  const connectProfile = useCallback(
-    async (requestedAccessCode: string) => {
-      const validatedAccessCode = validateAccessCode(requestedAccessCode);
-      if (!validatedAccessCode.ok) {
+      // The account is the identity: without a session there is nothing to
+      // create, and the server mints the profile and its link together.
+      const accessToken = await acquireAccessToken();
+      if (!accessToken) {
         throw new GameStatsClientError(
-          "connect",
-          "invalid_access_code",
-          validatedAccessCode.error,
-        );
-      }
-      if (activeProfileOf(storeRef.current)) {
-        throw new GameStatsClientError(
-          "connect",
-          "profile_active",
-          "Forget the current profile before connecting another one.",
+          "create",
+          "auth_session_missing",
+          "Sign in before creating a profile.",
         );
       }
 
@@ -2090,96 +1967,30 @@ export function useGameStats({
         setError(null);
       }
       try {
-        const response = await postProfile({
-          action: "connect",
-          accessCode: validatedAccessCode.value,
-        });
-        const accessCode = normalizeAccessCode(
-          response.accessCode ?? validatedAccessCode.value,
+        const response = await postProfile(
+          {
+            action: "create",
+            language: languageRef.current,
+            // An absent nickname lets the server allocate a random one.
+            ...(validatedNickname ? { nickname: validatedNickname.value } : {}),
+          },
+          accessToken,
         );
-        const derivedId = profileOwnerIdFromAccessCode(accessCode);
-        const publicId = response.profilePublicId ?? null;
-        const accountLinked = response.accountLinked ?? false;
-        publishStore((current) => {
-          // Reconnecting a profile that already lives in the vault updates it
-          // in place; the pending offline queue and checkpoint id survive.
-          const existing =
-            (publicId
-              ? current.profiles.find(
-                  (profile) => profile.publicId === publicId,
-                )
-              : undefined) ??
-            current.profiles.find(
-              (profile) => profile.profileId === derivedId,
-            );
-          if (existing) {
-            const optimisticStats = addEventsToStats(
-              response.profile,
-              existing.pendingEvents,
-            );
-            return upsertProfileInStore(
-              current,
-              {
-                ...existing,
-                accessCode: existing.accessCode ?? accessCode,
-                publicId: existing.publicId ?? publicId,
-                accountLinked: accountLinked || existing.accountLinked,
-                remoteConfirmed: true,
-                stats: optimisticStats,
-                progression: isPlayerProgression(response.progression)
-                  ? addEventsToProgression(
-                      response.progression,
-                      existing.pendingEvents,
-                      optimisticStats,
-                    )
-                  : existing.progression,
-              },
-              true,
-            );
-          }
-          return upsertProfileInStore(
-            current,
-            {
-              profileId: derivedId,
-              checkpointOwnerId: derivedId,
-              accessCode,
-              publicId,
-              // The legacy code flow never carries a bearer session.
-              authUserId: null,
-              accountLinked,
-              pendingNickname: null,
-              remoteConfirmed: true,
-              stats: response.profile,
-              progression: isPlayerProgression(response.progression)
-                ? response.progression
-                : null,
-              pendingEvents: [],
-              knownEventIds: [],
-            },
-            true,
-          );
-        });
-        if (mountedRef.current) {
-          setStatus("synced");
-          setError(null);
-        }
-        requestSync();
-        return {
-          ...response.profile,
-          accessCode,
-          accountLinked,
-          publicId,
-        };
-      } catch (connectError) {
-        const nextError = asGameStatsError(connectError, "connect");
+        // Repeating create is idempotent server-side, so the response may be an
+        // existing profile; adoption recognizes it by its public id.
+        return toProfileView(
+          adoptProfileResponse(response, readAccessTokenSubject(accessToken)),
+        );
+      } catch (createError) {
+        const nextError = asGameStatsError(createError, "create");
         if (mountedRef.current) {
           setError(nextError);
-          setStatus(isOfflineError(connectError) ? "offline" : "error");
+          setStatus(isOfflineError(createError) ? "offline" : "error");
         }
-        throw connectError;
+        throw createError;
       }
     },
-    [publishStore, requestSync],
+    [acquireAccessToken, adoptProfileResponse],
   );
 
   const renameProfile = useCallback(
@@ -2197,7 +2008,7 @@ export function useGameStats({
         throw new GameStatsClientError(
           "rename",
           "profile_missing",
-          "Create or connect a profile first.",
+          "Create an account profile first.",
         );
       }
       publishStore((current) =>
@@ -2371,194 +2182,13 @@ export function useGameStats({
   );
 
   const adoptSessionProfile = useCallback(
-    (
-      response: AdoptableProfileResponse,
-      authUserId?: string | null,
-    ): AdoptProfileResult => {
-      const sessionUserId = authUserId ?? null;
-      const target = buildAdoptedProfile(
-        storeRef.current,
-        response,
-        sessionUserId,
-      );
-      const active = activeProfileOf(storeRef.current);
-      if (active && active.profileId !== target.profileId) {
-        // Never merge and never overwrite: the player decides which profile
-        // stays active; both stay in the vault either way.
-        pendingAdoptionRef.current = { response, authUserId: sessionUserId };
-        setAccountConflict({ accountProfile: profileSummary(target) });
-        return "conflict";
-      }
-      // Mid-run the entry is stored but never activated: switching the active
-      // profile would attribute the running game to the wrong profile.
-      const activate = !isRunActiveRef.current?.();
-      publishStore((current) =>
-        upsertProfileInStore(
-          current,
-          buildAdoptedProfile(current, response, sessionUserId),
-          activate,
-        ),
-      );
-      if (mountedRef.current) {
-        setStatus("syncing");
-        setError(null);
-      }
-      requestSync();
-      return "adopted";
+    (response: AdoptableProfileResponse, authUserId?: string | null) => {
+      // A profile the player already has stays in the vault untouched: an
+      // account profile joins it instead of merging with or replacing it.
+      adoptProfileResponse(response, authUserId ?? null);
     },
-    [publishStore, requestSync],
+    [adoptProfileResponse],
   );
-
-  const resolveConflict = useCallback(
-    (choice: ConflictResolution) => {
-      const pendingAdoption = pendingAdoptionRef.current;
-      pendingAdoptionRef.current = null;
-      setAccountConflict(null);
-      if (!pendingAdoption) return;
-      try {
-        publishStore((current) =>
-          upsertProfileInStore(
-            current,
-            buildAdoptedProfile(
-              current,
-              pendingAdoption.response,
-              pendingAdoption.authUserId,
-            ),
-            // Same mid-run rule as adoption: store the entry, keep the run's
-            // profile active until it ends.
-            choice === "use-account" && !isRunActiveRef.current?.(),
-          ),
-        );
-      } catch {
-        return;
-      }
-      if (choice === "use-account") {
-        if (mountedRef.current) {
-          setStatus("syncing");
-          setError(null);
-        }
-        requestSync();
-      }
-    },
-    [publishStore, requestSync],
-  );
-
-  const linkActiveProfile = useCallback(async (): Promise<LinkProfileResult> => {
-    const active = activeProfileOf(storeRef.current);
-    if (!active) {
-      throw new GameStatsClientError(
-        "link",
-        "profile_missing",
-        "Create or connect a profile first.",
-      );
-    }
-    if (active.accessCode === null) {
-      throw new GameStatsClientError(
-        "link",
-        "access_code_missing",
-        "This profile is already managed by the account.",
-      );
-    }
-    const accessToken = await acquireAccessToken();
-    if (!accessToken) {
-      throw new GameStatsClientError(
-        "link",
-        "auth_session_missing",
-        "Sign in before linking this profile.",
-      );
-    }
-    const profileId = active.profileId;
-    const request: LinkRequestBody = {
-      action: "link",
-      accessCode: active.accessCode,
-    };
-    const response = await fetchGameStats("link", {
-      body: JSON.stringify(request),
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${accessToken}`,
-      },
-      method: "POST",
-    });
-    const body = await readResponseBody(response);
-    if (response.ok) {
-      const raw = (body ?? {}) as {
-        status?: unknown;
-        profilePublicId?: unknown;
-      };
-      const publicId = normalizeProfilePublicId(raw.profilePublicId);
-      publishStore((current) =>
-        updateProfileInStore(current, profileId, (profile) => ({
-          ...profile,
-          accountLinked: true,
-          publicId: profile.publicId ?? publicId,
-        })),
-      );
-      return raw.status === "already-linked" ? "already-linked" : "linked";
-    }
-    const apiError = (body ?? {}) as Partial<ErrorResponse>;
-    if (apiError.code === "ACCOUNT_PROFILE_CONFLICT") return "account-conflict";
-    if (apiError.code === "PROFILE_ACCOUNT_CONFLICT") return "profile-conflict";
-    throw new GameStatsClientError(
-      "link",
-      typeof apiError.code === "string" ? apiError.code : "request_failed",
-      typeof apiError.error === "string" ? apiError.error : "Request failed.",
-    );
-  }, [acquireAccessToken, publishStore]);
-
-  const unlinkActiveProfile = useCallback(async (): Promise<void> => {
-    const active = activeProfileOf(storeRef.current);
-    if (!active) {
-      throw new GameStatsClientError(
-        "unlink",
-        "profile_missing",
-        "Create or connect a profile first.",
-      );
-    }
-    if (active.accessCode === null) {
-      throw new GameStatsClientError(
-        "unlink",
-        "access_code_missing",
-        "Unlinking requires the profile code.",
-      );
-    }
-    const accessToken = await acquireAccessToken();
-    if (!accessToken) {
-      throw new GameStatsClientError(
-        "unlink",
-        "auth_session_missing",
-        "Sign in before unlinking this profile.",
-      );
-    }
-    const profileId = active.profileId;
-    const request: UnlinkRequestBody = {
-      action: "unlink",
-      accessCode: active.accessCode,
-    };
-    const response = await fetchGameStats("unlink", {
-      body: JSON.stringify(request),
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${accessToken}`,
-      },
-      method: "POST",
-    });
-    const body = await readResponseBody(response);
-    if (!response.ok) {
-      const apiError = (body ?? {}) as Partial<ErrorResponse>;
-      throw new GameStatsClientError(
-        "unlink",
-        typeof apiError.code === "string" ? apiError.code : "request_failed",
-        typeof apiError.error === "string" ? apiError.error : "Request failed.",
-      );
-    }
-    publishStore((current) =>
-      updateProfileInStore(current, profileId, (profile) => ({
-        ...profile,
-        accountLinked: false,
-      })),
-    );
-  }, [acquireAccessToken, publishStore]);
 
   useEffect(() => {
     languageRef.current = language;
@@ -2636,17 +2266,12 @@ export function useGameStats({
     ...snapshot,
     status,
     error,
-    createProfile,
-    connectProfile,
-    renameProfile,
-    forgetProfile,
-    retrySync,
-    recordRun,
-    switchProfile,
+    createAccountProfile,
     adoptSessionProfile,
-    linkActiveProfile,
-    unlinkActiveProfile,
-    accountConflict,
-    resolveConflict,
+    renameProfile,
+    recordRun,
+    retrySync,
+    forgetProfile,
+    switchProfile,
   };
 }

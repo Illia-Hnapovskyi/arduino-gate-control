@@ -3,6 +3,7 @@
 import {
   type FormEvent,
   type ReactNode,
+  type ToggleEvent,
   useCallback,
   useEffect,
   useId,
@@ -12,7 +13,6 @@ import {
 } from "react";
 import {
   GAME_STATS_API_PATH,
-  generateRandomNickname,
   validateNickname,
   type GameStatsLanguage,
   type ProfileResponse,
@@ -21,10 +21,7 @@ import { useAuthSession } from "./auth/useAuthSession";
 import ConsentPanel from "./ConsentPanel";
 import type { PlayerStatsCopy } from "./PlayerStatsPanel";
 import { GameStatsClientError } from "./useGameStats";
-import type {
-  GameStatsProfileSummary,
-  UseGameStatsResult,
-} from "./useGameStats";
+import type { UseGameStatsResult } from "./useGameStats";
 
 // ── Game-activity signal ──────────────────────────────────────────────────
 // page.tsx publishes the same "game data at risk" flag it already uses to
@@ -175,8 +172,9 @@ type AccountBusyAction =
   | "forgot"
   | "google"
   | "apple"
-  | "link"
-  | "unlink"
+  | "passkey-signin"
+  | "passkey-add"
+  | "passkey-delete"
   | "signout"
   | "signout-all"
   | "session";
@@ -195,37 +193,15 @@ function isProfileResponseLike(body: unknown): body is ProfileResponse {
   return Boolean(profile) && typeof profile === "object";
 }
 
-// The vault entry of the active profile is resolved by its local profile id
-// only. Nicknames are not unique across the vault, so matching on them
-// mislabelled a local-only profile as "Active" when it shared a nickname with
-// an account profile.
-function findActiveSummary(
-  stats: UseGameStatsResult,
-): GameStatsProfileSummary | null {
-  const activeId = stats.activeProfileId;
-  if (!activeId) return null;
-  return stats.profiles.find((entry) => entry.profileId === activeId) ?? null;
-}
-
-// Link/unlink failures carry the server (or hook) error code; a revoked or
-// absent session and the two 1:1 conflicts each need their own copy instead of
-// the generic auth error.
-function accountActionErrorText(error: unknown, copy: PlayerStatsCopy) {
-  const code = error instanceof GameStatsClientError ? error.code : null;
-  switch (code) {
-    case "AUTH_SESSION_REVOKED":
-    case "AUTH_TOKEN_EXPIRED":
-    case "AUTH_TOKEN_MISSING":
-    // The hook raises this local code when no access token is available.
-    case "auth_session_missing":
-      return copy.accountSessionExpired;
-    case "ACCOUNT_PROFILE_CONFLICT":
-      return copy.accountLinkConflictAccount;
-    case "PROFILE_ACCOUNT_CONFLICT":
-      return copy.accountLinkConflictProfile;
-    default:
-      return copy.accountAuthError;
-  }
+// Passkey timestamps come from the server, so an unparsable value must degrade
+// to a dash instead of breaking the list.
+function formatPasskeyDate(language: GameStatsLanguage, value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(language, {
+    dateStyle: "medium",
+    timeZone: "UTC",
+  }).format(date);
 }
 
 export function AccountPanel({
@@ -238,8 +214,6 @@ export function AccountPanel({
   const emailId = useId();
   const passwordId = useId();
   const nicknameId = useId();
-  const conflictTitleId = useId();
-  const conflictBodyId = useId();
   const [formMode, setFormMode] = useState<AccountFormMode>("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -249,6 +223,7 @@ export function AccountPanel({
   const [errorText, setErrorText] = useState<string | null>(null);
   const [consentOpen, setConsentOpen] = useState(false);
   const sessionFlowUserRef = useRef<string | null>(null);
+  const passkeysRequestedRef = useRef(false);
   const switchBlocked = useSyncExternalStore(
     subscribeToGameActivity,
     readGameActivityBlocked,
@@ -256,10 +231,6 @@ export function AccountPanel({
   );
 
   const actionsDisabled = disabled || busyAction !== null;
-  const activeSummary = findActiveSummary(stats);
-  const activeProfileId = activeSummary?.profileId ?? null;
-  const activeLinked = stats.profile?.accountLinked ?? false;
-  const activeHasAccessCode = Boolean(stats.profile?.accessCode);
 
   const clearMessages = useCallback(() => {
     setNotice(null);
@@ -291,59 +262,15 @@ export function AccountPanel({
     [auth],
   );
 
+  // The account is the identity, so signing in only has to find the profile it
+  // already owns. A 404 means there is none yet; the profile panel then offers
+  // the nickname prompt instead of creating one behind the player's back.
   const runSessionFlow = useCallback(async () => {
     setBusyAction("session");
     try {
       const session = await postAccountStats({ action: "session" });
       if (session.status === 200 && isProfileResponseLike(session.body)) {
         stats.adoptSessionProfile(session.body);
-        return;
-      }
-      if (session.status === 404 && session.code === "AUTH_NOT_LINKED") {
-        if (stats.profile) {
-          // A local profile exists: nothing is transferred automatically —
-          // the player confirms with the explicit link button below.
-          return;
-        }
-        const validatedNickname = validateNickname(auth.sessionNickname);
-        const created = await postAccountStats({
-          action: "create",
-          language,
-          nickname: validatedNickname.ok
-            ? validatedNickname.value
-            : generateRandomNickname(language),
-        });
-        if (created.status === 200 && isProfileResponseLike(created.body)) {
-          stats.adoptSessionProfile(created.body);
-          return;
-        }
-        if (created.code === "ACCOUNT_PROFILE_CONFLICT") {
-          const retried = await postAccountStats({ action: "session" });
-          if (retried.status === 200 && isProfileResponseLike(retried.body)) {
-            stats.adoptSessionProfile(retried.body);
-            return;
-          }
-        }
-        if (created.code === "NICKNAME_TAKEN") {
-          // The sign-up nickname is already used by another profile. Retry once
-          // with a generated one so the account is not left with no profile and
-          // no way forward.
-          const withRandomNickname = await postAccountStats({
-            action: "create",
-            language,
-            nickname: generateRandomNickname(language),
-          });
-          if (
-            withRandomNickname.status === 200 &&
-            isProfileResponseLike(withRandomNickname.body)
-          ) {
-            stats.adoptSessionProfile(withRandomNickname.body);
-            return;
-          }
-          setErrorText(copy.nicknameTakenError);
-          return;
-        }
-        setErrorText(copy.accountAuthError);
         return;
       }
       if (session.status === 401) {
@@ -363,11 +290,8 @@ export function AccountPanel({
       setBusyAction(null);
     }
   }, [
-    auth.sessionNickname,
     copy.accountAuthError,
     copy.accountSessionExpired,
-    copy.nicknameTakenError,
-    language,
     postAccountStats,
     stats,
   ]);
@@ -383,6 +307,7 @@ export function AccountPanel({
   useEffect(() => {
     if (!auth.hasSession || !auth.sessionUserId) {
       sessionFlowUserRef.current = null;
+      passkeysRequestedRef.current = false;
       return;
     }
     if (sessionFlowUserRef.current === auth.sessionUserId) return;
@@ -436,6 +361,9 @@ export function AccountPanel({
       setErrorText(copy.nicknameRequiredError);
       return;
     }
+    // The nickname travels in the account metadata and becomes the suggested
+    // profile name, so it is validated here with the same rules the profile
+    // prompt applies.
     const validatedNickname = validateNickname(nickname);
     if (!validatedNickname.ok) {
       setErrorText(copy.nicknameInvalidError);
@@ -484,43 +412,53 @@ export function AccountPanel({
         ? await auth.signInGoogle()
         : await auth.signInApple();
     setBusyAction(null);
-    if (!result.ok) setErrorText(copy.accountAuthError);
+    // The provider is rendered before the project has it configured, and that
+    // failure looks identical to a rejected redirect — say it is unavailable
+    // instead of surfacing the provider's own message.
+    if (!result.ok) setErrorText(copy.accountProviderUnavailable);
   };
 
-  const handleLink = async () => {
+  // A passkey call resolves { ok: false } for three indistinguishable reasons:
+  // the player cancelled the browser prompt, the project has passkeys switched
+  // off (which raises passkeyUnavailable and swaps the button for a notice), or
+  // WebAuthn itself failed. None of them may become a raw error message.
+  const handlePasskeySignIn = async () => {
     if (actionsDisabled) return;
     clearMessages();
-    setBusyAction("link");
-    try {
-      const outcome = await stats.linkActiveProfile();
-      if (outcome === "linked") {
-        setNotice(copy.accountLinkDone);
-      } else if (outcome === "already-linked") {
-        setNotice(copy.accountAlreadyLinked);
-      } else if (outcome === "account-conflict") {
-        setErrorText(copy.accountLinkConflictAccount);
-      } else if (outcome === "profile-conflict") {
-        setErrorText(copy.accountLinkConflictProfile);
-      }
-    } catch (error) {
-      setErrorText(accountActionErrorText(error, copy));
-    } finally {
-      setBusyAction(null);
-    }
+    setBusyAction("passkey-signin");
+    await auth.signInWithPasskey();
+    setBusyAction(null);
   };
 
-  const handleUnlink = async () => {
+  const handlePasskeyAdd = async () => {
     if (actionsDisabled) return;
     clearMessages();
-    setBusyAction("unlink");
-    try {
-      await stats.unlinkActiveProfile();
-      setNotice(copy.accountNotLinked);
-    } catch (error) {
-      setErrorText(accountActionErrorText(error, copy));
-    } finally {
-      setBusyAction(null);
-    }
+    setBusyAction("passkey-add");
+    await auth.registerPasskey();
+    setBusyAction(null);
+  };
+
+  const handlePasskeyDelete = async (passkeyId: string) => {
+    if (actionsDisabled) return;
+    if (!window.confirm(copy.accountPasskeyDeleteConfirm)) return;
+    clearMessages();
+    setBusyAction("passkey-delete");
+    await auth.deletePasskey(passkeyId);
+    setBusyAction(null);
+  };
+
+  // The list is a network call, so it is requested when the section is first
+  // opened instead of on mount. A failed attempt clears the guard, so reopening
+  // the section retries it.
+  const handlePasskeySectionToggle = (
+    event: ToggleEvent<HTMLDetailsElement>,
+  ) => {
+    if (!event.currentTarget.open) return;
+    if (passkeysRequestedRef.current) return;
+    passkeysRequestedRef.current = true;
+    void auth.listPasskeys().then((result) => {
+      if (!result.ok) passkeysRequestedRef.current = false;
+    });
   };
 
   const handleSignOut = async (scope: "local" | "global") => {
@@ -540,8 +478,6 @@ export function AccountPanel({
     clearMessages();
     stats.switchProfile(profileId);
   };
-
-  const conflict = stats.accountConflict;
 
   return (
     <section aria-label={copy.accountTitle} className="account-section">
@@ -714,7 +650,23 @@ export function AccountPanel({
                 {copy.accountApple}
               </button>
             )}
+            {auth.passkeySupported && !auth.passkeyUnavailable && (
+              <button
+                className="button secondary"
+                disabled={actionsDisabled}
+                onClick={() => void handlePasskeySignIn()}
+                type="button"
+              >
+                {copy.accountPasskeySignInAction}
+              </button>
+            )}
           </div>
+          {auth.passkeySupported && auth.passkeyUnavailable && (
+            <p className="account-passkey-note">
+              {copy.accountPasskeyUnavailable}
+            </p>
+          )}
+          <p className="account-offline-note">{copy.accountOfflineNotice}</p>
         </div>
       ) : (
         <div className="account-signed-in">
@@ -722,32 +674,7 @@ export function AccountPanel({
             <span className="sr-only">{copy.accountEmailLabel}: </span>
             {auth.sessionEmail}
           </p>
-          {stats.profile && (
-            <p aria-live="polite" className="account-link-status" role="status">
-              {activeLinked ? copy.accountLinked : copy.accountNotLinked}
-            </p>
-          )}
           <div className="account-form-actions">
-            {stats.profile && !activeLinked && activeHasAccessCode && (
-              <button
-                className="button secondary"
-                disabled={actionsDisabled}
-                onClick={() => void handleLink()}
-                type="button"
-              >
-                {copy.accountLinkProfile}
-              </button>
-            )}
-            {stats.profile && activeLinked && activeHasAccessCode && (
-              <button
-                className="account-text-button"
-                disabled={actionsDisabled}
-                onClick={() => void handleUnlink()}
-                type="button"
-              >
-                {copy.accountUnlinkProfile}
-              </button>
-            )}
             <button
               className="account-text-button"
               disabled={actionsDisabled}
@@ -765,6 +692,66 @@ export function AccountPanel({
               {copy.accountSignOutAll}
             </button>
           </div>
+
+          <details
+            className="account-passkeys"
+            onToggle={handlePasskeySectionToggle}
+          >
+            <summary>{copy.accountPasskeyTitle}</summary>
+            <p className="account-passkey-note">
+              {copy.accountPasskeyRecoveryHint}
+            </p>
+            {auth.passkeyUnavailable ? (
+              <p className="account-passkey-note">
+                {copy.accountPasskeyUnavailable}
+              </p>
+            ) : (
+              <>
+                {auth.passkeySupported && (
+                  <button
+                    className="button secondary"
+                    disabled={actionsDisabled}
+                    onClick={() => void handlePasskeyAdd()}
+                    type="button"
+                  >
+                    {copy.accountPasskeyAddAction}
+                  </button>
+                )}
+                <div aria-busy={auth.passkeysLoading} aria-live="polite">
+                  {auth.passkeys.length === 0 ? (
+                    <p className="account-passkey-note">
+                      {copy.accountPasskeyEmpty}
+                    </p>
+                  ) : (
+                    <ul className="account-passkey-list">
+                      {auth.passkeys.map((passkey) => (
+                        <li className="account-passkey-row" key={passkey.id}>
+                          <div>
+                            <strong>
+                              {passkey.friendlyName ?? copy.accountPasskeyTitle}
+                            </strong>
+                            <small>
+                              {formatPasskeyDate(language, passkey.createdAt)}
+                            </small>
+                          </div>
+                          <button
+                            className="account-text-button"
+                            disabled={actionsDisabled}
+                            onClick={() =>
+                              void handlePasskeyDelete(passkey.id)
+                            }
+                            type="button"
+                          >
+                            {copy.accountPasskeyDeleteAction}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
+            )}
+          </details>
         </div>
       )}
 
@@ -773,7 +760,7 @@ export function AccountPanel({
           <h4>{copy.profilesTitle}</h4>
           <ul>
             {stats.profiles.map((entry) => {
-              const isActive = activeProfileId === entry.profileId;
+              const isActive = stats.activeProfileId === entry.profileId;
               return (
                 <li className="account-profile-row" key={entry.profileId}>
                   <div>
@@ -814,39 +801,6 @@ export function AccountPanel({
         <p className="profile-error" role="alert">
           {errorText}
         </p>
-      )}
-
-      {conflict && (
-        <AccountDialog
-          describedBy={conflictBodyId}
-          labelledBy={conflictTitleId}
-        >
-          <h3 id={conflictTitleId}>{copy.conflictTitle}</h3>
-          <p id={conflictBodyId}>{copy.conflictBody}</p>
-          {conflict.accountProfile.nickname && (
-            <p className="account-conflict-nickname">
-              <strong>{conflict.accountProfile.nickname}</strong>
-            </p>
-          )}
-          <p className="account-dialog-note">{copy.conflictVaultNote}</p>
-          <div className="account-dialog-actions">
-            <button
-              className="button primary"
-              data-dialog-initial-focus
-              onClick={() => stats.resolveConflict("keep-local")}
-              type="button"
-            >
-              {copy.conflictKeepLocal}
-            </button>
-            <button
-              className="button secondary"
-              onClick={() => stats.resolveConflict("use-account")}
-              type="button"
-            >
-              {copy.conflictUseAccount}
-            </button>
-          </div>
-        </AccountDialog>
       )}
     </section>
   );

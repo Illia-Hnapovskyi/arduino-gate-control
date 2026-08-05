@@ -282,7 +282,10 @@ ID стабільні й є частиною shared/API контракту. На
 
 Реалізований menu flow, зібраний із окремих game-компонентів, такий:
 
-1. профіль або пояснення, чому він потрібний;
+1. профіль або пояснення, чому він потрібний: профіль існує лише разом з
+   акаунтом, тому без входу гравець бачить запрошення увійти, а не поле для коду.
+   Demo mode, шлагбаум і радар працюють без акаунта — від профілю залежить лише
+   кнопка старту забігу;
 2. `Грати` / `Продовжити` з безпечного checkpoint;
 3. вибір режиму й складності;
 4. передстартове summary: режим, складність, рекорди, керування, Arduino/demo status;
@@ -355,7 +358,7 @@ Loader відхиляє прострочені, пошкоджені або не
 `app/game/GameOverlays.tsx`).
 
 Якщо локальний запис результату неможливий, екран дозволяє завантажити
-recovery JSON без access code. Відмова від такого результату з'являється лише
+recovery JSON без жодного credential. Відмова від такого результату з'являється лише
 після спроби експорту й потребує окремого підтвердження, що файл справді є на
 пристрої. Невдале видалення старого checkpoint не приховується: новий виліт
 блокується, доки гравець повторно не очистить збережений забіг.
@@ -387,7 +390,7 @@ Runtime накопичує точні per-power collection/activation counts, cu
 
 Міграція `0002` backfill-ить тільки `first_run`, `score_10000`, `max_level` і `veteran_10`, які можна довести зі старих v1 aggregates, та створює їхні unlock rows. Точний історичний час невідомий, тому `unlocked_at` дорівнює часу міграції. Інші досягнення починають накопичуватися з v2 run facts. Revisioned `settings.updated` підтримується shared/API/SQL, але поточний UI зберігає preferences device-local і ще не ставить settings events в offline queue.
 
-Не збираються і не мають збиратися координати кожного кадру, сирі значення joystick, access code, raw IP або інші персональні дані. Access code залишається паролем і зберігається в БД лише як SHA-256 digest; rate-limit scopes псевдонімізуються HMAC на сервері.
+Не збираються і не мають збиратися координати кожного кадру, сирі значення joystick, raw IP, email, JWT або інші персональні дані. Ідентичність гравця — це акаунт Supabase Auth; 20-символьний access code скасовано, і сервер його не приймає. Rate-limit scopes псевдонімізуються HMAC на сервері, тому в БД не потрапляє ні raw IP, ні raw auth user id.
 
 ## 17. Валідаційні інваріанти
 
@@ -435,7 +438,7 @@ Browser, API та PostgreSQL повинні приймати той самий �
 - achievement accumulation/unlock;
 - snapshot validation і migration aliases.
 
-Суміжні тести мають покривати input, preferences, resume, stats adapter/storage, API idempotency, повторний runId, achievement sync, SQL constraints, access-code/nickname validation, translation-key parity та форму Vercel Web Fetch export.
+Суміжні тести мають покривати input, preferences, resume, stats adapter/storage, API idempotency, повторний runId, achievement sync, SQL constraints, nickname validation, credential matrix, translation-key parity та форму Vercel Web Fetch export.
 
 Окрім автоматичних тестів, перед релізом потрібні ручні перевірки:
 

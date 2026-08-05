@@ -11,7 +11,7 @@
   Arduino-джойстиком;
 - працює в demo mode без плати й у браузерах без Web Serial;
 - зберігає профіль і результати offline-first та синхронізує їх між пристроями
-  через Supabase PostgreSQL;
+  через акаунт Supabase Auth і Supabase PostgreSQL;
 - відтворює музику через Passive Buzzer D3 або Web Audio, а короткі ефекти —
   через Active Buzzer D5.
 
@@ -45,7 +45,7 @@
   хвилями. Середина бою навмисно не відновлюється;
 - екран результату не дозволяє випадково піти або почати новий забіг, доки
   результат не записаний у локальну offline queue; у разі помилки є явний retry.
-- recovery JSON не містить access code; остаточна відмова від незаписаного
+- recovery JSON не містить жодного credential; остаточна відмова від незаписаного
   результату потребує експорту й окремого підтвердження, а помилка очищення
   checkpoint блокує новий запуск замість прихованого відновлення старого стану;
 
@@ -60,7 +60,9 @@
 src/main.tsx → app/page.tsx → app/GamePanel.tsx → app/game/*
                         │
                         ├─ Web Serial 115200 → public/arduino-smart-gate.ino
-                        ├─ localStorage → profile/event queue/preferences/checkpoint
+                        ├─ localStorage → profile/event queue/preferences/
+                        │                 checkpoint/consent/auth-сесія
+                        ├─ Supabase Auth /auth/v1 (PKCE) → єдина ідентичність
                         └─ /api/stats → Vercel Web Fetch Function
                                          └─ Postgres.js
                                             └─ Supavisor Transaction Pooler
@@ -101,14 +103,20 @@ npx vercel dev
 
 ## Профіль, offline-first і синхронізація
 
-- власний або локалізований випадковий нік прив'язується до 20-символьного
-  access code; цей код є паролем;
-- raw access code залишається в браузері та запиті, у PostgreSQL зберігається
-  лише SHA-256 digest;
+- профіль існує лише разом з акаунтом Supabase Auth: власний або локалізований
+  випадковий нік прив'язується до auth-користувача у приватній таблиці
+  `game_account_links`;
+- 20-символьний access code скасовано. Сервер його не приймає, не генерує й не
+  повертає, а запит із полем `accessCode` отримує 400 `ACCESS_CODE_RETIRED`;
 - активне сховище статистики — `arduino-gate-game-stats:v3`: сховище кількох
   профілів з активним профілем; валідні v2 та v1 дані мігрують один раз без
-  втрати access code, pending rename або pending runs, а старі ключі ніколи не
+  втрати старого коду, pending rename або pending runs, а старі ключі ніколи не
   видаляються й не перезаписуються;
+- старий профіль, який має код і не має `authUserId`, стає **orphaned**: він
+  назавжди лишається у сховищі, статистику видно, чергу подій збережено, але
+  синхронізація нічого не відправляє й показує код `code_login_retired`. Його
+  totals не переносяться в новий акаунтний профіль, бо немає credential, яким
+  можна довести право власності;
 - кожен профіль має незмінний `checkpointOwnerId`: він створюється один раз і
   ніколи не переобчислюється з серверних даних, тому старі checkpoint-и
   переживають і прив'язку акаунта, і rollback коду;
@@ -127,7 +135,8 @@ npx vercel dev
   видаляються), але з'являться тільки після перезавантаження тієї вкладки —
   після deploy перезавантаж усі відкриті вкладки;
 - завершення спершу оптимістично записується локально як `run.completed` v2,
-  потім відправляється чергою пакетами до п'яти подій;
+  потім відправляється чергою пакетами до п'яти подій; кожен такий запит іде
+  тільки з bearer-токеном акаунта;
 - `eventId === runId`; однакова повторна подія є idempotent, а повторне
   використання ID з іншим payload відхиляється;
 - у базі синхронізуються базові totals, режим/складність, бойові метрики,
@@ -141,35 +150,52 @@ npx vercel dev
 Таблиця лідерів показує top 25 профілів із `games_played > 0`. Порожній рейтинг
 не доводить, що `game_players` порожня.
 
-## Акаунт (Supabase Auth) — опційно
+## Акаунт (Supabase Auth) — єдиний спосіб мати профіль
 
-Поряд із access code існує опційний акаунт через Supabase Auth
-(email+пароль або Google). Це дає відновлення доступу через email і вхід без
-коду; нік лишається єдиним публічним ім'ям, email ніде не показується.
+Акаунт Supabase Auth (email+пароль, за бажанням passkey або Google) — тепер
+єдина ідентичність. Нік лишається єдиним публічним ім'ям, email ніде не
+показується.
 
-- акаунт і профіль зв'язуються строго 1:1 у приватній таблиці
-  `game_account_links`; сервер ніколи не зливає і не перепризначає профілі —
-  конфлікт повертає HTTP 409;
+- акаунт і профіль зв'язані строго 1:1 у приватній таблиці
+  `game_account_links`; сервер ніколи не зливає і не перепризначає профілі.
+  Повторний `create` для того самого акаунта повертає той самий профіль
+  (idempotent 200), бо клієнт повторює його при нестабільній мережі;
+- вхід потрібен, щоб мати профіль, а профіль потрібен, щоб почати забіг. Demo
+  mode, панель шлагбаума й радар працюють зовсім без акаунта;
+- перший вхід у цьому браузері потребує мережі. Далі сесія лежить у
+  localStorage, тому гравець, який уже входив, може грати offline — забіги стають
+  у чергу й синхронізуються після відновлення зв'язку;
 - повністю без cookies: consent-вибір і auth-сесія живуть у localStorage;
   Google/Apple ставлять cookies лише на власних доменах під час входу;
-- поки у `app/auth/supabaseConfig.ts` не вставлено публічний publishable key,
-  `authAvailable === false` і весь акаунтний UI прихований — гра працює як
-  раніше;
+- публічний publishable key вже закомічено в `app/auth/supabaseConfig.ts`, тому
+  `authAvailable === true` і акаунтний UI активний. Email+пароль і підтвердження
+  email увімкнені в живому проєкті;
+- Google **не** налаштований у Dashboard: кнопка є, але виклик OAuth
+  завершується помилкою, і UI показує спокійне пояснення, а не сирий текст
+  помилки;
+- passkeys реалізовані в клієнті й не коштують нічого додатково, але лишаються
+  вимкненими, доки в Dashboard не увімкнено **Authentication → Passkeys**. Доки
+  тумблер вимкнений, кожен виклик повертає `passkey_disabled`, і UI просто
+  пропонує email+пароль. Supabase позначає цей API як експериментальний, тому
+  клієнт вмикає його явно через `auth.experimental.passkey`;
+- **зміна Relying Party ID пізніше знецінює всі наявні passkeys** — гравцям
+  доведеться реєструвати їх заново. RP ID — це чистий production-домен без
+  схеми, порту й шляху;
 - вбудований Supabase SMTP доставляє листи (підтвердження, скидання пароля)
   лише учасникам команди проєкту, доки не налаштовано custom SMTP;
 - Apple sign-in вимкнено за замовчуванням: він потребує платної Apple
   Developer Program, а client secret треба перевипускати приблизно кожні
-  6 місяців;
-- passkeys свідомо не реалізовані: API експериментальний, `rp_id` жорстко
-  прив'язує credential до одного домену, а Vercel preview deployments із цим
-  несумісні;
-- відмова від акаунта нічого не ламає: локальна й код-базована гра працюють
-  повністю.
+  6 місяців.
 
-Нові коди помилок API: `AUTH_TOKEN_MISSING`, `AUTH_TOKEN_INVALID`,
-`AUTH_TOKEN_EXPIRED`, `AUTH_SESSION_REVOKED` (401), `AUTH_KEYS_UNAVAILABLE`
-(503), `AUTH_NOT_LINKED` (404), `ACCOUNT_PROFILE_CONFLICT`,
-`PROFILE_ACCOUNT_CONFLICT` (409), `MIXED_CREDENTIALS` (400).
+Коди помилок credential-шляху: `ACCESS_CODE_RETIRED` (400),
+`AUTH_TOKEN_MISSING`, `AUTH_TOKEN_INVALID`, `AUTH_TOKEN_EXPIRED`,
+`AUTH_SESSION_REVOKED` (401), `AUTH_KEYS_UNAVAILABLE` (503) і
+`AUTH_NOT_LINKED` (404) — останній означає «акаунт валідний, профілю ще немає»,
+і клієнт відповідає на нього викликом `create`.
+
+Дії `connect`, `link` і `unlink` прибрані разом із кодом доступу й повертають
+400 `INVALID_ACTION`. Разом з ними зникли коди `MIXED_CREDENTIALS`,
+`PROFILE_ACCOUNT_CONFLICT` і `ACCOUNT_PROFILE_CONFLICT`.
 
 ## Supabase і Vercel
 
@@ -184,13 +210,30 @@ npx vercel dev
 4. `db/migrations/0004_account_links.sql` — additive `public_id`, приватна
    1:1 таблиця `game_account_links` і розширений allowlist rate-limit
    buckets. **Застосована в production 2026-08-04.**
+5. `db/migrations/0005_account_only_identity.sql` — скасування коду доступу:
+   `access_code_hash` стає NULLABLE (колонку навмисно **не** видалено, щоб
+   rollback коду до `0004`-API залишався можливим), додається
+   `game_players_reachable_check`
+   (`access_code_hash IS NOT NULL OR profile_schema_version >= 3`), діапазон
+   `profile_schema_version` розширено до 1–3, а counters `profile_record` і
+   `profile_rename` очищено, бо їхні HMAC-scopes перейшли з digest коду на
+   auth-користувача. Жоден профіль чи run не видаляється.
+   **Застосована в production 2026-08-04.**
 
-Для вже налаштованої v1 production-бази виконай відсутні `0002`—`0004`.
-До її застосування API лишає leaderboard/create/connect/rename і legacy record
-сумісними з `0001`, а новий `sync` повертає `SCHEMA_MIGRATION_REQUIRED`; браузер
-не втрачає run, а тримає його в offline queue. `0002` зберігає старі дані та backfill-ить чотири
-досягнення, які можна довести з v1 totals; точні старі дати й детальні бойові
-факти відновити неможливо. DDL під час API-запиту не виконується.
+`0005` треба застосувати **до** deploy account-only API: цей API вставляє
+профілі без digest і не пройшов би старий `NOT NULL`.
+
+Для вже налаштованої v1 production-бази виконай відсутні `0002`—`0005`.
+Запасного шляху для бази без `0002` більше немає: account-only профіль
+потребує `profile_schema_version = 3` (колонка з `0002`), тому без v2-таблиць
+працює лише GET leaderboard — `create` і `sync` повертають
+`SCHEMA_MIGRATION_REQUIRED`, а `session`, `rename` і `record` — `AUTH_NOT_LINKED`.
+Браузер не втрачає run, а тримає його в offline queue. Для `0004` і `0005`
+запасного шляху теж немає:
+без них account-only API не знайде профіль і не зможе його створити. `0002`
+зберігає старі дані та backfill-ить чотири досягнення, які можна довести з v1
+totals; точні старі дати й детальні бойові факти відновити неможливо. DDL під
+час API-запиту не виконується.
 
 Vercel потребує серверні secrets:
 
@@ -201,19 +244,19 @@ Postgres.js використовує TLS, одну connection на теплий 
 `prepare: false`, що сумісно з transaction pooling. Не додавай префікс `VITE_`
 до secrets. Всі таблиці мають RLS deny-by-default і не мають публічних grants/policies:
 `0002` робить `REVOKE` для v2 таблиць, `0003` — для трьох базових, `0004` — для
-`game_account_links`. Браузер працює тільки через `/api/stats`; для auth він
-додатково звертається напряму лише до Supabase Auth (`/auth/v1`).
+`game_account_links`; `0005` не створює об'єктів, тому нових grants не потребує.
+Браузер працює тільки через `/api/stats`; для auth (включно з WebAuthn-церемонією
+passkey) він додатково звертається напряму лише до Supabase Auth (`/auth/v1`).
 
 Rate limits у фіксованому одногодинному вікні: 600 mutation events з IP
-(`ip_write`), 30 create з IP (`ip_create`), 240 completed runs, 30
-rename/create-upsert, 300 total v2 sync events на профіль, 10 link/unlink з IP
-(`ip_link`) і 10 акаунтних операцій на auth-акаунт (`account_link`). Кожна
-акаунтна дія списує два buckets: bearer `create` — `ip_create` + `account_link`,
-`link` і `unlink` — `ip_link` + `account_link`; усі три ділять один і той самий
-ліміт 10/год на акаунт. Bearer `rename`/`record`/`sync` навмисно не є
-account-scoped: вони знаходять профіль через link і списують ті самі buckets, що
-й код-шлях. Batch списує counters за кожну подію. Raw IP у БД не
-потрапляє: scope спочатку HMAC-псевдонімізується.
+(`ip_write`), 30 create з IP (`ip_create`), 240 completed runs, 30 rename, 300
+total v2 sync events на профіль і 10 акаунтних операцій на auth-акаунт
+(`account_link`). `create` списує `ip_create` + `account_link`;
+`rename`/`record`/`sync` списують `ip_write` плюс свій `profile_*` bucket. Назви
+buckets не змінилися (тому нової міграції не треба), змінився scope: усе, що було
+`profile:<accessCodeHash>`, тепер `account:<userId>`. Batch списує counters за
+кожну подію. Ні raw IP, ні raw auth user id у БД не потрапляють: scope спочатку
+HMAC-псевдонімізується.
 
 Leaderboard є дружнім, а не tournament-grade: сервер перевіряє формат,
 діапазони й rate limits, але браузерний run не має криптографічного доказу.
@@ -230,11 +273,12 @@ git diff --check
 ```
 
 Автотести покривають deterministic waves/enemies, power cooldown, achievements,
-checkpoint migration, stats storage v1→v2, API validation/idempotency, SQL
-контракти, Arduino protocol, translation parity та форму Vercel Web Fetch
-export. Вони не доводять фізичний Web Serial timing, реальний Supabase deploy
-або UI у конкретному браузері — ці перевірки виконуються окремо й не мають
-вважатися пройденими без фактичного тесту.
+checkpoint migration, stats storage v1/v2→v3, credential matrix, API
+validation/idempotency, SQL контракти, Arduino protocol, translation parity та
+форму Vercel Web Fetch export. Вони не доводять фізичний Web Serial timing,
+реальний Supabase deploy, WebAuthn-церемонію passkey або UI у конкретному
+браузері — ці перевірки виконуються окремо й не мають вважатися пройденими без
+фактичного тесту.
 
 ## Arduino
 
@@ -260,3 +304,9 @@ export. Вони не доводять фізичний Web Serial timing, ре�
 Для shared `main` використовуй новий `git revert`, а не переписування історії.
 Не видаляй additive v2 таблиці під час code rollback: вони можуть уже містити
 користувацькі дані й idempotency ledger.
+
+`0004` і `0005` теж мають лишатися застосованими під час code rollback. `0005`
+навмисно не видаляє `access_code_hash`, а лише знімає з неї `NOT NULL`, тому
+старіший `0004`-API, який ще читає й пише digest, працює далі. Небезпечний
+напрямок — відкат самої міграції: акаунтні профілі мають NULL у цій колонці й
+порушили б відновлений `NOT NULL`.
