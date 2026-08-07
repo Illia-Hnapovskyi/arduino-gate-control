@@ -131,6 +131,69 @@ test("stats source verifies bearer tokens after the matrix check and before SQL"
   );
 });
 
+test("applying an event never demotes an account-only profile out of the 0005 CHECK", async () => {
+  const source = await readFile(
+    new URL("../api/stats.ts", import.meta.url),
+    "utf8",
+  );
+
+  // game_players_reachable_check is (access_code_hash IS NOT NULL OR
+  // profile_schema_version >= 3), and an account-only row has no digest. A
+  // literal `profile_schema_version = 2` in any UPDATE would therefore raise
+  // SQLSTATE 23514 on the first run or settings change every such profile ever
+  // makes. The column may only be promoted, never lowered.
+  assert.doesNotMatch(
+    source,
+    /profile_schema_version = \d/,
+    "no write may pin the schema version to a literal",
+  );
+  assert.equal(
+    [
+      ...source.matchAll(
+        /profile_schema_version = GREATEST\(profile_schema_version, 2\)/g,
+      ),
+    ].length,
+    2,
+    "both the run and the settings aggregate UPDATE promote in one direction",
+  );
+
+  // The insert is the one place that chooses a version, and it must choose 3.
+  const createSection = source.slice(
+    source.indexOf("async function createAccountPlayer("),
+  );
+  assert.match(createSection, /\$\{ACCOUNT_PROFILE_SCHEMA_VERSION\}/);
+});
+
+test("a colliding generated nickname stays retryable instead of blaming the player", async () => {
+  const source = await readFile(
+    new URL("../api/stats.ts", import.meta.url),
+    "utf8",
+  );
+  const createSection = source.slice(
+    source.indexOf("async function createAccountPlayer("),
+    source.indexOf("async function readLimitedBody("),
+  );
+
+  // Only a nickname the player typed can answer 409; a generated one consumes
+  // its attempt so an exhausted loop reaches the 503 that AGENTS.md and
+  // SUPABASE_SETUP.md document and that PlayerStatsPanel localizes.
+  assert.match(
+    createSection,
+    /if \(hasRequestedNickname\) \{\s*return errorResponse\(\s*409,\s*"NICKNAME_TAKEN"/,
+  );
+  assert.doesNotMatch(
+    createSection,
+    /attempt \+ 1 < attempts/,
+    "guarding the retry on the last attempt makes the 503 unreachable",
+  );
+  const collisionIndex = createSection.indexOf("isUniqueNicknameError");
+  const unavailableIndex = createSection.indexOf("RANDOM_NICKNAME_UNAVAILABLE");
+  assert.ok(
+    collisionIndex > -1 && collisionIndex < unavailableIndex,
+    "the exhausted retry loop must fall through to RANDOM_NICKNAME_UNAVAILABLE",
+  );
+});
+
 test("stats API refuses the retired code-era actions and any access code", async () => {
   const previousDatabaseUrl = process.env.SUPABASE_DATABASE_URL;
   process.env.SUPABASE_DATABASE_URL = unreachableTestDatabaseUrl();

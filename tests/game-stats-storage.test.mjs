@@ -8,6 +8,7 @@ import {
   canForgetProfile,
   emptyStoredGameStatsV3,
   forgetActiveProfileInStore,
+  isForeignProfile,
   isOrphanedProfile,
   mergeProfilePublicId,
   mergeStoredGameStatsV2,
@@ -20,6 +21,7 @@ import {
   sanitizeStoredGameStatsV2,
   sanitizeStoredGameStatsV3,
   shouldPersistMergedGameStats,
+  toHookSnapshot,
   upsertProfileInStore,
 } from "../app/useGameStats.ts";
 
@@ -888,8 +890,75 @@ test("a migrated code profile is orphaned: readable, queued, never sent", () => 
     syncSection,
     /const retired = active !== null && isOrphanedProfile\(active\);/,
   );
-  assert.match(syncSection, /if \(active && !retired\) \{/);
+  assert.match(syncSection, /if \(active && !retired && !foreign\) \{/);
   assert.match(syncSection, /code: "code_login_retired"/);
+});
+
+test("a profile another account owns is hidden from this session, never touched", () => {
+  const queued = eventFor(pendingRun);
+  const owned = accountProfileFixture({
+    pendingEvents: [queued],
+    knownEventIds: [queued.eventId],
+  });
+  const store = upsertProfileInStore(emptyStoredGameStatsV3(), owned, true);
+  const before = structuredClone(store);
+
+  // Signed in as somebody else on a shared browser: the entry stays in the
+  // vault untouched, but nothing presents it as this account's profile. The
+  // panel therefore offers the nickname prompt (profile === null) and
+  // GamePanel keeps the start button locked (no profileOwnerId).
+  const intruder = toHookSnapshot(store, [], otherAccountUserId);
+  assert.equal(intruder.profile, null);
+  assert.equal(intruder.profileOwnerId, null);
+  assert.equal(intruder.pendingCount, 0);
+  assert.equal(intruder.progression, null);
+  assert.deepEqual(store, before, "hiding never mutates or drops the entry");
+  assert.equal(
+    intruder.activeProfileId,
+    owned.profileId,
+    "the vault itself is session-independent",
+  );
+  assert.deepEqual(
+    intruder.profiles.map((entry) => entry.profileId),
+    [owned.profileId],
+  );
+
+  // The owning account — and a signed-out browser, which proves nothing — see
+  // the profile and its queue exactly as before.
+  for (const sessionUserId of [accountUserId, null]) {
+    const visible = toHookSnapshot(store, [], sessionUserId);
+    assert.equal(visible.profile?.nickname, owned.stats.nickname);
+    assert.equal(visible.profileOwnerId, owned.checkpointOwnerId);
+    assert.equal(visible.pendingCount, 1);
+  }
+
+  assert.equal(isForeignProfile(owned, otherAccountUserId), true);
+  assert.equal(isForeignProfile(owned, accountUserId), false);
+  assert.equal(isForeignProfile(owned, null), false);
+  assert.equal(
+    isForeignProfile(accountProfileFixture({ authUserId: null }), accountUserId),
+    false,
+    "a profile with no recorded owner belongs to nobody in particular",
+  );
+
+  // A sync pass must not push another account's queue with this session, and a
+  // run that ends after the account changed must not be appended to it.
+  const syncSection = hookSource.slice(
+    hookSource.indexOf("const runSyncPass = useCallback("),
+    hookSource.indexOf("const retrySync = useCallback("),
+  );
+  assert.match(
+    syncSection,
+    /isForeignProfile\(active, sessionUserIdRef\.current\)/,
+  );
+  const recordSection = hookSource.slice(
+    hookSource.indexOf("const recordRun = useCallback("),
+    hookSource.indexOf("const switchProfile = useCallback("),
+  );
+  assert.match(
+    recordSection,
+    /if \(isForeignProfile\(active, sessionUserIdRef\.current\)\) \{\s*return "profile-mismatch";/,
+  );
 });
 
 test("no outgoing request can carry an access code", () => {

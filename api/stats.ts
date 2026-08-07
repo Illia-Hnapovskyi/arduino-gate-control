@@ -963,6 +963,10 @@ async function applyRunSummary(
     `;
   }
 
+  // profile_schema_version only ever climbs. Applying a run still promotes a
+  // legacy version-1 row to 2, but an account-only profile keeps its 3: it has
+  // no access_code_hash, so lowering the marker would fail 0005's validated
+  // game_players_reachable_check and roll the whole event back.
   await sql`
     UPDATE game_players
     SET
@@ -975,7 +979,7 @@ async function applyRunSummary(
         ${MAX_SAFE_DATABASE_INTEGER}
       ),
       stats_revision = LEAST(stats_revision + 1, ${MAX_SAFE_DATABASE_INTEGER}),
-      profile_schema_version = 2,
+      profile_schema_version = GREATEST(profile_schema_version, 2),
       updated_at = NOW()
     WHERE id = ${playerId}
   `;
@@ -1145,11 +1149,13 @@ async function applySettingsEvent(
       "Settings changed on another device. Refresh and retry.",
     );
   }
+  // Same one-way promotion as applyRunSummary: a settings change must never
+  // demote an account-only profile out of game_players_reachable_check.
   await sql`
     UPDATE game_players
     SET
       stats_revision = LEAST(stats_revision + 1, ${MAX_SAFE_DATABASE_INTEGER}),
-      profile_schema_version = 2,
+      profile_schema_version = GREATEST(profile_schema_version, 2),
       updated_at = NOW()
     WHERE id = ${playerId}
   `;
@@ -1363,15 +1369,19 @@ async function createAccountPlayer(
             `),
           );
         } catch (error) {
-          if (isUniqueNicknameError(error) && attempt + 1 < attempts) continue;
-          if (isUniqueNicknameError(error)) {
+          if (!isUniqueNicknameError(error)) throw error;
+          // A nickname the player chose is reported back instead of being
+          // silently replaced. A generated one is nobody's mistake, so it just
+          // consumes an attempt and the exhausted loop answers with the
+          // retryable 503 below.
+          if (hasRequestedNickname) {
             return errorResponse(
               409,
               "NICKNAME_TAKEN",
               "Nickname is already in use.",
             );
           }
-          throw error;
+          continue;
         }
         const playerId = databaseInteger(rows[0].id);
         await tx`
@@ -1389,6 +1399,8 @@ async function createAccountPlayer(
           accountLinked: true,
         } satisfies ProfileResponse);
       }
+      // Only a generated nickname can exhaust the loop, and a collision on
+      // every draw is a transient allocation failure rather than bad input.
       return errorResponse(
         503,
         "RANDOM_NICKNAME_UNAVAILABLE",

@@ -138,6 +138,32 @@ test("the profile UI is account-only and never touches an access code", async ()
   );
 });
 
+test("a session never inherits a profile that belongs to another account", async () => {
+  const [accountPanel, gamePanel] = await Promise.all([
+    readFile(path.join(projectRoot, "app/AccountPanel.tsx"), "utf8"),
+    readFile(path.join(projectRoot, "app/GamePanel.tsx"), "utf8"),
+  ]);
+
+  // The server resolved this profile from the account link for this very
+  // token, so the verified owner must be recorded. Dropping it leaves every
+  // profile the code-era build stored (code, publicId, no owner) looking
+  // orphaned to its own account: it can never sync, and the panel would offer
+  // the destructive force-forget beside a "your code no longer works" notice.
+  assert.match(
+    accountPanel,
+    /stats\.adoptSessionProfile\(session\.body, auth\.sessionUserId\)/,
+  );
+
+  // The hook can only tell this account's vault entry from one another account
+  // left behind on a shared browser if it knows who is signed in.
+  assert.match(gamePanel, /const \{ sessionUserId \} = useAuthSession\(\);/);
+  assert.match(
+    gamePanel,
+    /useGameStats\(\{[^}]*\bsessionUserId,[^}]*\}\)/,
+    "GamePanel must pass the signed-in account into useGameStats",
+  );
+});
+
 test("the passkey UI degrades gracefully and never lists on mount", async () => {
   const accountPanel = await readFile(
     path.join(projectRoot, "app/AccountPanel.tsx"),
