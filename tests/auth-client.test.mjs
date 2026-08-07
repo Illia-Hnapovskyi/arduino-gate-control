@@ -184,3 +184,35 @@ test("a fetched passkey list never outlives the account it belongs to", async ()
   assert.equal(countMatches(source, /setPasskeys\(/g), 1);
   assert.match(source, /setPasskeys\(\{\s*ownerId: sessionUserId,/);
 });
+
+test("a provider redirect is completed and its code never lingers in the URL", async () => {
+  const client = await readSource("../app/auth/client.ts");
+  const hook = await readSource("../app/auth/useAuthSession.ts");
+
+  // detectSessionInUrl stays off so that constructing the client cannot touch
+  // the network on its own. That makes the exchange this module's duty: without
+  // it Google returns with `?code=` and the player silently stays signed out.
+  assert.match(client, /detectSessionInUrl: false/);
+  assert.match(client, /await client\.auth\.exchangeCodeForSession\(code\)/);
+
+  // The code is stripped before the first await, not after it. Anything awaited
+  // first leaves a redeemable credential in the address bar and in history.
+  const body = client.slice(client.indexOf("export async function completeAuthRedirect"));
+  assert.ok(
+    body.indexOf("stripRedirectParams();") < body.indexOf("await client.auth"),
+    "the redirect params must be stripped before the exchange is awaited",
+  );
+  for (const key of ["code", "state", "error", "error_code", "error_description"]) {
+    assert.match(client, new RegExp(`"${key}"`));
+  }
+
+  // A cancelled consent screen is not a failure, and must not read as one.
+  assert.match(client, /error === "access_denied" \? "cancelled" : "failed"/);
+
+  // The session must be read only after the redirect is settled: asking first
+  // pins the hook to "signed out" for the rest of the page's life.
+  assert.match(
+    hook,
+    /completeAuthRedirect\(\)[\s\S]{0,120}\.then\(\(\) => client\.auth\.getSession\(\)\)/,
+  );
+});
