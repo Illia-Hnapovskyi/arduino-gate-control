@@ -127,7 +127,7 @@ export type AdoptableProfileResponse = ProfileResponse & {
   accountLinked?: boolean;
 };
 
-type HookSnapshot = {
+export type HookSnapshot = {
   activeProfileId: string | null;
   hasOrphanedProfiles: boolean;
   leaderboard: LeaderboardEntry[];
@@ -166,6 +166,9 @@ export type UseGameStatsResult = HookSnapshot & {
 export type UseGameStatsOptions = {
   language: GameStatsLanguage;
   getAccessToken?: () => Promise<string | null>;
+  // The account currently signed in, so the hook can tell its own vault entry
+  // from one another account left behind on a shared browser.
+  sessionUserId?: string | null;
   isRunActive?: () => boolean;
 };
 
@@ -694,6 +697,24 @@ export function isOrphanedProfile(profile: StoredProfileV3): boolean {
   return profile.accessCode !== null && profile.authUserId === null;
 }
 
+/**
+ * A vault entry a different account owns. The account is the identity, so a
+ * session for account Y must never present, extend or sync account X's profile
+ * — a shared browser would otherwise credit Y's runs to X. The entry itself is
+ * left untouched and becomes usable again the moment X signs back in. A profile
+ * with no recorded owner is nobody's in particular and is never foreign.
+ */
+export function isForeignProfile(
+  profile: StoredProfileV3,
+  sessionUserId: string | null,
+): boolean {
+  return (
+    profile.authUserId !== null &&
+    sessionUserId !== null &&
+    profile.authUserId !== sessionUserId
+  );
+}
+
 function toProfileView(profile: StoredProfileV3): GameStatsProfile {
   return {
     ...profile.stats,
@@ -713,13 +734,21 @@ function profileSummary(profile: StoredProfileV3): GameStatsProfileSummary {
   };
 }
 
-function toHookSnapshot(
+// The snapshot describes what the signed-in account may see and do, so an
+// active entry another account owns reads exactly like having no profile: the
+// panel offers the nickname prompt and the game's start button stays locked.
+// The vault itself (activeProfileId, profiles, hasOrphanedProfiles) is
+// session-independent and still reports every stored entry.
+export function toHookSnapshot(
   store: StoredGameStatsV3,
   leaderboard: LeaderboardEntry[],
+  sessionUserId: string | null,
 ): HookSnapshot {
-  const active = activeProfileOf(store);
+  const stored = activeProfileOf(store);
+  const active =
+    stored && !isForeignProfile(stored, sessionUserId) ? stored : null;
   return {
-    activeProfileId: active ? active.profileId : null,
+    activeProfileId: stored ? stored.profileId : null,
     hasOrphanedProfiles: store.profiles.some(isOrphanedProfile),
     leaderboard,
     pendingCount: active ? active.pendingEvents.length : 0,
@@ -1571,6 +1600,7 @@ async function getLeaderboard(): Promise<LeaderboardEntry[]> {
 export function useGameStats({
   language,
   getAccessToken,
+  sessionUserId = null,
   isRunActive,
 }: UseGameStatsOptions): UseGameStatsResult {
   const storeRef = useRef<StoredGameStatsV3>(emptyStoredGameStatsV3());
@@ -1578,6 +1608,7 @@ export function useGameStats({
   const mountedRef = useRef(false);
   const languageRef = useRef(language);
   const getAccessTokenRef = useRef(getAccessToken);
+  const sessionUserIdRef = useRef(sessionUserId);
   const isRunActiveRef = useRef(isRunActive);
   const syncPromiseRef = useRef<Promise<void> | null>(null);
   const syncAgainRef = useRef(false);
@@ -1624,7 +1655,9 @@ export function useGameStats({
       }
       storeRef.current = next;
       if (mountedRef.current) {
-        setSnapshot(toHookSnapshot(next, leaderboardRef.current));
+        setSnapshot(
+          toHookSnapshot(next, leaderboardRef.current, sessionUserIdRef.current),
+        );
       }
       return next;
     },
@@ -1634,7 +1667,9 @@ export function useGameStats({
   const publishLeaderboard = useCallback((leaderboard: LeaderboardEntry[]) => {
     leaderboardRef.current = leaderboard;
     if (mountedRef.current) {
-      setSnapshot(toHookSnapshot(storeRef.current, leaderboard));
+      setSnapshot(
+        toHookSnapshot(storeRef.current, leaderboard, sessionUserIdRef.current),
+      );
     }
   }, []);
 
@@ -1664,7 +1699,12 @@ export function useGameStats({
       // A migrated profile whose only credential was an access code can no
       // longer be reached: it is skipped entirely instead of being synced.
       const retired = active !== null && isOrphanedProfile(active);
-      if (active && !retired) {
+      // Another account's entry is not this session's to push. It keeps its
+      // queue and drains once its own account signs back in, so this is a
+      // silent skip rather than an error the current player could act on.
+      const foreign =
+        active !== null && isForeignProfile(active, sessionUserIdRef.current);
+      if (active && !retired && !foreign) {
         const profileId = active.profileId;
         // Every action is bearer-only now, so the injected token provider is the
         // only credential. Without a session the queue stays untouched.
@@ -2082,6 +2122,13 @@ export function useGameStats({
       ) {
         return "profile-mismatch";
       }
+      // The signed-in account changed while the run was in flight. Appending to
+      // the previous account's queue would credit this run to them, so it is
+      // refused: the result screen keeps it and its recovery export, and saving
+      // succeeds again as soon as the owning account signs back in.
+      if (isForeignProfile(active, sessionUserIdRef.current)) {
+        return "profile-mismatch";
+      }
       if (
         active.knownEventIds.includes(validatedRun.value.runId) ||
         active.pendingEvents.some(
@@ -2196,6 +2243,16 @@ export function useGameStats({
     isRunActiveRef.current = isRunActive;
   }, [language, getAccessToken, isRunActive]);
 
+  // Which vault entry this session may use depends on the signed-in account, so
+  // a change of user re-derives the snapshot from the unchanged store.
+  useEffect(() => {
+    sessionUserIdRef.current = sessionUserId;
+    if (!mountedRef.current) return;
+    setSnapshot(
+      toHookSnapshot(storeRef.current, leaderboardRef.current, sessionUserId),
+    );
+  }, [sessionUserId]);
+
   useEffect(() => {
     mountedRef.current = true;
     const { store, migrated } = readStoredGameStats();
@@ -2207,7 +2264,9 @@ export function useGameStats({
         // Keep the migrated in-memory store and retry persistence later.
       }
     }
-    setSnapshot(toHookSnapshot(store, leaderboardRef.current));
+    setSnapshot(
+      toHookSnapshot(store, leaderboardRef.current, sessionUserIdRef.current),
+    );
     setStatus(
       typeof navigator !== "undefined" && !navigator.onLine
         ? "offline"

@@ -124,7 +124,13 @@ export function useAuthSession(): UseAuthSessionResult {
   );
   const [session, setSession] = useState<Session | null>(null);
   const [passkeyUnavailable, setPasskeyUnavailable] = useState(false);
-  const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  // A fetched list belongs to exactly one account, so it is stored with the
+  // owner it was fetched for. Nothing here unmounts on sign-out, so without the
+  // owner the next account would inherit the previous one's credentials.
+  const [passkeys, setPasskeys] = useState<{
+    ownerId: string | null;
+    items: PasskeySummary[];
+  }>({ ownerId: null, items: [] });
   const [passkeysLoading, setPasskeysLoading] = useState(false);
 
   useEffect(() => {
@@ -156,6 +162,7 @@ export function useAuthSession(): UseAuthSessionResult {
   const activeSession =
     authAvailable && consent === "account" ? session : null;
   const hasSession = activeSession !== null;
+  const sessionUserId = activeSession?.user?.id ?? null;
 
   const chooseConsent = useCallback((choice: ConsentChoice) => {
     saveConsentChoice(choice);
@@ -295,14 +302,17 @@ export function useAuthSession(): UseAuthSessionResult {
         if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
         return { ok: false };
       }
-      setPasskeys((data ?? []).map(toPasskeySummary));
+      setPasskeys({
+        ownerId: sessionUserId,
+        items: (data ?? []).map(toPasskeySummary),
+      });
       return { ok: true };
     } catch {
       return { ok: false };
     } finally {
       setPasskeysLoading(false);
     }
-  }, [hasSession]);
+  }, [hasSession, sessionUserId]);
 
   const registerPasskey = useCallback(async (): Promise<AuthActionResult> => {
     const client = getSupabaseClient();
@@ -363,7 +373,7 @@ export function useAuthSession(): UseAuthSessionResult {
     chooseConsent,
     hasSession,
     sessionEmail: activeSession?.user?.email ?? null,
-    sessionUserId: activeSession?.user?.id ?? null,
+    sessionUserId,
     sessionNickname: metadataNickname(activeSession),
     getAccessToken,
     signUpEmail,
@@ -376,8 +386,10 @@ export function useAuthSession(): UseAuthSessionResult {
     signOutGlobal,
     passkeySupported,
     passkeyUnavailable,
-    // A signed-out panel must never still render the ended session's passkeys.
-    passkeys: hasSession ? passkeys : [],
+    // Neither a signed-out panel nor the next account to sign in may still see
+    // the previous session's passkeys, so the list is surfaced only to the
+    // account it was fetched for.
+    passkeys: passkeys.ownerId === sessionUserId ? passkeys.items : [],
     passkeysLoading,
     registerPasskey,
     signInWithPasskey,

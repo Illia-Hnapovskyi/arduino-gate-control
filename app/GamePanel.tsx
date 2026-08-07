@@ -18,6 +18,7 @@ import {
 } from "../shared/gameStats";
 import { GAME_COPY, SPACE_DEFENDER_COPY, type Language } from "./i18n";
 import { getSupabaseAccessToken } from "./auth/client";
+import { useAuthSession } from "./auth/useAuthSession";
 import { isGameRunActive, setGameRunActive } from "./AccountPanel";
 import { LeaderboardPanel, PlayerStatsPanel } from "./PlayerStatsPanel";
 import { useGameStats } from "./useGameStats";
@@ -336,9 +337,14 @@ export default function GamePanel({
 }: GamePanelProps) {
   const legacyCopy = GAME_COPY[language];
   const copy = SPACE_DEFENDER_COPY[language];
+  // The account is the identity: the hook needs the signed-in user so a profile
+  // another account left in this browser is never presented, played or extended
+  // as if it were this player's own.
+  const { sessionUserId } = useAuthSession();
   const gameStats = useGameStats({
     language,
     getAccessToken: getSupabaseAccessToken,
+    sessionUserId,
     isRunActive: isGameRunActive,
   });
   const connected = isPlayableConnection(connection);

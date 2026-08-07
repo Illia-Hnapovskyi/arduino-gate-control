@@ -270,7 +270,11 @@ export function AccountPanel({
     try {
       const session = await postAccountStats({ action: "session" });
       if (session.status === 200 && isProfileResponseLike(session.body)) {
-        stats.adoptSessionProfile(session.body);
+        // The server resolved this profile from the account link for this very
+        // token, so recording the owner is server-verified. Dropping it would
+        // leave a profile the deployed code-era build stored with a code and no
+        // owner looking orphaned forever, and it could never sync again.
+        stats.adoptSessionProfile(session.body, auth.sessionUserId);
         return;
       }
       if (session.status === 401) {
@@ -290,6 +294,7 @@ export function AccountPanel({
       setBusyAction(null);
     }
   }, [
+    auth.sessionUserId,
     copy.accountAuthError,
     copy.accountSessionExpired,
     postAccountStats,

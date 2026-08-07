@@ -162,3 +162,25 @@ test("the passkey surface matches the panel contract", async () => {
     assert.match(hookCallbackSource(source, name), /await listPasskeys\(\);/);
   }
 });
+
+test("a fetched passkey list never outlives the account it belongs to", async () => {
+  const source = await readSource("../app/auth/useAuthSession.ts");
+
+  // Nothing in the panel unmounts on sign-out, so the list survives a
+  // sign-out/sign-in cycle. Masking it on hasSession alone would let the next
+  // account render — and press delete on — the previous account's credentials
+  // while its own refresh is still in flight, or forever if that refresh fails.
+  assert.match(
+    source,
+    /useState<\{\s*ownerId: string \| null;\s*items: PasskeySummary\[\];\s*\}>\(\{ ownerId: null, items: \[\] \}\)/,
+  );
+  assert.match(
+    source,
+    /passkeys: passkeys\.ownerId === sessionUserId \? passkeys\.items : \[\]/,
+  );
+  assert.doesNotMatch(source, /passkeys: hasSession \? passkeys : \[\]/);
+
+  // Only a successful list writes the pair, and it records who it was for.
+  assert.equal(countMatches(source, /setPasskeys\(/g), 1);
+  assert.match(source, /setPasskeys\(\{\s*ownerId: sessionUserId,/);
+});

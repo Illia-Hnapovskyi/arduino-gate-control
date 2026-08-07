@@ -1010,30 +1010,37 @@ than trusting it as an invariant.
 
 ### Browser synchronization failure model
 
-For an account profile with `remoteConfirmed: false` and queued runs,
-`useGameStats` performs this strict sequence, always with the bearer token:
+For an account profile, `useGameStats` performs this strict sequence on every
+pass, always with the bearer token:
 
 ```text
-POST create (idempotent — an already-linked account gets its existing profile)
+optional POST session (ownership probe, only while authUserId is still unknown)
+  -> POST session (confirm, only when no rename and no runs are queued)
   -> optional queued rename
   -> POST sync batches of up to five pending run.completed events in order
   -> GET leaderboard
 ```
 
-If `create` fails or times out, no run and no leaderboard request is attempted
-in that pass. Optimistic totals and pending runs remain in `localStorage`; status
-becomes `error`. Retry/remount/online events resend the same create. This is a
-recoverable retry trap, not an autonomous React loop. With no session available
-the pass stops before the network with `auth_session_missing` and nothing is
-dropped.
+A sync pass never issues `create`. That action is sent only by the explicit
+nickname prompt (`createAccountProfile`), which the panel offers when the
+signed-in account has no profile — the state a `session` call reports as 404
+`AUTH_NOT_LINKED`. Do not expect `POST create` in the Network tab of a pass and
+do not conclude the build is stale when it is absent.
+
+If a step fails or times out, the later steps of that pass are not attempted.
+Optimistic totals and pending runs remain in `localStorage`; status becomes
+`error`. Retry/remount/online events replay the same pass from the top. This is
+a recoverable retry trap, not an autonomous React loop. With no session
+available the pass stops before the network with `auth_session_missing` and
+nothing is dropped.
 
 Never tell a user in this state to forget the profile: that can destroy the only
 copy of a queued result. The UI also hides that action while pending data is not
 synchronized. Deploy/fix the API, then hard-refresh if an old fetch is still
-pending and press the existing retry control once. A repeated `create` for the
-same account returns the same profile, pending events keep the original
-`runId`/`eventId`, and the server's canonical-payload ledger makes response-loss
-retries idempotent.
+pending and press the existing retry control once. Pending events keep the
+original `runId`/`eventId`, and the server's canonical-payload ledger makes
+response-loss retries idempotent; a repeated `create` from the prompt likewise
+returns the same profile rather than a second one.
 
 A migrated legacy profile that has an access code and no `authUserId` is a
 different case entirely: it is **orphaned** (`isOrphanedProfile`). It is never
@@ -1043,6 +1050,19 @@ sends nothing about that profile and sets the client-side code
 credential left to prove ownership, so its totals are not merged into a new
 account profile. The snapshot exposes `hasOrphanedProfiles` so the UI can explain
 this once and offer the existing recovery export.
+
+A vault entry whose `authUserId` is a *different* account than the one signed in
+(`isForeignProfile`) is a third case, and the normal one on a shared browser
+after a sign-out/sign-in as somebody else. The entry is never deleted or
+modified, but the snapshot hides it: `profile`, `profileOwnerId`, `pendingCount`
+and `progression` read as if there were no profile, so the panel offers the
+nickname prompt to the new account and the game's start button stays locked. A
+sync pass skips it silently — it is not this session's queue to push — and
+`recordRun` refuses with `profile-mismatch` if the account changes mid-run,
+rather than crediting the run to the previous account. Everything becomes usable
+again the moment the owning account signs back in. `activeProfileId`, `profiles`
+and `hasOrphanedProfiles` still describe the whole vault, which is deliberately
+session-independent.
 
 The profile and leaderboard currently share one hook-level status. A create
 failure can therefore make an unrequested empty leaderboard look authoritative.
