@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { PasskeyListItem, Session } from "@supabase/supabase-js";
 import {
+  completeAuthRedirect,
   getSupabaseAccessToken,
   getSupabaseClient,
   readConsentChoice,
@@ -138,8 +139,12 @@ export function useAuthSession(): UseAuthSessionResult {
     const client = getSupabaseClient();
     if (!client) return;
     let disposed = false;
-    void client.auth
-      .getSession()
+    // Finish any provider redirect before reading the session: on the way back
+    // from Google the session does not exist yet, and asking first would settle
+    // this hook on "signed out" for the rest of the page's life.
+    void completeAuthRedirect()
+      .catch(() => "failed" as const)
+      .then(() => client.auth.getSession())
       .then(({ data }) => {
         if (!disposed) setSession(data.session);
       })

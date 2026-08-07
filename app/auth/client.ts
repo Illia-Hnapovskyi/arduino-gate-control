@@ -82,6 +82,64 @@ export function getSupabaseClient(): SupabaseClient | null {
   return cachedClient;
 }
 
+// ── Completing a provider redirect ────────────────────────────────────────
+// The client is built with detectSessionInUrl disabled so that constructing it
+// never touches the network or storage on its own. That makes finishing the
+// PKCE round trip this module's job: the provider returns to the page with
+// `?code=`, and without an explicit exchange the player simply lands back on
+// the site still signed out, with no error to explain why.
+
+export type AuthRedirectOutcome = "none" | "signed-in" | "cancelled" | "failed";
+
+const REDIRECT_PARAMS = [
+  "code",
+  "state",
+  "error",
+  "error_code",
+  "error_description",
+];
+
+function stripRedirectParams() {
+  const url = new URL(window.location.href);
+  let touched = false;
+  for (const key of REDIRECT_PARAMS) {
+    if (!url.searchParams.has(key)) continue;
+    url.searchParams.delete(key);
+    touched = true;
+  }
+  if (!touched) return;
+  const query = url.searchParams.toString();
+  window.history.replaceState(
+    null,
+    "",
+    `${url.pathname}${query ? `?${query}` : ""}${url.hash}`,
+  );
+}
+
+export async function completeAuthRedirect(): Promise<AuthRedirectOutcome> {
+  if (typeof window === "undefined") return "none";
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  const error = params.get("error");
+  if (!code && !error) return "none";
+
+  // Strip before the first await. An authorization code left in the address bar
+  // survives in history, gets copied into a chat message with the rest of the
+  // URL, and stays redeemable until it is spent. Both values are captured above.
+  stripRedirectParams();
+
+  if (error) return error === "access_denied" ? "cancelled" : "failed";
+  const client = getSupabaseClient();
+  if (!client || !code) return "failed";
+  try {
+    const { error: exchangeError } =
+      await client.auth.exchangeCodeForSession(code);
+    return exchangeError ? "failed" : "signed-in";
+  } catch {
+    return "failed";
+  }
+}
+
 // Standalone token provider for useGameStats({ getAccessToken }) — usable
 // outside React. Returns null whenever account mode is unavailable, so the
 // legacy access-code sync path stays untouched.
