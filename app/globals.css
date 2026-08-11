@@ -1971,6 +1971,12 @@ footer > p {
   box-shadow: 0 24px 58px rgba(23, 32, 29, 0.11);
   min-width: 0;
   padding: 26px;
+  /* Both cards are light surfaces that render inside .space-menu-shell, which
+     sets the near-white --space-ink for its own dark background. Without this
+     reset every child that does not name its own colour — the heading, the
+     nickname, the stat values, the account address — inherits near-white onto
+     cream and disappears. */
+  color: var(--ink);
 }
 
 .player-profile-card {
@@ -5825,7 +5831,7 @@ kbd {
 
 .account-divider {
   align-items: center;
-  color: #77817d;
+  color: var(--muted);
   display: flex;
   font-size: 10px;
   font-weight: 750;
@@ -6099,7 +6105,7 @@ kbd {
 }
 
 .consent-note {
-  color: #77817d;
+  color: var(--muted);
   font-size: 10px;
   line-height: 1.5;
   margin: 10px 0 0;
