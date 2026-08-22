@@ -17,13 +17,21 @@ import {
   type PlayerStats,
 } from "../shared/gameStats";
 import { GAME_COPY, SPACE_DEFENDER_COPY, type Language } from "./i18n";
-import { getSupabaseAccessToken } from "./auth/client";
+import {
+  completeAuthRedirect,
+  getSupabaseAccessToken,
+  type AuthRedirectKind,
+} from "./auth/client";
 import { useAuthSession } from "./auth/useAuthSession";
 import { isGameRunActive, setGameRunActive } from "./AccountPanel";
 import { LeaderboardPanel, PlayerStatsPanel } from "./PlayerStatsPanel";
 import { useGameStats } from "./useGameStats";
 import type { GameRunRecordResult } from "./useGameStats";
-import { formatGameControlSummary, GameMenu } from "./game/GameMenu";
+import {
+  formatGameControlSummary,
+  GameMenu,
+  type GameMenuSection,
+} from "./game/GameMenu";
 import { POWER_UP_BALANCE } from "./game/balance";
 import {
   EMPTY_ACHIEVEMENT_STATS,
@@ -313,6 +321,29 @@ function getBrowserLocalStorage(): Storage | null {
   }
 }
 
+// ── The menu section a redirect asks for: one claim per page load ──────────
+// The request belongs to the page load, not to this component, for the same
+// reason as the redirect notice it exists to reveal (the module-level store in
+// auth/useAuthSession.ts). GamePanel is mounted only while the game tab is
+// open, so leaving that tab and coming back mounts it again, and the memoised
+// redirect used to re-open the profile section long after the player read the
+// notice and dismissed it. The notice is retired for good; the section that
+// reveals it has to retire with it.
+let redirectSectionClaimed = false;
+
+function claimRedirectSection(kind: AuthRedirectKind): GameMenuSection | null {
+  if (redirectSectionClaimed) return null;
+  // Claimed whatever the outcome was, so one settled redirect can open the
+  // section once and never again on this page load.
+  redirectSectionClaimed = true;
+  // Every redirect that really happened lands on the profile: a failed or
+  // cancelled one to put the notice next to the form for retrying, and a
+  // successful one because the profile is where the player was going — signing
+  // in used to drop them on "play" with the account panel a click away again. A
+  // page load without a redirect (`none`) leaves the menu on its own default.
+  return kind === "none" ? null : "profile";
+}
+
 function displayGameKey(code: string) {
   if (code === "Space") return "SPACE";
   return code
@@ -348,6 +379,38 @@ export default function GamePanel({
     isRunActive: isGameRunActive,
   });
   const connected = isPlayableConnection(connection);
+  // Where a redirect leaves the player. The account panel both renders the
+  // redirect notice and IS the profile, and it exists only while the profile
+  // section of the menu is open — so either half of a round trip used to land
+  // on whichever section the menu opens on: a failed or cancelled sign-in with
+  // nothing said anywhere, and a successful one with the profile still a click
+  // away. Read from the memoised redirect rather than from the hook's
+  // dismissible outcome: dismissing the notice must not move the player
+  // somewhere else.
+  const [redirectSection, setRedirectSection] =
+    useState<GameMenuSection | null>(null);
+
+  // Spent when the player starts playing — see startGame/continueGame. The menu
+  // resolves the request during render rather than copying it into state, so
+  // clearing it has to happen on an event, not in an effect.
+  const forgetRedirectSection = useCallback(() => {
+    setRedirectSection(null);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void completeAuthRedirect().then((redirect) => {
+      // Claim after the mount check, never before: StrictMode tears the first
+      // mount down before this settles, and a claim spent by that dead effect
+      // would leave the live one with nothing to open.
+      if (!active) return;
+      const section = claimRedirectSection(redirect.kind);
+      if (section) setRedirectSection(section);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const [uiStatus, setUiStatus] = useState<GameUiStatus>("menu");
   const [mode, setMode] = useState<GameModeId>("expedition");
@@ -997,6 +1060,11 @@ export default function GamePanel({
       activeResumeSnapshot ||
       (result && !result.saved)
     ) return;
+    // The redirect's section request is spent the moment the player starts
+    // playing. The menu is unmounted for the length of a run, so a request
+    // still held here would win again on the remount afterwards and re-open the
+    // profile section after every single game.
+    forgetRedirectSection();
     const runId = generateRunId();
     const world = createGameWorld(
       runId,
@@ -1050,6 +1118,7 @@ export default function GamePanel({
   }, [
     activeResumeSnapshot,
     connection,
+    forgetRedirectSection,
     difficulty,
     drawWorld,
     gameStats.profile,
@@ -1068,6 +1137,7 @@ export default function GamePanel({
       activeResumeSnapshot.profileOwnerId !== gameStats.profileOwnerId ||
       !connected
     ) return;
+    forgetRedirectSection();
     const world = restoreGameWorld(activeResumeSnapshot);
     previousHighScoreRef.current = gameStats.profile.highScore;
     achievementBaselineRef.current = createAchievementBaseline(
@@ -1099,6 +1169,7 @@ export default function GamePanel({
   }, [
     activeResumeSnapshot,
     connected,
+    forgetRedirectSection,
     gameStats.profile,
     gameStats.profileOwnerId,
     gameStats.progression,
@@ -1595,6 +1666,7 @@ export default function GamePanel({
               onRetryUnsavedResult={retryResultSave}
               onStart={startGame}
               preferences={preferences}
+              requestedSection={redirectSection}
               resumeCompatible={Boolean(activeResumeSnapshot?.profileOwnerId)}
               resumeSummary={activeResumeSnapshot
                 ? {

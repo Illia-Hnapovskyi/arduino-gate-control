@@ -30,9 +30,13 @@ the user-facing setup guide.
   `accessCode`, mints none, and returns none. `SUPABASE_PUBLISHABLE_KEY` in
   `app/auth/supabaseConfig.ts` holds the real PUBLIC key, so
   `authAvailable === true`.
-- Email/password sign-up and email confirmation are enabled in the live project.
-  Google is NOT configured in the Dashboard, and passkeys need one Dashboard
-  toggle; both must degrade gracefully instead of surfacing a raw error.
+- Email/password sign-up and email confirmation, Google, and passkeys are all
+  enabled in the live project as of 2026-08-22. Every one of them must still
+  degrade gracefully instead of surfacing a raw error: the same build runs
+  against projects where a provider or the passkey toggle is off.
+- The PKCE callback is completed in exactly ONE place,
+  `completeAuthRedirect()` in `app/auth/client.ts`; see section 12 for the
+  contract. Never add a second handler.
 - No cookies and no committed secrets. Auth sessions and the consent choice
   live in localStorage only.
 - `worker/`, D1/Drizzle, Next.js, and vinext files are optional legacy paths,
@@ -119,10 +123,10 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | Path | Responsibility |
 | --- | --- |
 | `src/main.tsx` | Vite entry point; mounts `app/page.tsx` and imports global CSS. |
-| `app/page.tsx` | Main control panel, language state, Web Serial lifecycle, telemetry parsing, gate/radar/demo state. |
+| `app/page.tsx` | Main control panel, language state (including the `?lang=` URL override), tab state and its single writer `selectTab`, the awaited auth-redirect outcome and the password-reset dialog, Web Serial lifecycle, telemetry parsing, gate/radar/demo state. |
 | `app/GamePanel.tsx` | Space Defender orchestration: menu, runtime loop, lifecycle, checkpoint, stats, input, audio, and canvas composition. |
 | `app/PlayerStatsPanel.tsx` | Account-gated profile UI: nickname prompt, rename, personal stats, leaderboard, retired-code notice. No access-code input exists. |
-| `app/AccountPanel.tsx` | Sign up / sign in / sign out / password reset UI over `useAuthSession`, plus the passkey section and the gracefully degrading Google button. |
+| `app/AccountPanel.tsx` | Sign up / sign in / sign out / password reset UI over `useAuthSession`, plus the set-password form for a signed-in player, the dismissible failed/cancelled redirect notice, the passkey section and the gracefully degrading Google button. |
 | `app/ConsentPanel.tsx` | First-visit consent choice (`local` vs `account`) in localStorage; nothing Supabase is constructed before `account`. |
 | `app/useGameStats.ts` | Offline-first v3 multi-profile store, v1/v2 migration, optimistic totals, event queue, bearer-only sync, orphaned legacy profiles, reconnect and deduplication. |
 | `app/auth/supabaseConfig.ts` | Committed public Supabase URL, the PUBLIC publishable key, `authAvailable` and `APPLE_ENABLED` flags. There is no passkey flag: the server decides and the client discovers via `passkey_disabled`. |
@@ -138,7 +142,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `app/game/audio.ts`, `app/game/useGameAudio.ts` | Browser Web Audio, sector music, and Arduino buzzer command routing. |
 | `app/game/persistence.ts`, `app/game/resume.ts` | Validated seven-day v2 checkpoints and safe between-wave restoration. |
 | `app/game/statsAdapter.ts` | Converts a runtime result to the shared v2 statistics contract. |
-| `app/game/GameMenu.tsx`, `app/game/GameHud.tsx`, `app/game/GameOverlays.tsx`, `app/game/ProgressPanels.tsx` | Menu, HUD, pause/upgrade/result/toast overlays, achievements, and career panels. |
+| `app/game/GameMenu.tsx`, `app/game/GameHud.tsx`, `app/game/GameOverlays.tsx`, `app/game/ProgressPanels.tsx` | Menu, HUD, pause/upgrade/result/toast overlays, achievements, and career panels. The menu section is the player's own choice when they have made one, otherwise `requestedSection` (the auth redirect asking for the profile panel, claimed once per page load). |
 | `app/i18n.ts` | All Ukrainian, German, and English page/game copy. |
 | `app/globals.css` | Entire visual system and responsive behavior; there is no component CSS framework. |
 | `shared/gameStats.ts` | Browser-safe API types, generators, normalization, and shared validation. This is the contract source of truth. |
@@ -221,14 +225,45 @@ stack in the repository.
 
 `app/page.tsx` is a single stateful application rather than a routed SPA. The
 top-level tabs switch between the control panel and the game. Entering/leaving
-the game tab stops conflicting Arduino modes.
+the game tab stops conflicting Arduino modes. There are exactly two URL controls,
+both read once on load and neither of them a route: `view=game` (see the auth
+redirect contract in section 12) and `lang` below. The tab is React state with a
+single writer — `selectTab` — so anything that wants the game tab, a redirect
+included, goes through it and keeps its guards: it refuses to leave the game
+while `gameDataAtRisk`, and stops `AUTO`/`RADAR` before entering.
 
 Language state:
 
 - supported values: `uk`, `de`, `en`;
 - localStorage key: `arduino-gate-language`;
 - same-tab updates use `arduino-gate-language-change`;
-- cross-tab updates use the browser `storage` event.
+- cross-tab updates use the browser `storage` event;
+- `?lang=uk|de|en` in the URL wins over the stored value, and is then persisted
+  through `saveLanguage`, so precedence is URL > localStorage > `uk`. It is
+  applied at module load, before the first `useSyncExternalStore` snapshot, so
+  the page never paints the stored language first;
+- the language is NOT routed through localStorage alone. `saveLanguage` records
+  it in the module-level `languageOverride` first, and `readLanguage` prefers
+  that over the stored value, because a browser that allows reads and refuses
+  writes would otherwise lose the parameter outright rather than just its
+  persistence: the refused write is swallowed, the change event still fires, and
+  the snapshot re-reads the OLD stored value, so the page paints Ukrainian for
+  the German reader — in a private window, which is where a shared link gets
+  opened. A `storage` event clears the override before notifying, so another
+  tab's newer choice still wins. The override holds a plain string, so the
+  snapshot stays cheap and stable for an unchanged store;
+- both storage calls are wrapped in `try/catch`, and neither guard is cosmetic.
+  The write runs during module evaluation — before `src/main.tsx` renders
+  anything — so a throw there aborts the import and paints nothing; the read is
+  the snapshot function, so a document where reading storage throws instead of
+  merely refusing writes would blow up during render. The read falls back to the
+  override and then to `uk`;
+- an unknown or malformed `lang` is ignored rather than throwing, and `lang` is
+  deliberately LEFT in the address bar: the point of the parameter is a link the
+  user pastes into a job application, and whoever copies it onward must get the
+  same language. Both halves of the auth round trip honour that — the strip in
+  `app/auth/client.ts` excludes it, and `authRedirectTarget()` carries it out and
+  back.
 
 Game profile state:
 
@@ -795,10 +830,65 @@ Production prerequisites managed outside Git:
   `authAvailable === true` and the account UI is live. Never commit the
   secret/service-role key. The `authAvailable === false` branch is kept as a
   degradation path, not as the current state.
-- Email/password sign-up and email confirmation are enabled in the live project.
-  Google is NOT configured in the Dashboard: the button is rendered, the OAuth
-  call fails, and the UI must show `accountProviderUnavailable` rather than a raw
-  error. See the Dashboard checklist in `SUPABASE_SETUP.md`.
+- Email/password sign-up and email confirmation are enabled in the live project,
+  and so are Google and passkeys (as of 2026-08-22). The graceful-degradation
+  paths stay regardless: a failing or unconfigured OAuth call must show
+  `accountProviderUnavailable`, never a raw provider error, because the same
+  build also runs against projects where the provider is off. See the Dashboard
+  checklist in `SUPABASE_SETUP.md`.
+- One redirect handler, one exchange. `completeAuthRedirect()` in
+  `app/auth/client.ts` is the only caller of `exchangeCodeForSession`, and it is
+  handed the `code`, never the href — passing the href is a silent always-fails
+  call. It memoises a module-level promise, so `app/page.tsx` and
+  `useAuthSession` can both await it in any order and any number of times
+  (StrictMode's second mount included) and the single-use code is still spent
+  exactly once. It strips `code`, `state`, `error`, `error_code`,
+  `error_description`, `reset` and `view` before its first await — a code left in
+  the address bar stays redeemable and survives in history — and deliberately
+  leaves `lang` alone. It answers with a kind (`none`, `signed-in`, `cancelled`,
+  `failed`) instead of a Supabase error: a BARE `access_denied` is the player
+  closing the provider window and must read as a neutral fact, anything else as a
+  failure, and both reach the panel through `redirectOutcome`. "Bare" is
+  load-bearing: GoTrue answers every 403 with `access_denied`, an expired or
+  already-used e-mail link included (`error_code=otp_expired`), so an
+  `access_denied` that carries an `error_code` is a server-side refusal and must
+  NOT claim a window was closed that the player never opened. Never add a second
+  handler: two of them both strip the URL and race, so whichever runs second
+  finds nothing.
+- All three redirect targets (`emailRedirectTo`, the OAuth `redirectTo`, and the
+  password-reset `redirectTo`) are built through `URL`/`URLSearchParams` in
+  `authRedirectTarget()` and carry `view=game`, so a player who signed in from
+  the game menu lands back on the game tab instead of the control tab. The origin
+  is the base, but every current query parameter except `REDIRECT_PARAMS` travels
+  along, so `lang` survives the round trip as promised above instead of being
+  dropped one step before the strip that spares it; the fragment is left behind.
+  The reset link also carries `reset=1`, and only
+  `passwordReset && kind === "signed-in"` opens the reset dialog — a hand-typed
+  `?reset=1` does not.
+- The failed/cancelled notice belongs to the page load, not to a component. Its
+  state lives at module scope in `app/auth/useAuthSession.ts` behind
+  `useSyncExternalStore`, because `AccountPanel` mounts and unmounts with the
+  profile section of the game menu: per-instance state let the memoised promise
+  republish a dismissed notice on the next visit. Retiring it is final, and an
+  arriving session retires it, so "the sign-in did not complete" can never sit
+  above a signed-in panel. `GamePanel` opens the profile section for every
+  redirect that actually happened — a failed or cancelled one because the
+  only component that renders the notice is otherwise not mounted where the
+  redirect lands, and a signed-in one because the profile is where the player was
+  going, and landing on the game tab alone still left them a click short of it. A
+  page load without a redirect (`kind === "none"`) keeps the menu's own default.
+  That request is claimed once per page load through a module-level flag in
+  `app/GamePanel.tsx`, for the same reason the notice lives at module scope:
+  `GamePanel` unmounts with the game tab, so a per-mount guard let the memoised
+  promise re-open the section after the player had dismissed the notice it exists
+  to reveal. The claim is spent whatever the kind was, so making it one-shot does
+  not cost the signed-in case its landing.
+- A signed-in player can set or change a password directly in `AccountPanel`
+  (`updatePassword`, no e-mail involved), which is the only route that works for
+  a Google-created account while built-in SMTP mails project team members only.
+  The UI deliberately does not try to detect whether a password already exists:
+  `user.identities` does not answer that reliably, and one neutral action is
+  better than a label that guesses wrong.
 - Consent model: no cookies of any kind. The consent choice
   (`arduino-gate-consent:v1`) and the Supabase Auth session live in
   localStorage; the Supabase client is not even constructed until the user
@@ -816,10 +906,11 @@ Production prerequisites managed outside Git:
 - Passkeys/WebAuthn are implemented in the browser client and cost nothing extra
   (they are part of Supabase Auth, not a paid add-on). They stay dormant until one
   Dashboard toggle is on: **Authentication → Passkeys** → *Enable Passkey
-  authentication*, plus the Relying Party details. Until then every passkey call
-  returns error code `passkey_disabled`; that is the expected state, and both
-  `useAuthSession` and the UI must treat it as "not switched on" rather than
-  surfacing a raw error.
+  authentication*, plus the Relying Party details. That toggle is on in the live
+  project, but the dormant case stays the contract for every other project this
+  build runs against: without it each passkey call returns error code
+  `passkey_disabled`, which both `useAuthSession` and the UI must treat as "not
+  switched on" rather than surfacing a raw error.
 - Supabase flags the passkey API as **experimental** and states it may change
   without notice, so the client opts in explicitly through
   `auth: { experimental: { passkey: true } }` in `app/auth/client.ts`.

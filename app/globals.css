@@ -5954,6 +5954,78 @@ kbd {
   margin: 12px 0 0;
 }
 
+/* Outcome of a provider redirect. Both variants sit on the light account card
+   inside .space-menu-shell, so each names its own colour: anything that does
+   not inherits the near-white --space-ink onto cream and vanishes. */
+.account-redirect-notice {
+  align-items: flex-start;
+  background: rgba(23, 32, 29, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--ink);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding: 11px 12px;
+}
+
+/* A failed sign-in gets the warning tint the retired-code notice already uses.
+   A cancelled one keeps the neutral surface above: the player closed the
+   provider window, which is a decision rather than a mistake. */
+.account-redirect-notice.is-failed {
+  background: rgba(215, 164, 75, 0.12);
+  border-color: rgba(173, 122, 32, 0.2);
+  color: #74531a;
+}
+
+.account-redirect-notice p {
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
+  min-width: 0;
+}
+
+.account-redirect-dismiss {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1;
+  min-height: 28px;
+  min-width: 28px;
+}
+
+.account-password-set {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+/* The form is a grid, so its heading and hint leave the spacing to the row gap
+   rather than adding margins of their own. Both also name their colour, as the
+   surrounding light card does, so neither inherits --space-ink onto cream. */
+.account-password-set h4,
+.account-password-set p {
+  margin: 0;
+}
+
+.account-password-set h4 {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.account-password-set p {
+  color: #65716c;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .account-passkeys {
   border-top: 1px solid var(--line);
   margin-top: 16px;

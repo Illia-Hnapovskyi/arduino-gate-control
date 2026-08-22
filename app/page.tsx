@@ -12,9 +12,13 @@ import {
 } from "react";
 import GamePanel from "./GamePanel";
 import { GAME_COPY, LANGUAGE_OPTIONS, PAGE_COPY, type Language } from "./i18n";
-import { AccountDialog, setGameActivityBlocked } from "./AccountPanel";
+import {
+  AccountDialog,
+  MIN_PASSWORD_LENGTH,
+  setGameActivityBlocked,
+} from "./AccountPanel";
 import ConsentPanel from "./ConsentPanel";
-import { getSupabaseClient, type ConsentChoice } from "./auth/client";
+import { completeAuthRedirect, type ConsentChoice } from "./auth/client";
 import { authAvailable } from "./auth/supabaseConfig";
 import {
   useAuthSession,
@@ -81,24 +85,50 @@ function isGateStatusMessage(message: GateMessage) {
 
 const CLOSED_ANGLE = 10;
 const OPEN_ANGLE = 90;
-
-// PKCE/reset callbacks must run exactly once even under React StrictMode's
-// double-invoked effects — a module-level flag survives the remount.
-let authCallbackHandled = false;
 const RADAR_MIN_ANGLE = 15;
 const RADAR_MAX_ANGLE = 165;
 const RADAR_MAX_DISTANCE = 200;
 const LANGUAGE_EVENT = "arduino-gate-language-change";
 
+// The language this document was asked to show, held in memory as well as in
+// the store. Routing `?lang=` through localStorage alone loses the parameter
+// outright in a browser that allows reads and refuses writes — a private
+// window, which is exactly where a link sent to an employer gets opened: the
+// refused write is swallowed, the change event still fires, and readLanguage
+// re-reads the OLD stored value, so the page paints Ukrainian for the German
+// reader the parameter exists for. Preferring this over the store keeps the
+// URL — and a click on a language button — in charge even when nothing can be
+// persisted. It holds a plain string, so the useSyncExternalStore snapshot
+// stays cheap and keeps returning the same value until something actually
+// chooses another language.
+let languageOverride: Language | null = null;
+
 function readLanguage(): Language {
   if (typeof window === "undefined") return "uk";
-  const savedLanguage = window.localStorage.getItem("arduino-gate-language");
-  return savedLanguage === "de" || savedLanguage === "en" ? savedLanguage : "uk";
+  if (languageOverride) return languageOverride;
+  try {
+    const savedLanguage = window.localStorage.getItem("arduino-gate-language");
+    return savedLanguage === "de" || savedLanguage === "en"
+      ? savedLanguage
+      : "uk";
+  } catch {
+    // This is the store snapshot, so a throw here happens during render and
+    // takes the whole page down with it — and a document where reading storage
+    // throws instead of merely refusing writes is a real one (a sandboxed
+    // frame, blocked third-party storage). The in-memory language above already
+    // had its turn, so the default is all that is left to fall back to.
+    return "uk";
+  }
 }
 
 function subscribeToLanguage(callback: () => void) {
   const onStorage = (event: StorageEvent) => {
-    if (event.key === "arduino-gate-language") callback();
+    if (event.key !== "arduino-gate-language") return;
+    // Another tab just wrote a newer choice than whatever this document was
+    // asked to show, so the in-memory language is stale: drop it and let the
+    // snapshot read the store again. Cross-tab updates keep working as before.
+    languageOverride = null;
+    callback();
   };
   window.addEventListener("storage", onStorage);
   window.addEventListener(LANGUAGE_EVENT, callback);
@@ -109,9 +139,39 @@ function subscribeToLanguage(callback: () => void) {
 }
 
 function saveLanguage(language: Language) {
-  window.localStorage.setItem("arduino-gate-language", language);
+  // Recorded before the write and independently of whether it succeeds: this
+  // is the value the next readLanguage answers with, so a refused write costs
+  // persistence across visits and nothing about this one.
+  languageOverride = language;
+  try {
+    window.localStorage.setItem("arduino-gate-language", language);
+  } catch {
+    // A store at quota or a private mode that allows reads and refuses writes
+    // must cost persistence, never the page: this now also runs at module load
+    // for `?lang=`, and a throw there aborts the import before src/main.tsx can
+    // render anything at all. Same trade as saveConsentChoice in auth/client.ts.
+  }
   window.dispatchEvent(new Event(LANGUAGE_EVENT));
 }
+
+// A link shared as `?lang=de` has to open in that language even in a browser
+// that already stored another one, so the parameter wins on load and is then
+// persisted through the normal store — the language buttons and later visits
+// behave exactly as before. That same call also records it in memory, which is
+// what makes the parameter win in a browser that refuses to keep it at all.
+// Applying it at module load, before the first snapshot is read, keeps the page
+// from painting the stored language first.
+// `lang` stays in the address bar on purpose: the reader may pass the link on.
+// An unknown or malformed value is ignored, which leaves the stored value —
+// and finally "uk" — in charge.
+function applyLanguageFromUrl() {
+  if (typeof window === "undefined") return;
+  const requested = new URLSearchParams(window.location.search).get("lang");
+  const option = LANGUAGE_OPTIONS.find((entry) => entry.code === requested);
+  if (option) saveLanguage(option.code);
+}
+
+applyLanguageFromUrl();
 
 function radarCoordinates(angle: number, distance: number) {
   const radians = ((angle - 90) * Math.PI) / 180;
@@ -168,6 +228,8 @@ export default function Home() {
     useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const writerRef =
     useRef<WritableStreamDefaultWriter<Uint8Array> | null>(null);
+  const selectTabRef =
+    useRef<((nextTab: SiteTab) => Promise<void>) | null>(null);
   const connectionAttemptRef = useRef(0);
   const closingPortRef = useRef(false);
   const statusMessageVersionRef = useRef(0);
@@ -207,42 +269,6 @@ export default function Home() {
     setGameActivityBlocked(gameDataAtRisk);
     return () => setGameActivityBlocked(false);
   }, [gameDataAtRisk]);
-
-  useEffect(() => {
-    if (authCallbackHandled) return;
-    authCallbackHandled = true;
-    const href = window.location.href;
-    const url = new URL(href);
-    const hasAuthParams =
-      url.searchParams.has("code") || url.searchParams.has("error");
-    const isPasswordReset = url.searchParams.get("reset") === "1";
-    if (!hasAuthParams && !isPasswordReset) return;
-    // Strip the query and hash immediately — success or error — so the
-    // one-time code never lingers in the address bar or browser history.
-    window.history.replaceState(null, "", url.pathname);
-    if (!authAvailable) return;
-    const client = getSupabaseClient();
-    if (!client) return;
-    if (hasAuthParams) {
-      client.auth
-        .exchangeCodeForSession(href)
-        .then(({ error }) => {
-          if (isPasswordReset && !error) setPasswordResetOpen(true);
-        })
-        .catch(() => {
-          // The URL is already clean; the account panel offers sign-in again.
-        });
-      return;
-    }
-    void client.auth
-      .getSession()
-      .then(({ data }) => {
-        if (data.session) setPasswordResetOpen(true);
-      })
-      .catch(() => {
-        // Without a session the reset dialog cannot update the password.
-      });
-  }, []);
 
   const applyMessage = useCallback((message: GateMessage) => {
     if (typeof message.distance === "number") {
@@ -867,6 +893,37 @@ export default function Home() {
     setActiveTab(nextTab);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
+  // `selectTab` is a fresh closure on every render, so the mount-only redirect
+  // effect below reaches the current one through a ref instead of re-running
+  // whenever that identity changes. This effect is declared first, so the ref
+  // is populated before the redirect can settle.
+  useEffect(() => {
+    selectTabRef.current = selectTab;
+  });
+
+  // The provider redirect is completed in exactly one place: client.ts strips
+  // the one-time code before its first await and memoises the exchange, so this
+  // effect only reacts to the outcome, and StrictMode's second mount sees the
+  // same settled result instead of a spent code.
+  useEffect(() => {
+    let active = true;
+    void completeAuthRedirect().then((redirect) => {
+      if (!active) return;
+      // Only a redirect that actually established a session can set a new
+      // password; anything else leaves the account panel offering sign-in.
+      if (redirect.passwordReset && redirect.kind === "signed-in") {
+        setPasswordResetOpen(true);
+      }
+      // Go through selectTab rather than setActiveTab: entering the game tab
+      // has to stop auto and radar mode on the board first, exactly as a click
+      // on the tab does.
+      if (redirect.view === "game") void selectTabRef.current?.("game");
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const sendGameCommand = useCallback(
     (command: string) => {
@@ -1699,7 +1756,7 @@ function PasswordResetDialog({
     event.preventDefault();
     if (busy || done) return;
     setDialogError(null);
-    if (password.length < 8) {
+    if (password.length < MIN_PASSWORD_LENGTH) {
       setDialogError(copy.accountPasswordTooShort);
       return;
     }
@@ -1740,7 +1797,7 @@ function PasswordResetDialog({
             data-dialog-initial-focus
             disabled={busy}
             id={inputId}
-            minLength={8}
+            minLength={MIN_PASSWORD_LENGTH}
             onChange={(event) => {
               setPassword(event.target.value);
               setDialogError(null);

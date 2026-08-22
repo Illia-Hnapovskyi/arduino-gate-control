@@ -19,6 +19,7 @@ import {
 } from "../shared/gameStats";
 import { useAuthSession } from "./auth/useAuthSession";
 import ConsentPanel from "./ConsentPanel";
+import { GAME_COPY } from "./i18n";
 import type { PlayerStatsCopy } from "./PlayerStatsPanel";
 import { GameStatsClientError } from "./useGameStats";
 import type { UseGameStatsResult } from "./useGameStats";
@@ -175,11 +176,17 @@ type AccountBusyAction =
   | "passkey-signin"
   | "passkey-add"
   | "passkey-delete"
+  | "password-set"
   | "signout"
   | "signout-all"
   | "session";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Sign-up, the in-panel password form and the reset dialog in page.tsx share one
+// minimum, so a password accepted by any of them can never be one another would
+// have refused.
+export const MIN_PASSWORD_LENGTH = 8;
 
 function extractErrorCode(body: unknown): string | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
@@ -211,6 +218,11 @@ export function AccountPanel({
   stats,
 }: AccountPanelProps) {
   const auth = useAuthSession();
+  // PlayerStatsCopy is declared in PlayerStatsPanel and does not list the keys
+  // added for this panel's own forms. They are read from the same language table
+  // the callers build `copy` from, so this is that object under a second name
+  // rather than a second source of copy.
+  const panelCopy = GAME_COPY[language];
   const emailId = useId();
   const passwordId = useId();
   const nicknameId = useId();
@@ -358,7 +370,7 @@ export function AccountPanel({
       setErrorText(copy.accountEmailInvalid);
       return;
     }
-    if (password.length < 8) {
+    if (password.length < MIN_PASSWORD_LENGTH) {
       setErrorText(copy.accountPasswordTooShort);
       return;
     }
@@ -423,6 +435,28 @@ export function AccountPanel({
     if (!result.ok) setErrorText(copy.accountProviderUnavailable);
   };
 
+  // One action for both setting a first password and changing an existing one.
+  // Nothing on the session reliably says which it is — the provider list on the
+  // user object does not answer it — and a label that guesses wrong is worse
+  // than a neutral one.
+  const handleSetPassword = async (nextPassword: string) => {
+    if (actionsDisabled) return false;
+    clearMessages();
+    if (nextPassword.length < MIN_PASSWORD_LENGTH) {
+      setErrorText(copy.accountPasswordTooShort);
+      return false;
+    }
+    setBusyAction("password-set");
+    const result = await auth.updatePassword(nextPassword);
+    setBusyAction(null);
+    if (!result.ok) {
+      setErrorText(copy.accountAuthError);
+      return false;
+    }
+    setNotice(panelCopy.accountPasswordSetSuccess);
+    return true;
+  };
+
   // A passkey call resolves { ok: false } for three indistinguishable reasons:
   // the player cancelled the browser prompt, the project has passkeys switched
   // off (which raises passkeyUnavailable and swaps the button for a notice), or
@@ -484,6 +518,15 @@ export function AccountPanel({
     stats.switchProfile(profileId);
   };
 
+  // "none" and "signed-in" speak for themselves. The other two would otherwise
+  // drop the player back on the sign-in form with nothing said at all.
+  const redirectFailed = auth.redirectOutcome === "failed";
+  const redirectNotice = redirectFailed
+    ? panelCopy.accountRedirectFailed
+    : auth.redirectOutcome === "cancelled"
+      ? panelCopy.accountRedirectCancelled
+      : null;
+
   return (
     <section aria-label={copy.accountTitle} className="account-section">
       <div className="account-heading">
@@ -505,6 +548,30 @@ export function AccountPanel({
           mode="inline"
           onChoose={handleConsentChoice}
         />
+      )}
+
+      {redirectNotice && (
+        <div
+          className={
+            redirectFailed
+              ? "account-redirect-notice is-failed"
+              : "account-redirect-notice"
+          }
+          role={redirectFailed ? "alert" : "status"}
+        >
+          <p>{redirectNotice}</p>
+          {/* The × needs a name of its own: read out beside "the sign-in did
+              not complete", the panel's generic "Cancel" describes abandoning
+              the sign-in rather than closing a message. */}
+          <button
+            aria-label={panelCopy.accountNoticeDismiss}
+            className="account-redirect-dismiss"
+            onClick={auth.dismissRedirectOutcome}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
       )}
 
       {auth.consent !== "account" ? (
@@ -554,7 +621,9 @@ export function AccountPanel({
                   }
                   disabled={actionsDisabled}
                   id={passwordId}
-                  minLength={formMode === "signup" ? 8 : undefined}
+                  minLength={
+                    formMode === "signup" ? MIN_PASSWORD_LENGTH : undefined
+                  }
                   onChange={(event) => {
                     setPassword(event.target.value);
                     setErrorText(null);
@@ -698,6 +767,19 @@ export function AccountPanel({
             </button>
           </div>
 
+          <SetPasswordForm
+            copy={{
+              action: panelCopy.accountPasswordSetAction,
+              hint: panelCopy.accountPasswordSetHint,
+              label: copy.accountPasswordLabel,
+              title: panelCopy.accountPasswordSetTitle,
+            }}
+            disabled={actionsDisabled}
+            key={auth.sessionUserId}
+            onEdit={() => setErrorText(null)}
+            onSubmit={handleSetPassword}
+          />
+
           <details
             className="account-passkeys"
             onToggle={handlePasskeySectionToggle}
@@ -808,6 +890,79 @@ export function AccountPanel({
         </p>
       )}
     </section>
+  );
+}
+
+// Held in its own component, keyed on the account, so React throws a
+// typed-but-unsubmitted password away when the session ends or somebody else
+// signs in. The panel around it stays mounted across both, so the same state
+// kept there would outlive them and prefill the field for the next person at
+// this browser.
+function SetPasswordForm({
+  copy,
+  disabled,
+  onEdit,
+  onSubmit,
+}: {
+  copy: { action: string; hint: string; label: string; title: string };
+  disabled: boolean;
+  onEdit: () => void;
+  onSubmit: (password: string) => Promise<boolean>;
+}) {
+  const inputId = useId();
+  const [password, setPassword] = useState("");
+  const submitRef = useRef<HTMLButtonElement | null>(null);
+  const wasDisabledRef = useRef(false);
+
+  // Submitting disables the field and the button for the length of a network
+  // call, and a browser blurs a disabled element to the document body — a
+  // keyboard player would come back with no focus at all, tabbing from the top
+  // of the page. Once the controls are live again the caret goes back onto the
+  // button it was pressed from, and only then: anything the player focused
+  // meanwhile is left alone. The outcome is announced by the panel's aria-live
+  // region, so nothing has to move to read it.
+  useEffect(() => {
+    const cameBack = wasDisabledRef.current && !disabled;
+    wasDisabledRef.current = disabled;
+    if (!cameBack || document.activeElement !== document.body) return;
+    submitRef.current?.focus();
+  }, [disabled]);
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void onSubmit(password).then((saved) => {
+      if (saved) setPassword("");
+    });
+  };
+
+  return (
+    <form className="account-form account-password-set" onSubmit={submit}>
+      <h4>{copy.title}</h4>
+      <p>{copy.hint}</p>
+      <label htmlFor={inputId}>{copy.label}</label>
+      <input
+        autoComplete="new-password"
+        disabled={disabled}
+        id={inputId}
+        minLength={MIN_PASSWORD_LENGTH}
+        onChange={(event) => {
+          setPassword(event.target.value);
+          onEdit();
+        }}
+        type="password"
+        value={password}
+      />
+      <div className="account-form-actions">
+        <button
+          className="button secondary"
+          disabled={disabled}
+          ref={submitRef}
+          type="submit"
+        >
+          {copy.action}
+        </button>
+      </div>
+    </form>
   );
 }
 

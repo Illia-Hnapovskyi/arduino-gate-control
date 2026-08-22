@@ -540,8 +540,9 @@ HTTP 503 від `create`, коли гравець не задав нік і об
 
 ### `passkey_disabled` (Supabase Auth, не `/api/stats`)
 
-Passkeys вимкнені в проєкті. Це очікуваний стан, доки не увімкнено тумблер із
-розділу 13; UI має пропонувати email+пароль, а не показувати сиру помилку.
+Passkeys вимкнені в проєкті, де не увімкнено тумблер із розділу 13 (у живому
+проєкті він увімкнений з 2026-08-22). Це очікуваний стан; UI має пропонувати
+email+пароль, а не показувати сиру помилку.
 Інші коди церемонії WebAuthn — `too_many_passkeys`,
 `webauthn_credential_exists`, `webauthn_credential_not_found`,
 `webauthn_challenge_not_found`, `webauthn_challenge_expired`,
@@ -583,15 +584,21 @@ Profile sync та leaderboard ще ділять один hook-level status, то
 - **publishable key** закомічений у `app/auth/supabaseConfig.ts`, тому
   `authAvailable === true` і акаунтний UI активний. Це публічне значення; ніколи
   не встав туди secret/service-role key;
-- **email+пароль і підтвердження email** увімкнені в живому проєкті.
+- **email+пароль і підтвердження email** увімкнені в живому проєкті;
+- **Google provider** налаштований у Dashboard (станом на 2026-08-22) — крок 2
+  нижче лишається як опис того, що саме зроблено, і як це повторити в іншому
+  проєкті;
+- **passkeys** увімкнені в живому проєкті (станом на 2026-08-22) разом із
+  relying-party параметрами — крок 1 нижче лишається з тієї ж причини.
 
 Перед іншими кроками перевір, що Dashboard → **Authentication** →
 **URL Configuration** містить Site URL `https://arduino-gate-game.vercel.app`, а
 Redirect URLs — цей самий домен (і, за потреби, локальний
 `http://localhost:3000`). Auth-редиректи працюють лише на URL з цього списку.
 
-Далі — те, що ще можна зробити руками. Крок 1 варто зробити першим, бо його
-параметри треба зафіксувати назавжди; кроки 2–4 опційні.
+Далі — кроки для нового проєкту (у живому проєкті 1 і 2 вже виконані). Крок 1
+варто робити першим, бо його параметри треба зафіксувати назавжди; кроки 3–4
+опційні.
 
 1. **Passkeys (один тумблер).** Dashboard → **Authentication** → **Passkeys** →
    *Enable Passkey authentication*, і заповни WebAuthn relying party:
@@ -612,14 +619,14 @@ Redirect URLs — цей самий домен (і, за потреби, лок�
    Supabase позначає цей API як **експериментальний** і попереджає, що він може
    змінитися без анонсу, тому клієнт вмикає його явно через
    `auth: { experimental: { passkey: true } }` у `app/auth/client.ts`
-   (`@supabase/supabase-js@2.112.0` задовольняє вимогу ≥ 2.105.0). Доки тумблер
-   вимкнений, кожен виклик повертає `passkey_disabled`, і UI просто пропонує
-   email+пароль. Обмеження Supabase: користувачі SSO та анонімні користувачі не
+   (`@supabase/supabase-js@2.112.0` задовольняє вимогу ≥ 2.105.0). У живому
+   проєкті тумблер увімкнений; там, де його немає, кожен виклик повертає
+   `passkey_disabled`, і UI просто пропонує email+пароль. Обмеження Supabase: користувачі SSO та анонімні користувачі не
    можуть реєструвати passkey; реєстрація вимагає активної сесії, а вхід —
    уже зареєстрованого passkey на підтвердженому й не заблокованому акаунті.
    Vercel preview deployments мають власний hostname на кожен deploy, який не є
    піддоменом production RP ID, тому passkeys там не працюють — це очікувано.
-2. **Google provider (опційно, зараз НЕ налаштований).** Dashboard →
+2. **Google provider (у живому проєкті вже налаштований).** Dashboard →
    **Authentication** → **Sign In / Up** → **Google** → Enable. У
    [Google Cloud Console](https://console.cloud.google.com/)
    створи OAuth 2.0 Client ID (тип Web application) і вкажи **точний**
@@ -630,9 +637,10 @@ Redirect URLs — цей самий домен (і, за потреби, лок�
    ```
 
    Отримані Client ID і Client secret встав у форму провайдера в Supabase.
-   Client secret живе лише в Dashboard — не в Git. Доки провайдер не
+   Client secret живе лише в Dashboard — не в Git. Там, де провайдер не
    налаштований, кнопка Google у UI є, але виклик OAuth завершується помилкою, і
-   UI показує спокійне пояснення замість сирого тексту.
+   UI показує спокійне пояснення замість сирого тексту — цей шлях лишається
+   обов'язковим.
 3. **Custom SMTP (опційно, але потрібне для реальних користувачів).**
    Dashboard → **Project Settings** → **Authentication** → SMTP Settings.
    Вбудований SMTP доставляє листи (підтвердження email, скидання пароля)

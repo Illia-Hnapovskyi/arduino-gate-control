@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -124,18 +124,310 @@ test("the profile UI is account-only and never touches an access code", async ()
   // "unavailable" instead of surfacing the provider's own error.
   assert.match(accountPanel, /copy\.accountProviderUnavailable/);
 
-  // Sessions and the consent choice stay in localStorage; nothing sets cookies
-  // and the one-time PKCE code is stripped before it is exchanged.
+  // Sessions and the consent choice stay in localStorage; nothing sets cookies.
   for (const source of [statsPanel, accountPanel, page]) {
     assert.doesNotMatch(source, /document\.cookie/);
   }
   assert.match(accountPanel, /credentials: "omit"/);
-  const stripIndex = page.indexOf("window.history.replaceState");
-  const exchangeIndex = page.indexOf("exchangeCodeForSession");
-  assert.ok(
-    stripIndex > 0 && stripIndex < exchangeIndex,
+});
+
+async function browserSources() {
+  const appDir = path.join(projectRoot, "app");
+  const relativePaths = (await readdir(appDir, { recursive: true })).filter(
+    (entry) => entry.endsWith(".ts") || entry.endsWith(".tsx"),
+  );
+  return Promise.all(
+    relativePaths.map(async (relativePath) => [
+      relativePath.split(path.sep).join("/"),
+      await readFile(path.join(appDir, relativePath), "utf8"),
+    ]),
+  );
+}
+
+test("exactly one module completes the provider redirect", async () => {
+  const sources = await browserSources();
+  const exchangers = sources.filter(([, source]) =>
+    source.includes("exchangeCodeForSession"),
+  );
+
+  // Two handlers raced each other: both stripped the URL, so whichever ran
+  // second found no code left to exchange. The redirect is finished in one
+  // place, and every other module reads the result it returns.
+  assert.deepEqual(
+    exchangers.map(([file]) => file),
+    ["auth/client.ts"],
+  );
+  const [, client] = exchangers[0];
+  assert.equal(
+    [...client.matchAll(/exchangeCodeForSession\(/g)].length,
+    1,
+    "the exchange has exactly one call site",
+  );
+  // A code left in the address bar survives in history and stays redeemable
+  // until it is spent, so it is removed before the first await.
+  assertOrdered(
+    client,
+    "replaceState",
+    "exchangeCodeForSession(",
     "the callback URL is stripped before the code is exchanged",
   );
+
+  const page = sources.find(([file]) => file === "page.tsx")[1];
+  assert.equal(
+    [...page.matchAll(/completeAuthRedirect\(/g)].length,
+    1,
+    "the page awaits the shared redirect result exactly once",
+  );
+  assert.doesNotMatch(page, /authCallbackHandled/);
+  assert.doesNotMatch(page, /replaceState/);
+});
+
+test("the redirect result opens the reset dialog and changes the tab safely", async () => {
+  const page = await readFile(path.join(projectRoot, "app/page.tsx"), "utf8");
+
+  // A password can only be replaced through a redirect that established a
+  // session; a cancelled or failed one must not open the dialog.
+  assert.match(
+    page,
+    /redirect\.passwordReset && redirect\.kind === "signed-in"/,
+  );
+
+  // Landing on the game tab must take the same route as clicking it: that path
+  // refuses to leave the game while data is at risk, and stops auto and radar
+  // mode when entering. Writing the tab state directly would skip both.
+  assert.match(page, /redirect\.view === "game"[\s\S]{0,80}selectTabRef\.current/);
+  assert.equal(
+    [...page.matchAll(/setActiveTab\(/g)].length,
+    1,
+    "selectTab stays the only writer of the tab state",
+  );
+  assert.match(
+    page,
+    /nextTab === "control" && activeTab === "game" && gameDataAtRisk/,
+  );
+  assert.match(page, /nextTab === "game"[\s\S]{0,200}sendCommand\("RADAR:0"\)/);
+});
+
+// Both halves must be present, not merely in order: a missing needle answers
+// indexOf with -1, which sorts before every real position and would let a
+// removed line pass an ordering assertion.
+function assertOrdered(source, first, second, message) {
+  const firstIndex = source.indexOf(first);
+  const secondIndex = source.indexOf(second);
+  assert.ok(firstIndex > -1, `${message} (missing: ${first})`);
+  assert.ok(secondIndex > -1, `${message} (missing: ${second})`);
+  assert.ok(firstIndex < secondIndex, message);
+}
+
+test("a settled redirect opens the profile section once per page load", async () => {
+  const panel = await readFile(
+    path.join(projectRoot, "app/GamePanel.tsx"),
+    "utf8",
+  );
+
+  // The account panel renders the redirect notice and is also the only way back
+  // to the profile, and it lives in exactly one menu section. Asking for that
+  // section only for the two failure kinds left a player who really did sign in
+  // on "play", with the profile one more click away — the detour the redirect
+  // exists to remove. Every redirect that happened lands there; a page load
+  // without one (`none`) must still open on the menu's own default.
+  const claim = panel.match(/function claimRedirectSection\([\s\S]*?\n\}/);
+  assert.ok(claim, "the requested section must be resolved in one place");
+  assert.match(claim[0], /kind === "none" \? null : "profile"/);
+  assert.doesNotMatch(
+    panel,
+    /kind === "failed" \|\| redirect\.kind === "cancelled"/,
+    "the requested section must not single out the two failure kinds",
+  );
+
+  // One claim per page load, like the notice it reveals. GamePanel unmounts with
+  // the game tab, so a component-local guard let the memoised redirect re-open
+  // the section after the player had dismissed that notice. The claim is spent
+  // for every kind, which is what keeps the successful case's landing working.
+  assert.match(panel, /^let redirectSectionClaimed = false;$/m);
+  assertOrdered(
+    claim[0],
+    "if (redirectSectionClaimed) return null;",
+    "redirectSectionClaimed = true;",
+    "a second claim must be refused before the flag is spent again",
+  );
+  assertOrdered(
+    claim[0],
+    "redirectSectionClaimed = true;",
+    '"profile"',
+    "the claim is spent whatever the kind, not only when a section is returned",
+  );
+  // Two writers now, and the second one is the point: the menu is unmounted for
+  // the length of a run, so a request still held when it remounts would re-open
+  // the section after every single game. One writer sets it from the claim, one
+  // clears it the moment the menu says it has taken it, and nothing else may
+  // touch it.
+  assert.equal(
+    [...panel.matchAll(/setRedirectSection\(/g)].length,
+    2,
+    "only the claim sets the requested section and only the hand-over clears it",
+  );
+  assert.match(panel, /const section = claimRedirectSection\(redirect\.kind\);/);
+  assert.match(
+    panel,
+    /const forgetRedirectSection = useCallback\(\(\) => \{\s*setRedirectSection\(null\);/,
+  );
+  // Spent on the two paths that actually begin a run. It has to be an event
+  // handler: the menu resolves the request during render rather than copying it
+  // into state, and the lint rule forbids clearing it from an effect.
+  assert.equal(
+    [...panel.matchAll(/forgetRedirectSection\(\);/g)].length,
+    2,
+    "starting and continuing a run each spend the section request",
+  );
+
+  // StrictMode tears the first mount down before the memoised promise settles,
+  // so claiming before that check would spend the request on a dead effect.
+  const effect = panel.match(
+    /void completeAuthRedirect\(\)\.then\(\(redirect\) => \{[\s\S]*?\n    \}\);/,
+  );
+  assert.ok(effect, "the panel must still await the memoised redirect");
+  assertOrdered(
+    effect[0],
+    "if (!active) return;",
+    "claimRedirectSection(",
+    "the claim must happen after the mount check",
+  );
+});
+
+test("the reset dialog and the panel share one password minimum", async () => {
+  const page = await readFile(path.join(projectRoot, "app/page.tsx"), "utf8");
+
+  // Two dialogs ask for a password with the same error copy, and the real
+  // authority is the project's own minimum. A bare literal in one of them is how
+  // they start disagreeing, so both read the constant AccountPanel exports.
+  assert.match(page, /password\.length < MIN_PASSWORD_LENGTH/);
+  assert.match(page, /minLength=\{MIN_PASSWORD_LENGTH\}/);
+  assert.doesNotMatch(page, /password\.length < \d/);
+  assert.doesNotMatch(page, /minLength=\{\d/);
+});
+
+test("?lang beats the stored language and is then persisted", async () => {
+  const page = await readFile(path.join(projectRoot, "app/page.tsx"), "utf8");
+
+  // Precedence is URL > stored > "uk". The URL is applied at module load,
+  // before the component reads the store, which is what makes it win.
+  const applyIndex = page.indexOf("\napplyLanguageFromUrl();");
+  const componentIndex = page.indexOf("export default function Home");
+  assert.ok(
+    applyIndex > 0 && applyIndex < componentIndex,
+    "the URL language is applied before the first snapshot is read",
+  );
+
+  const applyBody = page.match(
+    /function applyLanguageFromUrl\(\) \{([\s\S]*?)\n\}/,
+  );
+  assert.ok(applyBody, "applyLanguageFromUrl must stay a module-level function");
+  assert.match(applyBody[1], /window\.location\.search/);
+  // Only a language the site actually ships is accepted; anything else falls
+  // through to the stored value instead of throwing or blanking the copy.
+  assert.match(applyBody[1], /LANGUAGE_OPTIONS/);
+  // Persisted through the existing store, so later visits stay in that
+  // language and the switcher keeps working unchanged.
+  assert.match(applyBody[1], /saveLanguage\(/);
+
+  const readBody = page.match(/function readLanguage\(\)[^{]*\{([\s\S]*?)\n\}/);
+  assert.ok(readBody, "readLanguage must stay the snapshot source");
+  assert.match(readBody[1], /: "uk";$/m);
+  assert.match(
+    page,
+    /useSyncExternalStore<Language>\(\s*subscribeToLanguage,\s*readLanguage,/,
+  );
+
+  // Applying it at module load means the write runs before src/main.tsx renders
+  // anything, so a store at quota — or a private mode that allows reads and
+  // refuses writes — would abort the import and paint a blank page, and only for
+  // the shared `?lang=` link this whole feature exists for. A refused write may
+  // cost persistence and nothing else, exactly as saveConsentChoice treats its
+  // own; the event still fires, so nothing else in the page load changes.
+  const saveBody = page.match(/function saveLanguage\([\s\S]*?\n\}/);
+  assert.ok(saveBody, "saveLanguage must stay a module-level function");
+  assert.match(saveBody[0], /try \{\s*window\.localStorage\.setItem\(/);
+  assertOrdered(
+    saveBody[0],
+    "} catch {",
+    "window.dispatchEvent(",
+    "the failed write must not skip the language-change event",
+  );
+});
+
+test("?lang survives a store that refuses writes or throws on reads", async () => {
+  const page = await readFile(path.join(projectRoot, "app/page.tsx"), "utf8");
+
+  // Routing `?lang=` through localStorage alone did not merely cost persistence
+  // in a browser that allows reads and refuses writes, it lost the feature: the
+  // swallowed write, the change event that still fires, and a re-read of the OLD
+  // stored value paint Ukrainian for the German reader the parameter exists for —
+  // a shared link opened in a private window, which is the whole use case. The
+  // language the page was asked to show is therefore kept in memory as well, and
+  // read before the store.
+  assert.match(page, /^let languageOverride: Language \| null = null;$/m);
+
+  const readBody = page.match(/function readLanguage\(\)[^{]*\{([\s\S]*?)\n\}/);
+  assert.ok(readBody, "readLanguage must stay the snapshot source");
+  assertOrdered(
+    readBody[1],
+    "if (languageOverride) return languageOverride;",
+    "window.localStorage.getItem(",
+    "the requested language must win over the stored one",
+  );
+
+  // readLanguage is the snapshot function, so a document where reading storage
+  // throws rather than refusing writes would take the render down: a blank page
+  // instead of a wrong language. saveLanguage was already guarded; this is the
+  // other half.
+  assert.match(readBody[1], /try \{\s*const savedLanguage = window\.localStorage/);
+  assert.match(readBody[1], /\} catch \{[\s\S]*return "uk";/);
+
+  const saveBody = page.match(/function saveLanguage\([\s\S]*?\n\}/);
+  assert.ok(saveBody, "saveLanguage must stay a module-level function");
+  assertOrdered(
+    saveBody[0],
+    "languageOverride = language;",
+    "try {",
+    "the requested language is recorded whether or not the write succeeds",
+  );
+
+  // Cross-tab updates still win over it: another tab's write is a newer choice
+  // than whatever this document was asked to show on load.
+  const subscribeBody = page.match(
+    /function subscribeToLanguage\([\s\S]*?\n\}/,
+  );
+  assert.ok(subscribeBody, "subscribeToLanguage must stay the subscription");
+  assert.match(subscribeBody[0], /languageOverride = null;\n\s*callback\(\);/);
+});
+
+test("the setup docs agree with AGENTS.md on what is live in Supabase", async () => {
+  const [readme, setup] = await Promise.all([
+    readFile(path.join(projectRoot, "README.md"), "utf8"),
+    readFile(path.join(projectRoot, "SUPABASE_SETUP.md"), "utf8"),
+  ]);
+
+  // AGENTS.md states which providers are enabled in the live project and then
+  // sends the reader to SUPABASE_SETUP.md for the Dashboard checklist. Correcting
+  // the live state in one file and leaving the other asserting the opposite makes
+  // the next maintainer arbitrate between two in-repo documents, and invites
+  // re-doing Dashboard work that is already done.
+  for (const [name, doc] of [
+    ["README.md", readme],
+    ["SUPABASE_SETUP.md", setup],
+  ]) {
+    assert.doesNotMatch(
+      doc,
+      /(НЕ|\*\*не\*\*) налаштований/,
+      `${name} still says a provider is not configured`,
+    );
+    assert.match(
+      doc,
+      /2026-08-22/,
+      `${name} must date the live Supabase Auth state`,
+    );
+  }
 });
 
 test("a session never inherits a profile that belongs to another account", async () => {

@@ -588,6 +588,12 @@ export const GAME_COPY = {
     accountPasswordUpdated: "Пароль оновлено.",
     accountNewPasswordLabel: "Новий пароль",
     accountUpdatePassword: "Оновити пароль",
+    accountPasswordSetTitle: "Пароль для входу",
+    accountPasswordSetHint:
+      "Пароль — це другий спосіб увійти в акаунт: він працює й без Google, і без листа на пошту.",
+    accountPasswordSetAction: "Зберегти пароль",
+    accountPasswordSetSuccess:
+      "Пароль збережено. Тепер можна входити електронною поштою та паролем.",
     accountGoogle: "Увійти через Google",
     accountApple: "Увійти через Apple",
     accountOrDivider: "або",
@@ -604,6 +610,9 @@ export const GAME_COPY = {
     accountCreateProfileAction: "Створити профіль",
     accountProviderUnavailable:
       "Цей спосіб входу для цього проєкту ще не налаштовано. Скористайся електронною поштою та паролем.",
+    accountRedirectFailed: "Вхід не завершився. Спробуй ще раз.",
+    accountRedirectCancelled: "Вікно входу закрито, тож нічого не змінилося.",
+    accountNoticeDismiss: "Закрити повідомлення",
     accountCodeRetiredNotice:
       "Вхід за кодом профілю більше не працює. Дані цього профілю залишаються в браузері й нікуди не зникли — увійди в акаунт, щоб грати далі та зберігати результати онлайн.",
     accountOfflineNotice:
@@ -826,6 +835,12 @@ export const GAME_COPY = {
     accountPasswordUpdated: "Das Passwort wurde aktualisiert.",
     accountNewPasswordLabel: "Neues Passwort",
     accountUpdatePassword: "Passwort aktualisieren",
+    accountPasswordSetTitle: "Passwort für die Anmeldung",
+    accountPasswordSetHint:
+      "Ein Passwort ist ein zweiter Weg in dein Konto: er funktioniert auch dann, wenn Google nicht geht oder keine E-Mail ankommt.",
+    accountPasswordSetAction: "Passwort speichern",
+    accountPasswordSetSuccess:
+      "Das Passwort ist gespeichert. Du kannst dich jetzt mit E-Mail und Passwort anmelden.",
     accountGoogle: "Mit Google anmelden",
     accountApple: "Mit Apple anmelden",
     accountOrDivider: "oder",
@@ -843,6 +858,11 @@ export const GAME_COPY = {
     accountCreateProfileAction: "Profil erstellen",
     accountProviderUnavailable:
       "Diese Anmeldeart ist für dieses Projekt noch nicht eingerichtet. Nutze E-Mail und Passwort.",
+    accountRedirectFailed:
+      "Die Anmeldung wurde nicht abgeschlossen. Versuche es noch einmal.",
+    accountRedirectCancelled:
+      "Das Anmeldefenster wurde geschlossen, es hat sich nichts geändert.",
+    accountNoticeDismiss: "Hinweis schließen",
     accountCodeRetiredNotice:
       "Die Anmeldung mit einem Profilcode funktioniert nicht mehr. Die Daten dieses Profils bleiben in diesem Browser erhalten — melde dich mit einem Konto an, um weiterzuspielen und Ergebnisse online zu speichern.",
     accountOfflineNotice:
@@ -1054,6 +1074,12 @@ export const GAME_COPY = {
     accountPasswordUpdated: "Your password has been updated.",
     accountNewPasswordLabel: "New password",
     accountUpdatePassword: "Update password",
+    accountPasswordSetTitle: "Password for signing in",
+    accountPasswordSetHint:
+      "A password is a second way into your account: it works without Google and without waiting for an email to arrive.",
+    accountPasswordSetAction: "Save password",
+    accountPasswordSetSuccess:
+      "Your password is saved. You can now sign in with your email and password.",
     accountGoogle: "Sign in with Google",
     accountApple: "Sign in with Apple",
     accountOrDivider: "or",
@@ -1070,6 +1096,10 @@ export const GAME_COPY = {
     accountCreateProfileAction: "Create profile",
     accountProviderUnavailable:
       "This sign-in method is not set up for this project yet. Use your email and password.",
+    accountRedirectFailed: "The sign-in did not complete. Please try again.",
+    accountRedirectCancelled:
+      "The sign-in window was closed, so nothing changed.",
+    accountNoticeDismiss: "Dismiss this message",
     accountCodeRetiredNotice:
       "Signing in with a profile code no longer works. This profile’s data stays in your browser and is not lost — sign in with an account to keep playing and to save results online.",
     accountOfflineNotice:

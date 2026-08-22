@@ -89,14 +89,29 @@ export function getSupabaseClient(): SupabaseClient | null {
 // `?code=`, and without an explicit exchange the player simply lands back on
 // the site still signed out, with no error to explain why.
 
-export type AuthRedirectOutcome = "none" | "signed-in" | "cancelled" | "failed";
+export type AuthRedirectKind = "none" | "signed-in" | "cancelled" | "failed";
 
-const REDIRECT_PARAMS = [
+export type AuthRedirectResult = {
+  kind: AuthRedirectKind;
+  /** The redirect carried `reset=1`: the player asked for a new password. */
+  passwordReset: boolean;
+  /** The redirect asked to land on the game tab rather than the site root. */
+  view: "game" | null;
+};
+
+// `lang` is deliberately NOT in this list. The whole point of that parameter is
+// a link the user can paste into a job application, so it has to survive the
+// round trip and stay in the address bar for whoever copies it onward. That is
+// only true if the target sent out keeps it too, so `authRedirectTarget()` in
+// useAuthSession carries over every current parameter except exactly this list.
+export const REDIRECT_PARAMS = [
   "code",
   "state",
   "error",
   "error_code",
   "error_description",
+  "reset",
+  "view",
 ];
 
 function stripRedirectParams() {
@@ -109,35 +124,83 @@ function stripRedirectParams() {
   }
   if (!touched) return;
   const query = url.searchParams.toString();
-  window.history.replaceState(
-    null,
-    "",
-    `${url.pathname}${query ? `?${query}` : ""}${url.hash}`,
-  );
+  try {
+    window.history.replaceState(
+      null,
+      "",
+      `${url.pathname}${query ? `?${query}` : ""}${url.hash}`,
+    );
+  } catch {
+    // The rewrite is the only statement here that can raise — a sandboxed or
+    // throttled document refuses it — and the memoised promise must not reject:
+    // page.tsx awaits it without a catch and would lose the whole outcome.
+    // Continuing is also the safer half of the trade, because the exchange still
+    // spends the code that this failed to remove from the address bar.
+  }
 }
 
-export async function completeAuthRedirect(): Promise<AuthRedirectOutcome> {
-  if (typeof window === "undefined") return "none";
+async function exchangeRedirect(): Promise<AuthRedirectResult> {
   const params = new URLSearchParams(window.location.search);
   const code = params.get("code");
   const error = params.get("error");
-  if (!code && !error) return "none";
+  const errorCode = params.get("error_code");
+  const passwordReset = params.get("reset") === "1";
+  const view = params.get("view") === "game" ? "game" : null;
 
   // Strip before the first await. An authorization code left in the address bar
   // survives in history, gets copied into a chat message with the rest of the
-  // URL, and stays redeemable until it is spent. Both values are captured above.
+  // URL, and stays redeemable until it is spent. Every value the callers need is
+  // captured above, so nothing is lost by clearing the query this early.
   stripRedirectParams();
 
-  if (error) return error === "access_denied" ? "cancelled" : "failed";
+  if (error) {
+    // A closed provider window is the player changing their mind, not a fault,
+    // and the two stay distinguishable all the way to the notice in the panel.
+    // But `access_denied` is also what the auth server relays for every refusal
+    // it answers with 403 — an expired or already-used e-mail link arrives as
+    // `access_denied` plus `error_code=otp_expired`. Only a bare `access_denied`
+    // may therefore claim the window was closed; a named error code is a
+    // server-side refusal, and telling a player who opened a stale link that
+    // they closed a window they never saw states something untrue. Reading "did
+    // not complete" after a real cancellation is the harmless half of the trade.
+    return {
+      kind: error === "access_denied" && !errorCode ? "cancelled" : "failed",
+      passwordReset,
+      view,
+    };
+  }
+  if (!code) return { kind: "none", passwordReset, view };
   const client = getSupabaseClient();
-  if (!client || !code) return "failed";
+  if (!client) return { kind: "failed", passwordReset, view };
   try {
     const { error: exchangeError } =
       await client.auth.exchangeCodeForSession(code);
-    return exchangeError ? "failed" : "signed-in";
+    // The Supabase error is intentionally dropped: it names the grant and the
+    // provider, and the player can do nothing with either.
+    return {
+      kind: exchangeError ? "failed" : "signed-in",
+      passwordReset,
+      view,
+    };
   } catch {
-    return "failed";
+    return { kind: "failed", passwordReset, view };
   }
+}
+
+// An authorization code can be spent exactly once, and both page.tsx and
+// useAuthSession await this on the same page load in an order neither of them
+// controls. The memoised promise makes every later caller — a re-run effect and
+// StrictMode's second mount included — read the one settled result instead of
+// re-running the exchange against an already spent code and reporting a failure
+// that never happened.
+let pendingRedirect: Promise<AuthRedirectResult> | null = null;
+
+export function completeAuthRedirect(): Promise<AuthRedirectResult> {
+  if (typeof window === "undefined") {
+    return Promise.resolve({ kind: "none", passwordReset: false, view: null });
+  }
+  pendingRedirect ??= exchangeRedirect();
+  return pendingRedirect;
 }
 
 // Standalone token provider for useGameStats({ getAccessToken }) — usable

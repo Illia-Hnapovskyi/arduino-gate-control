@@ -49,6 +49,12 @@ type GameMenuProps = {
   onStart: () => void;
   preferences: GamePreferences;
   profilePanel: ReactNode;
+  /**
+   * Section to open because something outside the menu needs to be read there —
+   * the account panel's redirect notice. `null` leaves the player's own choice
+   * alone.
+   */
+  requestedSection: GameMenuSection | null;
   resumeCompatible: boolean;
   resumeSummary: {
     difficulty: GameDifficultyId;
@@ -136,12 +142,18 @@ export function GameMenu({
   onStart,
   preferences,
   profilePanel,
+  requestedSection,
   resumeCompatible,
   resumeSummary,
   startingPowers,
   statisticsPanel,
 }: GameMenuProps) {
-  const [section, setSection] = useState<GameMenuSection>("play");
+  // Only the player's own choice is stored, so a section requested from outside
+  // can win until they make one — copying the request into state instead would
+  // either need a cascading render or lose track of whose choice is on screen.
+  const [chosenSection, setChosenSection] =
+    useState<GameMenuSection | null>(null);
+  const section = chosenSection ?? requestedSection ?? "play";
   const [bindingAction, setBindingAction] = useState<GameAction | null>(null);
   const menuTitleRef = useRef<HTMLHeadingElement | null>(null);
 
@@ -213,7 +225,7 @@ export function GameMenu({
             key={item}
             onClick={() => {
               onConfirm();
-              setSection(item);
+              setChosenSection(item);
             }}
             type="button"
           >
