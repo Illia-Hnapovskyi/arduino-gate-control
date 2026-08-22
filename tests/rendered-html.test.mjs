@@ -532,3 +532,124 @@ test("Space Defender overlays and compact HUD keep their accessibility contract"
     /@media \(max-width: 980px\)[\s\S]*?\.space-energy-cluster\s*\{\s*display:\s*none;/,
   );
 });
+
+// The class names a browser actually receives: the LITERAL text of every
+// `className` attribute, with `${...}` interpolations replaced by a space
+// because their runtime value is unknowable here. Identifiers inside a
+// className expression are skipped on purpose — a reference set built from the
+// whole file would let a TypeScript name such as `joystickX` or a translated
+// sentence mentioning the joystick vouch for a selector nothing renders.
+function renderedClassNames(source) {
+  const attribute = /className=(?:"([^"]*)"|'([^']*)'|\{)/g;
+  const literals = [];
+  for (
+    let match = attribute.exec(source);
+    match;
+    match = attribute.exec(source)
+  ) {
+    if (match[1] !== undefined || match[2] !== undefined) {
+      literals.push(match[1] ?? match[2]);
+      continue;
+    }
+    // Brace form: walk to the matching brace so a multi-line template literal
+    // or a nested ternary is captured whole, then keep only its quoted and
+    // template segments.
+    let depth = 1;
+    let index = match.index + match[0].length;
+    while (index < source.length && depth > 0) {
+      if (source[index] === "{") depth += 1;
+      else if (source[index] === "}") depth -= 1;
+      index += 1;
+    }
+    const expression = source.slice(match.index + match[0].length, index - 1);
+    for (const segment of expression.matchAll(
+      /"([^"]*)"|'([^']*)'|`([^`]*)`/g,
+    )) {
+      literals.push(segment[1] ?? segment[2] ?? segment[3]);
+    }
+    attribute.lastIndex = index;
+  }
+  return literals.join(" ").replace(/\$\{[\s\S]*?\}/g, " ");
+}
+
+test("the live joystick card is rendered and its CSS carries no ballast", async () => {
+  const [panel, css] = await Promise.all([
+    readFile(path.join(projectRoot, "app/GamePanel.tsx"), "utf8"),
+    readFile(path.join(projectRoot, "app/globals.css"), "utf8"),
+  ]);
+
+  // The diagnostic card itself: heading, draggable stick, three readings, hint.
+  assert.match(panel, /className="joystick-card space-joystick-aside"/);
+  assert.match(panel, /legacyCopy\.liveSignal/);
+  assert.match(panel, /legacyCopy\.yourJoystick/);
+  assert.match(panel, /joystick-link \$\{connection\}/);
+  assert.match(panel, /legacyCopy\.signalReceived : legacyCopy\.noConnection/);
+  assert.match(panel, /VRx · A0/);
+  assert.match(panel, /VRy · A1/);
+  assert.match(panel, /SW · D4/);
+  assert.match(panel, /legacyCopy\.touchJoystickHint/);
+  // The readings map a live drag back onto the board's 0-1023 analog range and
+  // otherwise echo the raw telemetry.
+  assert.match(panel, /Math\.round\(512 \+ virtualJoystick\.x \* 511\)/);
+  assert.match(panel, /Math\.round\(512 \+ virtualJoystick\.y \* 511\)/);
+  // The knob shares the run loop's transfer function, dead zone and saturation
+  // point included. A private axis mapping made the diagnostic lie: it showed
+  // deflection inside the dead zone the ship ignores, and pinned itself at full
+  // travel while the ship was still accelerating.
+  assert.match(
+    panel,
+    /import \{[^}]*normalizeJoystickAxis[^}]*\} from "\.\/game\/input";/,
+  );
+  assert.match(panel, /normalizeJoystickAxis\(joystickX, joystickCentre\.x\)/);
+  assert.match(panel, /normalizeJoystickAxis\(joystickY, joystickCentre\.y\)/);
+  assert.doesNotMatch(panel, /joystickX - joystickCentre\.x/);
+  assert.doesNotMatch(panel, /joystickY - joystickCentre\.y/);
+  // The card reuses the in-run handlers instead of growing its own, and keeps
+  // the group/label pattern the touch deck uses.
+  assert.match(panel, /aria-label=\{legacyCopy\.touchJoystickAria\}/);
+  assert.ok(
+    [...panel.matchAll(/onPointerDown=\{startVirtualJoystick\}/g)].length === 2,
+    "the menu card and the in-run deck share one set of drag handlers",
+  );
+  // Still exactly two calibrate buttons: the calibration aside and the toolbar.
+  assert.ok(
+    [...panel.matchAll(/onClick=\{calibrateJoystick\}/g)].length === 2,
+    "the card must not add a third calibrate button",
+  );
+  // The cream card lives one ancestor away from the near-white --space-ink.
+  assert.match(css, /\.joystick-card \{[^}]*color: var\(--ink\);/);
+
+  // Ballast guard: every joystick rule in the stylesheet must still be
+  // RENDERED by a browser source — matched against className literals alone,
+  // never the whole file — so a class whose markup is deleted cannot leave its
+  // CSS behind unnoticed. Comments are stripped from BOTH sides — a
+  // comment that names a class, in the stylesheet or in a source file, must not
+  // vouch for it — and the two sides are compared as whole class tokens, so
+  // renaming `joystick-visual` to `joystick-visual-pad` in the markup orphans
+  // the old rule loudly instead of passing on the shared prefix.
+  const stripComments = (source) =>
+    source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
+  const selectors = stripComments(css);
+  const joystickClasses = [
+    ...new Set(
+      [...selectors.matchAll(/\.([A-Za-z0-9_-]*joystick[A-Za-z0-9_-]*)/g)].map(
+        (match) => match[1],
+      ),
+    ),
+  ].sort();
+  assert.ok(
+    joystickClasses.length >= 7,
+    "expected the joystick card rules to still be in the stylesheet",
+  );
+  const markup = (await browserSources())
+    .map(([, source]) => renderedClassNames(stripComments(source)))
+    .join(" ");
+  const referenced = new Set(
+    markup.split(/\s+/).filter((token) => token.includes("joystick")),
+  );
+  assert.deepEqual(
+    joystickClasses.filter((name) => !referenced.has(name)),
+    [],
+    "unused joystick CSS: render the class or delete its rule",
+  );
+});

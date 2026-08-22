@@ -64,6 +64,7 @@ import {
 } from "./game/preferences";
 import {
   isNativeKeyboardControl,
+  normalizeJoystickAxis,
   resolveGameInput,
 } from "./game/input";
 import {
@@ -1534,15 +1535,16 @@ export default function GamePanel({
       : connection === "demo"
         ? copy.controllerDemo
         : legacyCopy.noConnection;
+  // The knob is driven by the run loop's own transfer function — dead zone and
+  // saturation point included — because it is a diagnostic: an axis mapping of
+  // its own would show deflection the ship ignores near centre and report the
+  // stick as maxed out while the ship was still accelerating.
   const knobX = virtualJoystick.active
     ? virtualJoystick.x
     : connection === "connected"
-      ? Math.max(-1, Math.min(1, (joystickX - joystickCentre.x) / 420))
+      ? normalizeJoystickAxis(joystickX, joystickCentre.x)
       : 0;
-  const rawKnobY = Math.max(
-    -1,
-    Math.min(1, (joystickY - joystickCentre.y) / 420),
-  );
+  const rawKnobY = normalizeJoystickAxis(joystickY, joystickCentre.y);
   const knobY = virtualJoystick.active
     ? virtualJoystick.y
     : connection === "connected"
@@ -1550,6 +1552,15 @@ export default function GamePanel({
         ? rawKnobY
         : -rawKnobY
       : 0;
+  // The diagnostic card's numeric readings. A drag owns the stick while it
+  // lasts, so the pads mirror the normalised drag mapped back onto the 0-1023
+  // analog range; otherwise they show the raw A0/A1 telemetry the board sent.
+  const readingX = virtualJoystick.active
+    ? Math.round(512 + virtualJoystick.x * 511)
+    : Math.round(joystickX);
+  const readingY = virtualJoystick.active
+    ? Math.round(512 + virtualJoystick.y * 511)
+    : Math.round(joystickY);
   const calibrateJoystick = () => {
     setJoystickCentre({
       x: Math.round(joystickX),
@@ -1633,6 +1644,62 @@ export default function GamePanel({
                 </button>
               </aside>
             )}
+
+            {/* Live joystick view: the player watches the physical stick answer
+                before starting a run, and on a touch screen drags the knob to
+                check the same axes. Menu-only, so it shares the three virtual
+                handlers with the in-run .space-touch-deck without ever being a
+                second live control surface — the two sit in opposite branches of
+                the uiStatus ternary below. It stays mounted with no board
+                attached: the link dot and the readings then show the idle state.
+                No calibrate button here; the calibration aside above and the
+                stage toolbar already carry one each. */}
+            <aside className="joystick-card space-joystick-aside">
+              <div className="game-card-heading">
+                <div>
+                  <span className="game-kicker">{legacyCopy.liveSignal}</span>
+                  <h2>{legacyCopy.yourJoystick}</h2>
+                </div>
+                <span
+                  className={`joystick-link ${connection}`}
+                  title={connected ? legacyCopy.signalReceived : legacyCopy.noConnection}
+                />
+              </div>
+
+              <div
+                aria-label={legacyCopy.touchJoystickAria}
+                className={`joystick-visual ${virtualJoystick.active ? "dragging" : ""}`}
+                onLostPointerCapture={stopVirtualJoystick}
+                onPointerCancel={stopVirtualJoystick}
+                onPointerDown={startVirtualJoystick}
+                onPointerMove={updateVirtualJoystick}
+                onPointerUp={stopVirtualJoystick}
+                role="group"
+              >
+                <div className="joystick-crosshair" />
+                <div
+                  className={`joystick-knob ${
+                    joystickPressed || virtualJoystick.active ? "pressed" : ""
+                  }`}
+                  style={{
+                    transform: `translate(calc(-50% + ${knobX * 46}px), calc(-50% + ${knobY * 46}px))`,
+                  }}
+                >
+                  <span>SW</span>
+                </div>
+              </div>
+
+              <div className="joystick-readings">
+                <span><small>VRx · A0</small><strong>{readingX}</strong></span>
+                <span><small>VRy · A1</small><strong>{readingY}</strong></span>
+                <span>
+                  <small>SW · D4</small>
+                  <strong>{joystickPressed ? "CLICK" : "—"}</strong>
+                </span>
+              </div>
+
+              <p className="virtual-joystick-hint">{legacyCopy.touchJoystickHint}</p>
+            </aside>
 
             <GameMenu
               achievementsPanel={(
