@@ -67,6 +67,7 @@ import {
   normalizeJoystickAxis,
   resolveGameInput,
 } from "./game/input";
+import { useImmersiveStage } from "./game/useImmersiveStage";
 import {
   canResumeRun,
   clearRunSnapshot,
@@ -450,6 +451,9 @@ export default function GamePanel({
     useState<VirtualJoystickState>({ active: false, x: 0, y: 0 });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const stageRootRef = useRef<HTMLDivElement | null>(null);
+  const immersive = useImmersiveStage(stageRootRef);
+  const immersiveRef = useRef(immersive);
   const worldRef = useRef<GameWorld | null>(null);
   const statusRef = useRef<GameUiStatus>("menu");
   const animationRef = useRef<number | null>(null);
@@ -1013,7 +1017,29 @@ export default function GamePanel({
   }, []);
 
   useEffect(() => {
+    immersiveRef.current = immersive;
+  }, [immersive]);
+
+  // The only control that can leave immersive mode lives in the stage toolbar,
+  // and the toolbar unmounts with the play view. A player who returns to the
+  // menu while immersive would be sealed inside a fixed, unscrollable overlay
+  // showing a clipped menu — no toggle, no Escape key on a phone, and no
+  // browser fullscreen affordance there either, so only a reload would recover.
+  // Every path back to the menu goes through this status, so this covers them
+  // all rather than the two that happen to be reachable from the result card.
+  useEffect(() => {
+    if (uiStatus === "menu" && immersiveRef.current.isActive()) {
+      immersiveRef.current.exit();
+    }
+  }, [uiStatus]);
+
+  useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
+      if (event.code === "Escape" && !event.repeat && immersiveRef.current.isActive()) {
+        immersiveRef.current.exit();
+        event.preventDefault();
+        return;
+      }
       if (
         (event.code === "Escape" || event.code === "KeyP") &&
         !event.repeat
@@ -1591,8 +1617,9 @@ export default function GamePanel({
       </div>
 
       <div
-        className="space-game-root"
+        className={`space-game-root ${immersive.active && uiStatus !== "menu" ? "is-immersive" : ""}`}
         data-reduced-motion={effectiveMotionReduction ? "true" : "false"}
+        ref={stageRootRef}
       >
         {uiStatus === "menu" ? (
           <>
@@ -1833,6 +1860,23 @@ export default function GamePanel({
                 >
                   {legacyCopy.pause}
                 </button>
+                <button
+                  aria-pressed={immersive.active}
+                  className="button secondary"
+                  onClick={() => {
+                    immersive.toggle();
+                    // Focus follows the game, not the button: the window key
+                    // handler ignores events aimed at a button, so leaving
+                    // focus here would swallow every movement key.
+                    canvasRef.current?.focus({ preventScroll: true });
+                  }}
+                  title={legacyCopy.fullscreenHint}
+                  type="button"
+                >
+                  {immersive.active
+                    ? legacyCopy.fullscreenExit
+                    : legacyCopy.fullscreenEnter}
+                </button>
                 <span>{connectionLabel}</span>
                 {connection === "connected" && (
                   <button
@@ -1900,7 +1944,12 @@ export default function GamePanel({
               </div>
             )}
             <p className="space-keyboard-hint">
-              {formatGameControlSummary(copy, preferences)}
+              <span className="space-hint-keys">
+                {formatGameControlSummary(copy, preferences)}
+              </span>{" "}
+              <span className="space-hint-touch">
+                {legacyCopy.fullscreenHint}
+              </span>
             </p>
           </>
         )}

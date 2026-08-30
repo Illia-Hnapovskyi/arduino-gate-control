@@ -653,3 +653,159 @@ test("the live joystick card is rendered and its CSS carries no ballast", async 
     "unused joystick CSS: render the class or delete its rule",
   );
 });
+
+test("the stage fits the screen without predicting how much room the chrome needs", async () => {
+  const css = await readFile(path.join(projectRoot, "app/globals.css"), "utf8");
+  const panel = await readFile(path.join(projectRoot, "app/GamePanel.tsx"), "utf8");
+  const runtime = await readFile(path.join(projectRoot, "app/game/runtime.ts"), "utf8");
+  const hook = await readFile(
+    path.join(projectRoot, "app/game/useImmersiveStage.ts"),
+    "utf8",
+  );
+
+  // The world is frozen. A wider view would show enemies sooner and make the
+  // scores already in the leaderboard incomparable between devices.
+  assert.match(runtime, /GAME_WORLD_WIDTH = 900/);
+  assert.match(runtime, /GAME_WORLD_HEIGHT = 540/);
+  assert.match(css, /\.space-canvas-wrap \{[^}]*aspect-ratio: 5 \/ 3;/);
+
+  // Immersive takes the leftover instead of estimating it: the column is
+  // bounded, the canvas is the flexible item, and object-fit keeps the ratio
+  // inside whatever shape that leftover turns out to be. An earlier attempt
+  // summed hardcoded pixel tokens into a chrome budget and collapsed the stage
+  // on a real iPhone when the guesses did not add up.
+  assert.match(css, /\.space-game-root\.is-immersive \{[^}]*block-size: 100svh;/);
+  assert.match(
+    css,
+    /\.space-game-root\.is-immersive \.space-canvas-wrap \{[^}]*flex: 1 1 auto;/,
+  );
+  assert.match(
+    css,
+    /\.space-game-root\.is-immersive \.space-canvas-wrap canvas \{[^}]*object-fit: contain;/,
+  );
+  assert.doesNotMatch(css, /--stage-chrome/);
+
+  // The overlay is the screen, so the page's own layout rules are reset on it.
+  // Unreset, the 1320px page column left the live page clickable down both
+  // sides of "full screen", and the shell's auto margin cancelled the flex
+  // stretch — an auto cross-axis margin does — which sized the shell to the
+  // canvas's intrinsic 900px and drew a SMALLER field than the page did.
+  assert.match(css, /\.space-game-root\.is-immersive \{[^}]*max-inline-size: none;/);
+  assert.match(
+    css,
+    /\.space-game-root\.is-immersive \.space-stage-shell \{[^}]*margin-inline: 0;/,
+  );
+  assert.match(
+    css,
+    /\.space-game-root\.is-immersive \.space-stage-shell \{[^}]*max-inline-size: none;/,
+  );
+
+  // A mouse cannot drag a thumb stick, so the deck's ~170px go to the field.
+  assert.match(
+    css,
+    /@media \(pointer: fine\) \{\s*\.space-game-root\.is-immersive \.space-touch-deck \{\s*display: none;/,
+  );
+
+  // The in-page cap asks about the pointer as well as the height. A short
+  // viewport is not the same thing as a phone: Chrome maximised on a 1366x768
+  // laptop is ~650px of inner height, and on height alone the cap fired there
+  // and cut a canvas that had no problem from 1118px wide to 607.
+  assert.match(
+    css,
+    /@media \(max-height: 700px\) and \(pointer: coarse\) \{\s*\.space-game-root \.space-canvas-wrap \{/,
+  );
+
+  // The landscape flank layout, read as one block. An unplaced child is the
+  // trap here: the keyboard hint auto-placed into an implicit second row, which
+  // split the fixed 100svh between two tracks and left the drawn field 127x76
+  // px — smaller than the floor the abandoned branch was rejected for, in the
+  // one case this feature exists for. The hint is out of immersive entirely and
+  // an implicit row is now worth nothing, so a future child cannot repeat it.
+  const flankStart = css.indexOf(
+    "@media (orientation: landscape) and (max-height: 560px) and (pointer: coarse) {",
+  );
+  assert.ok(flankStart > -1, "the landscape flank layout must stay thumb-gated");
+  const flank = css.slice(flankStart, css.indexOf("\n}\n", flankStart));
+  assert.match(flank, /grid-template-rows: minmax\(0, 1fr\);/);
+  assert.match(flank, /grid-auto-rows: 0;/);
+  assert.match(
+    css,
+    /\.space-game-root\.is-immersive \.space-keyboard-hint \{\s*display: none;/,
+  );
+
+  // The drag radius is max(24, min(w, h) / 2 - 28), and BOTH dimensions feed
+  // that min(): the flank column width and the stick's own height. Either one
+  // under 136px hits the 24 floor and quietly makes steering 1.67x more
+  // sensitive than on every other device.
+  assert.match(panel, /Math\.max\(24, Math\.min\(bounds\.width, bounds\.height\) \/ 2 - 28\)/);
+  assert.match(flank, /grid-template-columns:\s*clamp\(136px, 17vw, 168px\)/);
+  assert.match(flank, /\.space-virtual-stick \{[^}]*block-size: min\(136px, 46vh\);/);
+
+  // Escape must leave immersive before the pause branch sees it: in the
+  // CSS-only layer no browser consumes the keystroke. The early return is what
+  // delivers that — ordering alone still passed with the return deleted, and
+  // one press then left full screen AND paused the run.
+  assertOrdered(
+    panel,
+    'immersiveRef.current.isActive()',
+    '(event.code === "Escape" || event.code === "KeyP")',
+    "Escape must leave immersive mode before it can pause the run",
+  );
+  assert.match(
+    panel,
+    /immersiveRef\.current\.isActive\(\)\) \{[^}]*immersiveRef\.current\.exit\(\);[^}]*return;\s*\}/,
+    "the immersive Escape branch must return before the pause branch runs",
+  );
+
+  // Leaving the stage drops the overlay. The only toggle lives in the stage
+  // toolbar, which unmounts with the play view, so without this a player who
+  // returned to the menu was sealed inside a fixed, unscrollable overlay
+  // showing a clipped menu — and a phone has neither an Escape key nor a
+  // browser fullscreen affordance to escape with.
+  assert.match(
+    panel,
+    /uiStatus === "menu" && immersiveRef\.current\.isActive\(\)\) \{\s*immersiveRef\.current\.exit\(\);/,
+  );
+  assert.match(panel, /immersive\.active && uiStatus !== "menu" \? "is-immersive"/);
+
+  // The toggle tells the truth about its own state and hands focus back to the
+  // game, because the window key handler ignores events aimed at a button.
+  assert.match(panel, /aria-pressed=\{immersive\.active\}/);
+  assert.match(panel, /canvasRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
+
+  // The hint that explains the button is written for phone players, so it
+  // cannot live in a `title` alone: touch produces no hover, only a context
+  // menu. It is rendered as copy wherever a coarse pointer exists.
+  assert.match(panel, /<span className="space-hint-touch">\s*\{legacyCopy\.fullscreenHint\}/);
+  assert.match(
+    css,
+    /@media \(any-pointer: coarse\) \{\s*\.space-hint-touch \{\s*display: inline;/,
+  );
+
+  // The overlay paints over the site but does not remove it. Without this the
+  // Tab order walks straight out of "full screen" into a header the player
+  // cannot see, where Enter on the Control tab unmounts a running game. Real
+  // fullscreen does this for us; the CSS-only layer an iPhone always gets does
+  // not. Held on enter, released on exit AND on unmount — an inert page that
+  // outlives its overlay is a site nobody can use until they reload.
+  assert.match(hook, /if \(target\) inertedRef\.current = inertOutside\(target\);/);
+  assert.match(hook, /const exit = useCallback\(\(\) => \{[^}]*releaseInert\(\);/);
+  assert.equal(
+    [...hook.matchAll(/element\.inert = false;/g)].length,
+    2,
+    "inert must be released on exit and again on unmount",
+  );
+
+  // Ballast guard: the hook exposes nothing the panel does not call. An earlier
+  // draft returned a documented `isTransitioning()` blur guard that no caller
+  // ever consulted, which reads as a protection the application does not have.
+  const returned = hook.match(/\n  return \{ ([^}]*) \};/);
+  assert.ok(returned, "useImmersiveStage must return one object literal");
+  for (const member of returned[1].split(",").map((name) => name.trim()).filter(Boolean)) {
+    assert.ok(
+      panel.includes(`immersive.${member}`) ||
+        panel.includes(`immersiveRef.current.${member}`),
+      `useImmersiveStage exposes ${member}, and nothing calls it`,
+    );
+  }
+});

@@ -729,6 +729,10 @@ export const GAME_COPY = {
     calibrate: "◎ Калібрувати центр",
     calibration: (x: number, y: number) =>
       `Відпусти джойстик і натисни цю кнопку. Поточний центр: X ${x} · Y ${y}.`,
+    fullscreenEnter: "На весь екран",
+    fullscreenExit: "Вийти з повного екрана",
+    fullscreenHint:
+      "На телефоні так вміщається все одразу — поле, показники й кнопки, без прокрутки.",
     touchJoystickAria: "Екранний джойстик для руху корабля",
     touchJoystickHint:
       "На телефоні тягни чорну ручку пальцем для руху, а стріляй і активуй суперсилу окремими кнопками.",
@@ -970,6 +974,10 @@ export const GAME_COPY = {
     calibrate: "◎ Mitte kalibrieren",
     calibration: (x: number, y: number) =>
       `Lass den Joystick los und drücke diese Taste. Aktuelle Mitte: X ${x} · Y ${y}.`,
+    fullscreenEnter: "Vollbild",
+    fullscreenExit: "Vollbild verlassen",
+    fullscreenHint:
+      "Auf dem Handy passt so alles auf einmal aufs Bild — Spielfeld, Anzeigen und Tasten, ohne Scrollen.",
     touchJoystickAria: "Bildschirm-Joystick zum Steuern des Schiffs",
     touchJoystickHint:
       "Ziehe den schwarzen Knopf zum Bewegen; Schießen und Superkraft haben eigene Tasten.",
@@ -1207,6 +1215,10 @@ export const GAME_COPY = {
     calibrate: "◎ Calibrate centre",
     calibration: (x: number, y: number) =>
       `Release the joystick and press this button. Current centre: X ${x} · Y ${y}.`,
+    fullscreenEnter: "Full screen",
+    fullscreenExit: "Leave full screen",
+    fullscreenHint:
+      "On a phone this fits everything at once — the field, the readouts and the buttons, with no scrolling.",
     touchJoystickAria: "On-screen joystick for moving the ship",
     touchJoystickHint:
       "Drag the black knob to move; use the separate fire and superpower buttons to attack.",

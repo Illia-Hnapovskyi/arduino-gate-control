@@ -142,6 +142,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `app/game/audio.ts`, `app/game/useGameAudio.ts` | Browser Web Audio, sector music, and Arduino buzzer command routing. |
 | `app/game/persistence.ts`, `app/game/resume.ts` | Validated seven-day v2 checkpoints and safe between-wave restoration. |
 | `app/game/statsAdapter.ts` | Converts a runtime result to the shared v2 statistics contract. |
+| `app/game/useImmersiveStage.ts` | Immersive stage mode: the CSS overlay class that works everywhere, the Fullscreen API layered on top where it exists (never on iPhone, which has none for non-`<video>` elements), scroll save/restore, `inert` on everything outside the overlay so the Tab order cannot walk out of it, and the generation counter that keeps an async request honest. |
 | `app/game/GameMenu.tsx`, `app/game/GameHud.tsx`, `app/game/GameOverlays.tsx`, `app/game/ProgressPanels.tsx` | Menu, HUD, pause/upgrade/result/toast overlays, achievements, and career panels. The menu section is the player's own choice when they have made one, otherwise `requestedSection` (the auth redirect asking for the profile panel, claimed once per page load). |
 | `app/i18n.ts` | All Ukrainian, German, and English page/game copy. |
 | `app/globals.css` | Entire visual system and responsive behavior; there is no component CSS framework. |
@@ -367,6 +368,19 @@ contains:
 - keyboard, touch/virtual joystick, Arduino joystick, and mixed controller
   classification; a long Arduino-switch hold activates the equipped power
   without changing the firmware pin map.
+
+The world is a fixed 900x540 — `GAME_WORLD_WIDTH` and `GAME_WORLD_HEIGHT` in
+`app/game/runtime.ts` — and `app/game/rendering.ts` draws in world coordinates.
+That 5:3 shape and the visible play area are frozen: a wider view shows enemies
+sooner, which changes difficulty and would make the scores already stored in the
+leaderboard incomparable between devices. Layout may change the size and the
+position of that box and nothing else. The stage CSS obeys this by letterboxing
+(`object-fit: contain` on the canvas), never by touching the canvas attributes
+or the world constants. Immersive mode follows the same rule from the other
+side: it never predicts how much room the chrome needs — the column is bounded
+by the viewport, the canvas takes whatever is left, and the drawing keeps its
+ratio inside it. An abandoned attempt summed hardcoded pixel tokens into a
+chrome budget and collapsed the stage on a real iPhone when they did not add up.
 
 Canonical content IDs (never invent a second spelling in UI/API/SQL):
 
@@ -792,11 +806,20 @@ physical Arduino pass.
 - The stylesheet starts with `@import "tailwindcss"`, and PostCSS uses
   `@tailwindcss/postcss`; keep those build dependencies even though most visual
   rules are hand-written global CSS rather than utility classes.
-- Responsive breakpoints currently exist at 1120, 980, 640, 480, and 430 px.
-  Stats switch from two columns to one at 980 px; forms and stats compact again
-  at 640 px.
+- Responsive breakpoints currently exist at 1120, 980, 640, 480, 430, and
+  360 px wide. Stats switch from two columns to one at 980 px; forms and stats
+  compact again at 640 px.
+- The game stage owns the only rules gated on something other than width: a
+  `(max-height: 700px) and (pointer: coarse)` cap on the in-page canvas, and a
+  `(orientation: landscape) and (max-height: 560px) and (pointer: coarse)` flank
+  layout for the immersive stage. Both ask about the pointer as well, because a
+  short window on a laptop is not a phone. Neither is visible at the two check
+  widths below, so a width-only pass cannot see a regression in either.
 - Check both approximately 1440 px desktop and 390 px mobile widths after
-  meaningful UI changes. There must be no horizontal page overflow.
+  meaningful UI changes. There must be no horizontal page overflow. When the
+  change touches the game stage, also check a landscape phone (about 812x375)
+  and a desktop window under 700 px tall, each in the page and in immersive
+  mode — that is where the height- and orientation-gated rules live.
 - Preserve keyboard and touch controls, visible focus, screen-reader labels, and
   `prefers-reduced-motion` behavior.
 - Add every user-facing string to all `uk`, `de`, and `en` sections. The

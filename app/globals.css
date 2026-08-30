@@ -5279,6 +5279,202 @@ kbd {
   box-shadow: inset 0 0 0 3px #d7f55a;
 }
 
+/* ── Fitting the stage to the screen ──────────────────────────────────────
+   The simulation is a fixed 900x540 world, so the 5:3 shape and the visible
+   play area are frozen: a wider view would show enemies sooner and make
+   recorded leaderboard scores incomparable between devices. Only the size of
+   that box and where it sits may change. */
+
+/* In the page: one soft cap, so the stage can never be taller than the screen.
+   A cap rather than a computed chrome budget — if it is a little conservative
+   the canvas is a little smaller, which is a far better failure than a canvas
+   that overflows the viewport and forces scrolling mid-run. Measured against
+   the compiled stylesheet: with the cap, a portrait phone keeps the whole
+   column on screen (708px of 812 at 375x812, 717 of 844, 732 of 896). A
+   landscape phone still scrolls — the HUD, the toolbar and the touch deck alone
+   exceed 375px of height there, and nothing but immersive mode can fit
+   everything.
+
+   Gated on the pointer as well as the height, because a short viewport is not
+   the same thing as a phone. Chrome maximised on a 1366x768 laptop is about
+   650px of inner height, and height alone fired the cap there: the canvas went
+   from 1118x671 to 607x364 on a screen where nothing was wrong. The cap was
+   written for the device whose primary pointer is a thumb, so that is what it
+   asks about. */
+@media (max-height: 700px) and (pointer: coarse) {
+  .space-game-root .space-canvas-wrap {
+    inline-size: min(100%, calc(56vh * 5 / 3));
+    inline-size: min(100%, calc(56svh * 5 / 3));
+    margin-inline: auto;
+    max-block-size: 56vh;
+    max-block-size: 56svh;
+  }
+}
+
+/* Immersive: the play view becomes the screen. Nothing here estimates how much
+   room the chrome needs — the column is bounded, the canvas takes whatever is
+   left, and the drawing keeps its ratio inside that leftover whatever shape it
+   turns out to be. An earlier attempt summed seven hardcoded pixel tokens into
+   a chrome budget; on a real iPhone the guesses did not add up and the stage
+   collapsed to its minimum. `svh`, not `dvh`: a browser toolbar sliding in must
+   never resize the stage while somebody is flying. */
+.space-game-root.is-immersive {
+  background: #06141d;
+  block-size: 100vh;
+  block-size: 100svh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  inset: 0;
+  /* The page column is centred inside 1320px; the overlay is the screen. Left
+     unreset, "full screen" stopped at 1320px on a wide monitor and the live
+     page stayed visible — and clickable — down both sides of it. */
+  max-inline-size: none;
+  overflow: hidden;
+  padding:
+    max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
+    max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  position: fixed;
+  z-index: 60;
+}
+
+/* The page behind must not scroll under the overlay, or iOS retracts its
+   address bar and resizes the stage in the middle of a run. */
+html:has(.space-game-root.is-immersive),
+body:has(.space-game-root.is-immersive) {
+  overflow: hidden;
+}
+
+.space-game-root.is-immersive .space-stage-shell {
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  /* `margin: 0 auto` is a page rule, and an auto cross-axis margin cancels the
+     flex stretch: the shell sized itself to the canvas's intrinsic 900px, so
+     immersive drew a smaller field than the page did on every laptop. Both
+     resets are load-bearing — the 1120px max-width would cap it next. */
+  margin-inline: 0;
+  max-inline-size: none;
+  min-block-size: 0;
+}
+
+.space-game-root.is-immersive .space-canvas-wrap {
+  align-items: center;
+  aspect-ratio: auto;
+  display: flex;
+  flex: 1 1 auto;
+  inline-size: 100%;
+  justify-content: center;
+  max-block-size: none;
+  min-block-size: 0;
+}
+
+/* The wrap letterboxes; the drawing keeps 5:3 and is free to scale past its
+   natural 900x540. Measured against the compiled stylesheet, immersive draws
+   1156x694 at 1440x900 and 1464x878 at 1920x1080, against 1118x671 in the page.
+   It is not bigger at every size — a 1280x800 laptop draws 994x596, because the
+   HUD and the toolbar are still real height — and what it buys there is the
+   whole stage on one screen: in the page that column is about 1040px tall and
+   scrolls. Letterboxing is safe because nothing maps pointer coordinates on the
+   canvas to world coordinates — the canvas carries no pointer handlers. */
+.space-game-root.is-immersive .space-canvas-wrap canvas {
+  block-size: 100%;
+  inline-size: 100%;
+  object-fit: contain;
+}
+
+/* Immersive spends its height on the game, so a control this device cannot use
+   stands down. That is not a chrome budget in disguise: it predicts no size, it
+   only drops an element that has no user here, and the stage still takes
+   whatever the survivors leave. The keyboard legend goes in every case — it is
+   a page-view legend the player reads before launching, and while it was left
+   in it also auto-placed itself into an implicit second row of the landscape
+   grid below and took a third of the playfield with it. */
+.space-game-root.is-immersive .space-keyboard-hint {
+  display: none;
+}
+
+.space-game-root.is-immersive .space-touch-deck {
+  flex: 0 0 auto;
+  margin: 0 auto;
+}
+
+/* A mouse cannot drag a thumb stick, and the deck is ~170px of a fixed column.
+   Keeping it made immersive smaller than the page on every laptop: 1440x900
+   drew 823x494 against the page's 1118x671, where the same screen now draws
+   1156x694. It does cost the keyboard-operable fire and power buttons while
+   immersive on a hybrid laptop — the key bindings still fire, and the deck is
+   one tap away in the page view. */
+@media (pointer: fine) {
+  .space-game-root.is-immersive .space-touch-deck {
+    display: none;
+  }
+}
+
+/* A short landscape screen cannot stack the HUD, the field, the toolbar and the
+   touch controls: measured against the real stylesheet at 812x375, the deck and
+   the HUD alone left the canvas 43x26 px. The controls move to the flanks
+   instead, where a thumb reaches them anyway. `display: contents` promotes the
+   deck's own children into this grid, so nothing moves in the DOM and no
+   pointer capture is lost mid-drag. Thumbs only: on a fine pointer the deck is
+   already gone, and flank columns would just narrow the field.
+
+   One explicit row that takes the whole height, and implicit rows worth
+   nothing. An unplaced child is the trap here — the keyboard hint used to
+   auto-place into an implicit second row, which split the fixed 100svh between
+   two tracks and left the drawn field 127x76 px, a third of the size the
+   abandoned branch was rejected for. That element is out of immersive now;
+   `grid-auto-rows: 0` makes sure the next child added to `.space-game-root`
+   cannot repeat it silently.
+
+   The 136px floor on the stick is not cosmetic: the drag radius is
+   `max(24, min(width, height) / 2 - 28)`, so a narrower column would hit the 24
+   floor and quietly make steering 1.67x more sensitive than on every other
+   device. At 136 the radius stays 40 — the same number the deck gives today.
+   Both dimensions feed that `min()`, so the stick's own height below is exactly
+   as load-bearing as the column width. */
+@media (orientation: landscape) and (max-height: 560px) and (pointer: coarse) {
+  .space-game-root.is-immersive {
+    align-items: center;
+    display: grid;
+    gap: 8px;
+    grid-auto-rows: 0;
+    grid-template-columns:
+      clamp(136px, 17vw, 168px) minmax(0, 1fr) clamp(136px, 17vw, 168px);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .space-game-root.is-immersive .space-stage-shell {
+    block-size: 100%;
+    grid-column: 2;
+    grid-row: 1;
+    min-block-size: 0;
+  }
+
+  .space-game-root.is-immersive .space-touch-deck {
+    display: contents;
+  }
+
+  .space-game-root.is-immersive .space-virtual-stick {
+    align-self: center;
+    block-size: min(136px, 46vh);
+    grid-column: 1;
+    grid-row: 1;
+    inline-size: 100%;
+    justify-self: stretch;
+  }
+
+  .space-game-root.is-immersive .space-touch-actions {
+    align-self: center;
+    display: grid;
+    gap: 10px;
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: stretch;
+  }
+}
+
 .space-stage-toolbar {
   align-items: center;
   background: rgba(2, 12, 19, 0.94);
@@ -5427,6 +5623,29 @@ kbd {
   margin: 10px auto 0;
   max-width: 760px;
   text-align: center;
+}
+
+/* The full-screen hint is written for phone players — "On a phone this fits
+   everything at once" — and a `title` tooltip is the one surface a phone can
+   never show, because touch produces no hover, only a context menu. So the
+   sentence is rendered as copy wherever a coarse pointer exists, and the
+   keyboard legend beside it stands down where the primary pointer is a thumb.
+   The line still says one useful thing per device and costs no more height than
+   it does today; `title` stays as the mouse-only extra. */
+.space-hint-touch {
+  display: none;
+}
+
+@media (any-pointer: coarse) {
+  .space-hint-touch {
+    display: inline;
+  }
+}
+
+@media (pointer: coarse) {
+  .space-hint-keys {
+    display: none;
+  }
 }
 
 @keyframes space-toast-in {
