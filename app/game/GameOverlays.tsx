@@ -147,7 +147,7 @@ export function GameOverlay({
           <span aria-hidden="true" className="space-overlay-symbol">Ⅱ</span>
           <h2 id="space-pause-title">{copy.pauseTitle}</h2>
           <p id="space-pause-description">{copy.pauseHint}</p>
-          <div>
+          <div className="space-overlay-actions">
             <button autoFocus className="button primary" data-dialog-initial-focus onClick={onResume} type="button">{copy.resume}</button>
             <button className="button secondary" onClick={onFinish} type="button">{copy.finishRun}</button>
           </div>

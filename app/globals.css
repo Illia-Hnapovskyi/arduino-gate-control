@@ -3487,6 +3487,12 @@ kbd {
     grid-column: 1 / -1;
     grid-row: 2;
     justify-content: center;
+    /* Hug the buttons. The row is full width so the pill can centre in it, but
+       the buttons below cap at 240px each, so without a ceiling the pill kept
+       stretching and left a wide empty gutter inside itself on a landscape
+       phone. 520px is the two capped buttons plus the gap and the padding. */
+    margin-inline: auto;
+    max-width: min(100%, 520px);
     position: static;
     transform: none;
     width: 100%;
@@ -4378,9 +4384,14 @@ kbd {
   color: #b8d3cf;
 }
 
+/* Matched by class, never by position. This used to end in
+   `.space-overlay-card > div:last-child`, written for the pause card's unnamed
+   button row — but the upgrade card's last child is the choice grid, so the
+   catch-all silently turned it into a flex row: `grid-template-columns` was
+   ignored and the three cards took the width of their own text. */
 .space-launch-actions,
-.space-result-actions,
-.space-overlay-card > div:last-child {
+.space-overlay-actions,
+.space-result-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 9px;
@@ -4724,6 +4735,21 @@ kbd {
   height: 100%;
 }
 
+/* A choice you cannot see is not a choice. These overlays are bounded by the
+   canvas, and on a phone the canvas is small — in landscape barely 180px tall,
+   under a third of what the three upgrade cards need, so the grid was cut off
+   and had to be scrolled. Lift them to the viewport instead of stretching the
+   stage to fit them: stretching also grew the stage on every pause, pushing the
+   toolbar and the touch controls off screen. */
+@media (max-width: 640px), (max-height: 700px) {
+  .space-canvas-wrap > .space-game-overlay {
+    inset: 0;
+    position: fixed;
+    /* Above the immersive root, which is 60. */
+    z-index: 70;
+  }
+}
+
 .space-game-overlay {
   align-items: flex-start;
   background: rgba(1, 8, 15, 0.72);
@@ -4796,6 +4822,28 @@ kbd {
   cursor: pointer;
   min-height: 180px;
   padding: 18px 14px;
+}
+
+/* A choice you have to scroll to see is not a choice. The overlay is bounded by
+   the stage, so on a short screen the three cards shrink to fit rather than
+   pushing each other out of view: one column stacks them in portrait, and the
+   fixed 180px floor gives way to what the card can actually spare. */
+@media (max-width: 640px), (max-height: 700px) {
+  .space-upgrade-grid button {
+    min-height: 0;
+    padding: 12px 12px;
+  }
+
+  .space-upgrade-grid button > span {
+    font-size: 20px;
+    margin-bottom: 6px;
+  }
+}
+
+@media (max-width: 640px) {
+  .space-upgrade-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .space-upgrade-grid button:hover,
@@ -5435,6 +5483,15 @@ body:has(.space-game-root.is-immersive) {
    Both dimensions feed that `min()`, so the stick's own height below is exactly
    as load-bearing as the column width. */
 @media (orientation: landscape) and (max-height: 560px) and (pointer: coarse) {
+  /* Still in the page: the canvas is capped by height while the shell stays
+     full width, which reads as a small game marooned in a big dark frame.
+     Shrink the frame to the game; full screen is where it gets bigger. */
+  .space-game-root[data-stage="play"]:not(.is-immersive) .space-stage-shell {
+    margin-inline: auto;
+    max-inline-size: min(100%, calc(56vh * 5 / 3 + 4px));
+    max-inline-size: min(100%, calc(56svh * 5 / 3 + 4px));
+  }
+
   .space-game-root.is-immersive {
     align-items: center;
     display: grid;
@@ -5483,6 +5540,22 @@ body:has(.space-game-root.is-immersive) {
   gap: 10px;
   justify-content: center;
   padding: 11px 14px;
+}
+
+/* .button.secondary paints itself with --ink, the near-black of the light page.
+   On these dark surfaces that is the background colour: measured at 1.18:1 in
+   the stage toolbar and 1.04:1 on the result card, where 4.5:1 is the minimum.
+   The buttons were legible only as silhouettes. */
+.space-stage-toolbar .button.secondary,
+.space-overlay-card .button.secondary {
+  border-color: rgba(126, 243, 220, 0.4);
+  color: #effffb;
+}
+
+.space-stage-toolbar .button.secondary:hover,
+.space-overlay-card .button.secondary:hover {
+  background: rgba(126, 243, 220, 0.12);
+  border-color: rgba(126, 243, 220, 0.6);
 }
 
 .space-stage-toolbar > span {
@@ -5848,10 +5921,6 @@ body:has(.space-game-root.is-immersive) {
     width: 100%;
   }
 
-  .space-canvas-wrap:has(.space-game-overlay) {
-    aspect-ratio: auto;
-    min-height: min(640px, 72svh);
-  }
 
   .space-game-overlay {
     padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));

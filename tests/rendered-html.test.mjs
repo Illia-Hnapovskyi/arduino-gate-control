@@ -525,7 +525,15 @@ test("Space Defender overlays and compact HUD keep their accessibility contract"
     /disabled=\{hasResume \|\| hasUnsavedResult \|\| !connected \|\| !hasProfile\}/,
   );
   assert.match(css, /data-reduced-motion="true"/);
-  assert.match(css, /\.space-canvas-wrap:has\(\.space-game-overlay\)/);
+  // A choice overlay must have room to be read on a phone. That used to be done
+  // by stretching the canvas box to fit it, which also grew the stage on every
+  // pause; the overlay is lifted out to the viewport instead. Pin the guarantee
+  // rather than the old mechanism, and pin that the stretching stays gone.
+  assert.match(
+    css,
+    /@media \(max-width: 640px\), \(max-height: 700px\) \{\s*\.space-canvas-wrap > \.space-game-overlay \{[\s\S]*?position: fixed;/,
+  );
+  assert.doesNotMatch(css, /\.space-canvas-wrap:has\(\.space-game-overlay\)/);
   assert.doesNotMatch(css, /margin-left:\s*-22px/);
   assert.doesNotMatch(
     css,
