@@ -28,6 +28,7 @@ export function gameResultToStatsInput(
     }));
   return {
     runId: result.runId,
+    statisticsSource: result.statisticsSource,
     score: Math.max(0, Math.floor(result.score / 10) * 10),
     level: Math.max(1, Math.min(9, result.level)),
     durationMs,

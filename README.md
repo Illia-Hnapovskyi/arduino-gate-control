@@ -40,7 +40,10 @@
   одразу екіпіровані boss rewards,
   результат забігу й повідомлення про рекорд/досягнення;
 - remappable keyboard controls, virtual touch joystick, окремі fire/power
-  кнопки, screen shake toggle, volume controls і `prefers-reduced-motion`;
+  кнопки, навігацію меню фізичним Arduino-джойстиком, screen shake toggle,
+  volume controls і `prefers-reduced-motion`;
+- вибір автоматичної музики за сектором, однієї із семи наявних композицій або
+  режиму без музики; вибір зберігається на пристрої;
 - паузу при втраті фокуса та безпечне «Продовжити» лише з checkpoint між
   хвилями. Середина бою навмисно не відновлюється;
 - екран результату не дозволяє випадково піти або почати новий забіг, доки
@@ -53,6 +56,9 @@
 [`GAME_DESIGN.md`](GAME_DESIGN.md). Канонічні числа живуть у
 `app/game/balance.ts`, а стабільні ID — у `app/game/types.ts` і
 `shared/gameStats.ts`.
+
+Бюджет звичайних загроз збільшено на 10% без зміни HP, швидкості, тривалості
+хвилі або обмеження на 48 запланованих ворогів.
 
 ## Активна архітектура
 
@@ -75,11 +81,15 @@ src/main.tsx → app/page.tsx → app/GamePanel.tsx → app/game/*
 - `rendering.ts` — процедурний Canvas-рендер;
 - `powerUps.ts`, `achievements.ts` — progression у забігу й між забігами;
 - `input.ts`, `audio.ts`, `useGameAudio.ts` — усі контролери та звук;
+- `controllerNavigation.ts`, `useControllerNavigation.ts` — навігація
+  Arduino-джойстиком по кнопках, вкладках і діалогах поза боєм;
 - `persistence.ts`, `resume.ts`, `statsAdapter.ts` — checkpoint і статистика;
 - `GameMenu.tsx`, `GameHud.tsx`, `GameOverlays.tsx`, `ProgressPanels.tsx` — UI.
 
 Next.js, Cloudflare worker, D1, Drizzle і vinext-файли лишаються опціональним
 legacy/scaffolding. Production frontend — React 19 + Vite, output — `dist/`.
+Детальніший потік даних і межі компонентів — у
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Локальний запуск
 
@@ -108,10 +118,12 @@ npx vercel dev
   `game_account_links`;
 - 20-символьний access code скасовано. Сервер його не приймає, не генерує й не
   повертає, а запит із полем `accessCode` отримує 400 `ACCESS_CODE_RETIRED`;
-- активне сховище статистики — `arduino-gate-game-stats:v3`: сховище кількох
-  профілів з активним профілем; валідні v2 та v1 дані мігрують один раз без
-  втрати старого коду, pending rename або pending runs, а старі ключі ніколи не
-  видаляються й не перезаписуються;
+- активне сховище статистики — `arduino-gate-game-stats:v4`: кілька профілів
+  з активним профілем; валідні v3/v2/v1 дані мігрують без втрати старого коду,
+  pending rename або pending runs. Старі ключі ніколи не видаляються й не
+  перезаписуються. v4 захищає джерело нових подій від sanitizer старої вкладки;
+  нові offline runs зі старого v3 імпортуються як `legacy` рівно один раз.
+  Квитанції імпорту не дають уже підтвердженій старій черзі повернутися;
 - старий профіль, який має код і не має `authUserId`, стає **orphaned**: він
   назавжди лишається у сховищі, статистику видно, чергу подій збережено, але
   синхронізація нічого не відправляє й показує код `code_login_retired`. Його
@@ -137,8 +149,15 @@ npx vercel dev
 - завершення спершу оптимістично записується локально як `run.completed` v2,
   потім відправляється чергою пакетами до п'яти подій; кожен такий запит іде
   тільки з bearer-токеном акаунта;
+- новий забіг запам'ятовує джерело `demo` або `arduino` в момент старту;
+  від'єднання плати під час гри не переписує його заднім числом. Старі runs,
+  checkpoint-и й події черги без цього поля лишаються в окремому `legacy`
+  розділі, оскільки тип керування не доводить фізичного підключення плати;
 - `eventId === runId`; однакова повторна подія є idempotent, а повторне
   використання ID з іншим payload відхиляється;
+- профіль, кар'єра і рейтинг показують вибране джерело окремо; історичний
+  загальний агрегат збережено для сумісності, а вже відкриті досягнення
+  лишаються глобальними для акаунта;
 - у базі синхронізуються базові totals, режим/складність, бойові метрики,
   power statistics, achievements, unlocks і рекорди;
 - volumes, shake, reduced-motion override і remapped keys у поточному UI є
@@ -147,8 +166,10 @@ npx vercel dev
 - «Забути профіль» видаляє лише локальну копію й приховується, поки є
   несинхронізований результат. Воно ніколи не видаляє remote profile.
 
-Таблиця лідерів показує top 25 профілів із `games_played > 0`. Порожній рейтинг
-не доводить, що `game_players` порожня.
+Рейтинг показує top 25 профілів із забігами для вибраного джерела. Порожній
+рейтинг не доводить, що `game_players` порожня. `GET /api/stats` повертає
+окремі `sources`; базове поле `leaderboard` містить деморежим для сумісності
+форми відповіді.
 
 ## Акаунт (Supabase Auth) — єдиний спосіб мати профіль
 
@@ -174,6 +195,9 @@ npx vercel dev
 - graceful degradation лишається обов'язковою, бо той самий build працює і з
   проєктами, де провайдер вимкнений: якщо виклик OAuth завершується помилкою, UI
   показує спокійне пояснення, а не сирий текст помилки;
+- завершення PKCE виконується в одному місці; екран дочікується результату
+  перенаправлення до показу стану сесії. Скасована церемонія passkey або
+  невдале оновлення їхнього списку показують окреме локалізоване повідомлення;
 - passkeys реалізовані в клієнті й не коштують нічого додатково; тумблер
   **Authentication → Passkeys** у живому проєкті увімкнений. Там, де його немає,
   кожен виклик повертає `passkey_disabled`, і UI просто пропонує email+пароль.
@@ -220,11 +244,15 @@ npx vercel dev
    `profile_rename` очищено, бо їхні HMAC-scopes перейшли з digest коду на
    auth-користувача. Жоден профіль чи run не видаляється.
    **Застосована в production 2026-08-04.**
+6. `db/migrations/0006_statistics_sources.sql` — джерело кожного run і чотири
+   таблиці агрегатів за `demo`, `arduino`, `legacy`; наявні агрегати
+   переносяться тільки в `legacy`. Міграцію потрібно застосувати **перед**
+   deployment API/frontend, які запитують ці таблиці. **Застосована й перевірена у production 2026-10-03.**
 
 `0005` треба застосувати **до** deploy account-only API: цей API вставляє
 профілі без digest і не пройшов би старий `NOT NULL`.
 
-Для вже налаштованої v1 production-бази виконай відсутні `0002`—`0005`.
+Для вже налаштованої v1 production-бази виконай відсутні `0002`—`0006`.
 Запасного шляху для бази без `0002` більше немає: account-only профіль
 потребує `profile_schema_version = 3` (колонка з `0002`), тому без v2-таблиць
 працює лише GET leaderboard — `create` і `sync` повертають
@@ -246,6 +274,8 @@ Postgres.js використовує TLS, одну connection на теплий 
 до secrets. Всі таблиці мають RLS deny-by-default і не мають публічних grants/policies:
 `0002` робить `REVOKE` для v2 таблиць, `0003` — для трьох базових, `0004` — для
 `game_account_links`; `0005` не створює об'єктів, тому нових grants не потребує.
+`0006` вмикає RLS і скасовує Data API grants для всіх чотирьох нових таблиць
+та EXECUTE для своїх invoker-функцій.
 Браузер працює тільки через `/api/stats`; для auth (включно з WebAuthn-церемонією
 passkey) він додатково звертається напряму лише до Supabase Auth (`/auth/v1`).
 
@@ -274,12 +304,14 @@ git diff --check
 ```
 
 Автотести покривають deterministic waves/enemies, power cooldown, achievements,
-checkpoint migration, stats storage v1/v2→v3, credential matrix, API
+checkpoint migration, stats storage v1/v2/v3→v4 and late-v3 queue import, credential matrix, API
 validation/idempotency, SQL контракти, Arduino protocol, translation parity та
-форму Vercel Web Fetch export. Вони не доводять фізичний Web Serial timing,
-реальний Supabase deploy, WebAuthn-церемонію passkey або UI у конкретному
-браузері — ці перевірки виконуються окремо й не мають вважатися пройденими без
-фактичного тесту.
+форму Vercel Web Fetch export. Локальний браузерний fixture перевіряє
+навігацію на синтетичній Arduino-телеметрії та responsive layout; він не
+доводить фізичний Web Serial timing, реальний Supabase deploy,
+WebAuthn-церемонію passkey або поведінку на фізичних мобільних пристроях — ці
+перевірки виконуються окремо й не мають вважатися пройденими без фактичного
+тесту.
 
 ## Arduino
 

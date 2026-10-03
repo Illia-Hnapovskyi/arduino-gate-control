@@ -24,6 +24,14 @@ test("idle input does not claim a keyboard controller", () => {
   assert.equal(frame.moveY, 0);
 });
 
+test("stale disconnected switch telemetry cannot keep firing", () => {
+  const frame = resolveGameInput({ ...base, joystick: { connected: false, pressed: true, x: 1023, y: 0 } });
+  assert.equal(frame.fire, false);
+  assert.equal(frame.controller, undefined);
+  assert.equal(frame.moveX, 0);
+  assert.equal(frame.moveY, 0);
+});
+
 test("input resolver combines keyboard, touch, and Arduino without exceeding unit range", () => {
   const frame = resolveGameInput({
     ...base,

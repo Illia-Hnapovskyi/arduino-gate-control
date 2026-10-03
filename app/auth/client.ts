@@ -6,6 +6,7 @@ import {
   SUPABASE_URL,
   authAvailable,
 } from "./supabaseConfig";
+import { authFailure, type AuthActionResult } from "./errors";
 
 // ── Consent (cookieless, localStorage only) ──────────────────────────────
 // The Supabase client must never be constructed — and therefore never touch
@@ -15,9 +16,11 @@ export type ConsentChoice = "local" | "account";
 
 const CONSENT_STORAGE_KEY = "arduino-gate-consent:v1";
 const CONSENT_EVENT = "arduino-gate-consent-change";
+let consentOverride: ConsentChoice | null = null;
 
 export function readConsentChoice(): ConsentChoice | null {
   if (typeof window === "undefined") return null;
+  if (consentOverride) return consentOverride;
   try {
     const raw = window.localStorage.getItem(CONSENT_STORAGE_KEY);
     if (!raw) return null;
@@ -32,6 +35,7 @@ export function readConsentChoice(): ConsentChoice | null {
 
 export function saveConsentChoice(choice: ConsentChoice) {
   if (typeof window === "undefined") return;
+  consentOverride = choice;
   try {
     window.localStorage.setItem(
       CONSENT_STORAGE_KEY,
@@ -45,7 +49,9 @@ export function saveConsentChoice(choice: ConsentChoice) {
 
 export function subscribeToConsentChoice(callback: () => void) {
   const onStorage = (event: StorageEvent) => {
-    if (event.key === CONSENT_STORAGE_KEY) callback();
+    if (event.key !== CONSENT_STORAGE_KEY && event.key !== null) return;
+    consentOverride = null;
+    callback();
   };
   window.addEventListener("storage", onStorage);
   window.addEventListener(CONSENT_EVENT, callback);
@@ -82,6 +88,34 @@ export function getSupabaseClient(): SupabaseClient | null {
   return cachedClient;
 }
 
+// signInWithOAuth constructs a URL and navigates without asking GoTrue whether
+// the provider is enabled. Check public settings on this explicit user action
+// first, so an unconfigured provider cannot strand them on a raw JSON error.
+export async function checkOAuthProvider(
+  provider: "google" | "apple",
+): Promise<AuthActionResult> {
+  if (!authAvailable || readConsentChoice() !== "account") {
+    return { ok: false, errorKey: "accountProviderUnavailable" };
+  }
+  try {
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/settings`, {
+      credentials: "omit",
+      cache: "no-store",
+      headers: { apikey: SUPABASE_PUBLISHABLE_KEY },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!response.ok) return authFailure({ status: response.status }, "accountProviderUnavailable");
+    const settings: unknown = await response.json();
+    const external = settings && typeof settings === "object"
+      ? (settings as { external?: unknown }).external : null;
+    const enabled = external && typeof external === "object"
+      ? (external as Record<string, unknown>)[provider] === true : false;
+    return enabled ? { ok: true } : { ok: false, errorKey: "accountProviderUnavailable" };
+  } catch (error) {
+    return authFailure(error, "accountProviderUnavailable");
+  }
+}
+
 // ── Completing a provider redirect ────────────────────────────────────────
 // The client is built with detectSessionInUrl disabled so that constructing it
 // never touches the network or storage on its own. That makes finishing the
@@ -112,17 +146,33 @@ export const REDIRECT_PARAMS = [
   "error_description",
   "reset",
   "view",
+  "access_token",
+  "refresh_token",
+  "provider_token",
+  "provider_refresh_token",
+  "token_type",
+  "expires_in",
+  "expires_at",
 ];
 
 function stripRedirectParams() {
   const url = new URL(window.location.href);
+  const fragment = new URLSearchParams(url.hash.slice(1));
+  let fragmentTouched = false;
   let touched = false;
   for (const key of REDIRECT_PARAMS) {
-    if (!url.searchParams.has(key)) continue;
-    url.searchParams.delete(key);
-    touched = true;
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      touched = true;
+    }
+    if (fragment.has(key)) {
+      fragment.delete(key);
+      fragmentTouched = true;
+      touched = true;
+    }
   }
   if (!touched) return;
+  if (fragmentTouched) url.hash = fragment.toString();
   const query = url.searchParams.toString();
   try {
     window.history.replaceState(
@@ -141,6 +191,14 @@ function stripRedirectParams() {
 
 async function exchangeRedirect(): Promise<AuthRedirectResult> {
   const params = new URLSearchParams(window.location.search);
+  // GoTrue can return refusal details in the fragment, including expired
+  // confirmation/reset links. Ordinary page anchors remain untouched.
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  for (const key of REDIRECT_PARAMS) {
+    if (!params.has(key) && fragment.has(key)) {
+      params.set(key, fragment.get(key)!);
+    }
+  }
   const code = params.get("code");
   const error = params.get("error");
   const errorCode = params.get("error_code");
@@ -153,7 +211,7 @@ async function exchangeRedirect(): Promise<AuthRedirectResult> {
   // captured above, so nothing is lost by clearing the query this early.
   stripRedirectParams();
 
-  if (error) {
+  if (error || errorCode) {
     // A closed provider window is the player changing their mind, not a fault,
     // and the two stay distinguishable all the way to the notice in the panel.
     // But `access_denied` is also what the auth server relays for every refusal
@@ -168,6 +226,11 @@ async function exchangeRedirect(): Promise<AuthRedirectResult> {
       passwordReset,
       view,
     };
+  }
+  // This app only accepts PKCE. Remove obsolete implicit-flow credentials
+  // without adopting them or leaving them in the browser address/history.
+  if (params.has("access_token") || params.has("refresh_token")) {
+    return { kind: "failed", passwordReset, view };
   }
   if (!code) return { kind: "none", passwordReset, view };
   const client = getSupabaseClient();

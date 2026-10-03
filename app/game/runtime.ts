@@ -1,4 +1,5 @@
 import type { GameSfxId } from "./audio.ts";
+import type { GameStatisticsSource } from "../../shared/gameStats.ts";
 import {
   BOSS_BALANCE,
   DIFFICULTY_BALANCE,
@@ -179,6 +180,7 @@ export type HitEffectRuntime = {
 
 export type GameResultSummary = {
   runId: string;
+  statisticsSource: GameStatisticsSource;
   outcome: GameResultOutcome;
   mode: GameModeId;
   difficulty: DifficultyId;
@@ -238,6 +240,7 @@ export type GameWorld = {
   width: number;
   height: number;
   runId: string;
+  readonly statisticsSource: GameStatisticsSource;
   mode: GameModeId;
   difficulty: DifficultyId;
   seed: number;
@@ -477,6 +480,7 @@ export function createGameWorld(
   mode: GameModeId,
   difficulty: DifficultyId,
   seed: SeedInput,
+  statisticsSource: GameStatisticsSource = "legacy",
 ): GameWorld {
   if (!RUN_ID_PATTERN.test(runId)) {
     throw new RangeError("Run ID must contain 8-64 safe ASCII characters.");
@@ -492,6 +496,7 @@ export function createGameWorld(
     width: GAME_WORLD_WIDTH,
     height: GAME_WORLD_HEIGHT,
     runId,
+    statisticsSource,
     mode,
     difficulty,
     seed: numericSeed,
@@ -998,6 +1003,7 @@ function createSummary(
 ): GameResultSummary {
   return {
     runId: world.runId,
+    statisticsSource: world.statisticsSource,
     outcome,
     mode: world.mode,
     difficulty: world.difficulty,

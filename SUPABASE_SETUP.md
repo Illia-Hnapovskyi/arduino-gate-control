@@ -53,7 +53,8 @@ DDL ніколи не виконується під час API-запиту. С�
 2. [`db/migrations/0002_game_progression.sql`](db/migrations/0002_game_progression.sql);
 3. [`db/migrations/0003_base_table_grants.sql`](db/migrations/0003_base_table_grants.sql);
 4. [`db/migrations/0004_account_links.sql`](db/migrations/0004_account_links.sql);
-5. [`db/migrations/0005_account_only_identity.sql`](db/migrations/0005_account_only_identity.sql).
+5. [`db/migrations/0005_account_only_identity.sql`](db/migrations/0005_account_only_identity.sql);
+6. [`db/migrations/0006_statistics_sources.sql`](db/migrations/0006_statistics_sources.sql).
 
 Не об'єднуй і не міняй їх місцями. Після кожного файлу дочекайся успішного
 завершення перед переходом далі.
@@ -86,11 +87,22 @@ API: той API вставляє профілі без digest і не пройш
 базових таблиць з `0001`, які раніше трималися тільки на RLS. Його можна
 застосувати в будь-який момент і повторно.
 
+`0006` додає `game_runs.statistics_source` з default `legacy` для старих
+записів і чотири окремі таблиці агрегатів. Вона переносить існуючі загальні
+агрегати в `legacy`, не намагаючись визначити фізичне підключення Arduino за
+типом введення. Існуючі `game_players` та event ledger лишаються без змін;
+старі події без поля джерела зберігають свій payload hash. Invoker-тригери
+атомарно оновлюють джерельні агрегати і для старого API під час поетапного
+deploy. Повторне виконання міграції не запускає початковий backfill повторно.
+Нові таблиці мають RLS без політик і `REVOKE` Data API grants; EXECUTE нових
+функцій також відкликано. **Застосована й перевірена у production 2026-10-03.** У новому середовищі
+її потрібно виконати та перевірити **до** deploy source-aware API/frontend.
+
 ### База, де v1 статистика вже працює
 
 Якщо `0001_game_stats.sql` раніше застосовано і наявні
 `game_players`, `game_runs`, `game_rate_limits`, зроби backup та виконай
-відсутні `0002`—`0005`. Міграція additive: вона не видаляє
+відсутні `0002`—`0006`. Міграції additive: вони не видаляють
 профілі, старі runs або lifetime totals; додає колонки, ledger і progression
 таблиці. Вона backfill-ить `first_run`, `score_10000`, `max_level` і
 `veteran_10`, якщо їх можна довести з v1 aggregates, та створює відповідні
@@ -98,7 +110,7 @@ unlock rows. Для таких рядків `unlocked_at` є часом мігр
 історичною датою. Детальні enemy/boss/power/accuracy/controller milestones
 неможливо чесно відновити без v2 run facts.
 
-`0002`—`0005` запускаються у транзакції, беруть той самий advisory lock
+`0002`—`0006` запускаються у транзакції, беруть той самий advisory lock
 і використовують короткі `lock_timeout`/`statement_timeout`; `0002` і `0005`
 додають constraints явно. `IF NOT EXISTS` не
 може виправити вже наявний несумісний об'єкт. Якщо міграція завершується
@@ -122,6 +134,10 @@ unlock rows. Для таких рядків `unlocked_at` є часом мігр
 | `game_player_unlocks` | Нормалізований журнал відкритих можливостей/нагород. |
 | `game_player_settings` | Revisioned volume/motion settings contract. |
 | `game_account_links` | Приватний 1:1 зв'язок профіль↔Supabase Auth user: `player_id` PRIMARY KEY, `auth_user_id` UNIQUE, обидва FK з `ON DELETE CASCADE`. Видалення auth-користувача прибирає лише зв'язок, не профіль. |
+| `game_player_source_stats` | Games/score/high score/level/duration окремо за `demo`, `arduino`, `legacy`; джерельний leaderboard. |
+| `game_player_source_totals` | Бойові метрики й рекорди окремо за джерелом. |
+| `game_player_source_mode_stats` | Mode+difficulty aggregates за джерелом. |
+| `game_player_source_power_stats` | Power collected/activated counts за джерелом. |
 
 Серверний ledger не обрізається до 512 runs: retained event ID забезпечує
 довготривалу ідемпотентність. Для великого обсягу спочатку спроєктуй безпечну
@@ -163,8 +179,8 @@ where n.nspname = 'public'
 order by c.relname, r.rolname, p.privilege;
 ```
 
-Очікується 13 таблиць (12 після `0002`/`0003`, плюс `game_account_links`
-після `0004`), `rls_enabled = true` для кожної та відсутність public
+Очікується 17 таблиць після `0006` (13 після `0005` плюс чотири джерельні),
+`rls_enabled = true` для кожної та відсутність public
 policies. Останній запит має вернути **нуль рядків після застосування `0003`**;
 до нього три базові таблиці з `0001` ще мають Data API grants. Він свідомо
 використовує `has_table_privilege`, а не `information_schema.role_table_grants`:
@@ -173,7 +189,8 @@ policies. Останній запит має вернути **нуль рядк�
 
 Data API grants і RLS — різні захисні рівні: `0002` робить `REVOKE` для нових
 таблиць/sequence, `0003` — для трьох базових, `0004` — для `game_account_links`.
-`0005` не створює об'єктів, тому нічого не потребує. Ці міграції знімають права
+`0005` не створює об'єктів, тому нічого не потребує, а `0006` відкликає права
+для чотирьох нових таблиць та EXECUTE для своїх функцій. Ці міграції знімають права
 станом на момент виконання; вони **не** змінюють `ALTER DEFAULT PRIVILEGES`, тому
 будь-яка майбутня таблиця в `public` знову отримає grants і потребуватиме
 власного `REVOKE`. Не додавай grants або policies без окремого security review.
@@ -190,6 +207,7 @@ select
      where conname = 'game_players_reachable_check'
        and conrelid = 'public.game_players'::regclass
        and convalidated))                                         as migration_0005_applied,
+  (to_regclass('public.game_player_source_stats') is not null)    as migration_0006_applied,
   (select count(*) from pg_policies
      where schemaname = 'public' and tablename like 'game_%')      as public_policies,
   (select count(*) from pg_class c
@@ -198,7 +216,10 @@ select
        and c.relname like 'game_%' and not c.relrowsecurity)       as tables_without_rls;
 ```
 
-Здоровий стан після `0005`: `13 | true | true | true | 0 | 0`. Якщо
+Здоровий стан після `0006`: `17 | true | true | true | true | 0 | 0`.
+Поточна production-база до цієї міграції має 13 таблиць та
+`migration_0006_applied = false`; цей стан придатний лише для попереднього
+API. Якщо
 `migration_0002_applied = false`, то працює лише GET leaderboard: `create` і
 `sync` повертають `503 SCHEMA_MIGRATION_REQUIRED`, а `session`, `rename` і
 `record` — `404 AUTH_NOT_LINKED`, бо без `profile_schema_version` account-only
@@ -207,6 +228,8 @@ offline-черзі — дані не втрачені, але жодна дія 
 Якщо `migration_0004_applied` або `migration_0005_applied` дорівнює `false`,
 account-only API не запрацює зовсім: він шукає профіль через
 `game_account_links` і вставляє його без digest.
+Якщо `migration_0006_applied = false`, новий source-aware API повертає
+`503 SCHEMA_MIGRATION_REQUIRED`; локальна черга має лишитися недоторканою.
 
 ## 3. Скопіюй Transaction Pooler URI
 
@@ -254,14 +277,18 @@ openssl rand -hex 32
 ## 5. Безпечний порядок production deployment
 
 1. Зроби backup або підтвердь доступну point-in-time recovery.
-2. Застосуй відсутні міграції: `0001` → `0002` → `0003` → `0004` → `0005`.
-3. Виконай read-only перевірку схеми/RLS/grants.
-4. Deploy account-only API/frontend лише після підтверджених `0004` і `0005`.
+2. Застосуй відсутні міграції: `0001` → `0002` → `0003` → `0004` → `0005` → `0006`.
+3. Виконай read-only перевірку схеми/RLS/grants і наявності чотирьох
+   джерельних таблиць.
+4. Deploy source-aware API/frontend лише після підтвердженої `0006`. Старий
+   API може працювати на новій схемі в короткому вікні між цими кроками;
+   новий API на старій схемі — ні.
 5. Виконай безпечні probes нижче.
 6. Перевір Vercel runtime logs без виведення secrets або request payloads.
 
 Якщо frontend/API уже розгорнуто раніше, сервер read-only перевіряє наявність
-v2 schema. Аварійної сумісності з базою без `0002` більше немає: account-only
+потрібної schema. Для попереднього account-only API аварійної сумісності з
+базою без `0002` немає: account-only
 профіль визначається `profile_schema_version = 3` (колонка з `0002`) плюс рядком
 у `game_account_links`, тому без v2-таблиць профіль неможливо ні створити, ні
 знайти. Без `0002` працює лише GET leaderboard; `create` і `sync` повертають
@@ -272,6 +299,9 @@ HTTP 404 `AUTH_NOT_LINKED`. Браузер залишає v2 events у лока�
 `0004`/`0005` аварійної сумісності теж немає — їх треба застосувати до deploy,
 причому `0005` без `0002` навіть не застосується (його CHECK посилається на
 `profile_schema_version`).
+Новий API додатково вимагає `0006` для кожної дії, зокрема GET, і без неї
+відповідає HTTP 503 `SCHEMA_MIGRATION_REQUIRED`. Не deploy його, доки не
+підтверджено нову схему.
 
 Збережи правильну Vercel handler-форму:
 
@@ -314,7 +344,8 @@ curl --max-time 10 -i \
 
 Очікування:
 
-- GET → HTTP 200 і `leaderboard` array;
+- GET → HTTP 200 і `leaderboard` array; після source-aware deploy відповідь
+  додатково містить `sources.demo`, `sources.arduino`, `sources.legacy`;
 - `{}` → HTTP 400 `INVALID_ACTION`;
 - `connect` → HTTP 400 `INVALID_ACTION` (дію прибрано);
 - запит із `accessCode` → HTTP 400 `ACCESS_CODE_RETIRED`;
@@ -334,7 +365,7 @@ mutation, яка не створила gameplay result, змінює rate-limit 
 
 ## 7. Повна інтеграційна перевірка — тільки disposable project
 
-Для persistence/API/SQL зміни застосуй `0001`—`0005` до порожнього
+Для persistence/API/SQL зміни застосуй `0001`—`0006` до порожнього
 disposable Supabase project і перевір:
 
 1. GET порожнього leaderboard;
@@ -348,6 +379,9 @@ disposable Supabase project і перевір:
 8. той самий event ID з іншим payload → HTTP 409 `EVENT_ID_REUSED`;
 9. rename і nickname conflict;
 10. achievement progress/unlock і mode/power totals;
+    окремо перевір `demo`, `arduino` і `legacy` статистику/leaderboards,
+    включно з тим, що старий event без `statisticsSource` не змінює
+    `demo` або `arduino`;
 11. revision conflict для `settings.updated` → HTTP 409 `SETTINGS_CONFLICT`;
 12. будь-який запит із полем `accessCode` → HTTP 400 `ACCESS_CODE_RETIRED`, а
     `connect`/`link`/`unlink` → HTTP 400 `INVALID_ACTION`;
@@ -361,6 +395,11 @@ disposable Supabase project і перевір:
 залишається сумісним і сервер перетворює його на v2 event. Canonical payload
 hash означає: same ID/same data — безпечний retry; same ID/different data —
 конфлікт, а не мовчазне перезаписування.
+До deploy нової версії окремо перевір, що на вже заповненій схемі `0006`
+створила лише `legacy` backfill, залишила загальні агрегати та ledger
+незмінними, а повторне застосування не подвоює історичні totals. Старі
+checkpoint-и й queued events без поля джерела також мають залишатися
+придатними для відновлення та ідемпотентної синхронізації.
 
 Не стверджуй, що live Supabase flow пройдено, якщо були виконані тільки unit або
 mocked API tests.
@@ -387,30 +426,51 @@ npm audit --omit=dev
 git diff --check
 ```
 
-Вони перевіряють shared/browser/API validation, credential matrix, v1/v2→v3
+Вони перевіряють shared/browser/API validation, credential matrix, v1/v2/v3→v4
 localStorage migration, idempotency model, SQL shape/RLS, translation parity і
 Web Fetch export, але не замінюють disposable database flow. WebAuthn-церемонію
 passkey вони теж не перевіряють — це ручний браузерний тест.
 
+Для глибшої локальної інтеграції є `scripts/verify-statistics-db.mjs`: він
+застосовує `0001`–`0006` в ізольованому PGlite (PostgreSQL WASM), перевіряє
+backfill, ідемпотентність, SQL/RLS/grants та compiled API зі змінним локальним
+транспортом. Потрібен установлений модуль PGlite, шлях до якого задається
+через `PGLITE_MODULE`; скрипт не входить у звичайний `npm run check` і **не є**
+тестом живих Supabase Auth, Supavisor, TLS чи Vercel.
+
 ## 9. Offline-first і відновлення помилок
 
-Активний browser key — `arduino-gate-game-stats:v3` (сховище кількох профілів).
-Валідні `:v2` і `:v1` об'єкти мігрують один раз і без втрат: переносяться старий
+Активний browser key — `arduino-gate-game-stats:v4` (сховище кількох профілів).
+Валідні `:v3`, `:v2` і `:v1` об'єкти мігрують без втрат: переносяться старий
 код, `remoteConfirmed`, pending nickname, pending runs і known event IDs. Старі
 ключі ніколи не видаляються й не перезаписуються, тому лишаються fallback-ом.
+Окремий v4 ключ не дозволяє старій вкладці стерти `statisticsSource` з нових
+подій. Пізні offline runs зі старого v3 читаються на storage/retry, імпортуються
+як `legacy` один раз і лишаються у власному акаунті. Квитанції імпорту
+зберігаються навіть після acknowledgement та очищення останніх 100 event IDs;
+незмінна стара черга не може воскреснути після sync або локального forget.
+v1/v2 читаються лише під час початкової міграції; дуже старі вкладки слід
+перезавантажити. Не очищай localStorage для оновлення.
 
-Для непідтвердженого акаунтного профілю з pending результатом порядок такий, і
-кожен крок іде з bearer-токеном:
+Для акаунтного профілю з pending результатом порядок такий, і кожен POST
+іде з bearer-токеном:
 
 ```text
-POST create (idempotent: для вже зв'язаного акаунта повертає наявний профіль)
+optional POST session (перевірка власника, якщо authUserId ще невідомий)
+  → POST session (підтвердження, лише коли немає pending rename/run)
   → optional rename
   → POST sync по 1–5 pending events
   → GET leaderboard
 ```
 
-Якщо create/sync не відповідає, queue залишається у localStorage. Не радь
-«забути профіль»: це може видалити єдину копію непідтвердженого результату.
+`POST create` виконується лише після явної дії гравця у формі створення
+профілю. Якщо `session`/`sync` не відповідає, queue залишається у localStorage.
+Клієнт прибирає подію тільки після коректного `results`-підтвердження від
+API, включно з `duplicate` після втрати попередньої відповіді. Раніше
+`postProfile()` відкидав це поле, тому успішно записані на сервері результати
+помилково лишалися в черзі як `invalid_response`; це виправлено. Збій
+публічного leaderboard окремо не позначає збережений результат як невдалий.
+Не радь «забути профіль»: це може видалити єдину копію непідтвердженого результату.
 Спочатку виправ API/deploy, потім hard refresh за потреби й один раз натисни
 retry. Серверний ledger захищає retry після втраченої відповіді. Якщо сесії
 немає, прохід зупиняється ще до мережі з кодом `auth_session_missing` — нічого не
@@ -426,6 +486,8 @@ retry. Серверний ledger захищає retry після втрачен�
 Checkpoint забігу (`arduino-gate-space-defender-run:v2`) — окремий від profile
 storage. Він валідний не довше семи днів і лише у фазі rest/upgrade. Mid-combat
 закриття записує завершений run замість серіалізації ворогів.
+Новий checkpoint зберігає джерело статистики, зафіксоване під час старту.
+Історичний checkpoint без поля джерела відновлюється як `legacy`.
 
 ## 10. Rate limiting і приватність
 
@@ -647,11 +709,20 @@ Redirect URLs — цей самий домен (і, за потреби, лок�
    **лише учасникам команди проєкту** — реальні користувачі не отримають
    нічого, доки не налаштовано власний SMTP-провайдер. Оскільки відновлення
    доступу тримається саме на email, це блокер перед публічним анонсом.
-4. **Apple (опційно, за замовчуванням вимкнено).** Потребує платної Apple
-   Developer Program. Client secret для Apple — це підписаний JWT, який треба
-   перегенеровувати приблизно **кожні 6 місяців**, інакше вхід мовчки
-   зламається. Вмикай лише разом із зобов'язанням вести цю ротацію, і лише
-   тоді переключай `APPLE_ENABLED` у `app/auth/supabaseConfig.ts`.
+4. **Apple (опційно, за замовчуванням вимкнено).** Код OAuth/PKCE та кнопка
+   готові; залишилася конфігурація, що потребує твого Apple Developer акаунта:
+   створи App ID із Sign in with Apple, пов'язаний Services ID для вебсайту і
+   signing key (`.p8`). Для Services ID вкажи домен
+   `vullhduhswcnlpgnlrtp.supabase.co` та точний Return URL
+   `https://vullhduhswcnlpgnlrtp.supabase.co/auth/v1/callback`. У Supabase
+   Dashboard → Authentication → Sign In / Up → Apple введи Services ID як
+   перший Client ID і згенерований з Team ID, Key ID та `.p8` client secret,
+   потім увімкни провайдера. Зберігай `.p8` і secret **поза Git**. Після
+   успішного пробного входу перемкни `APPLE_ENABLED` в
+   `app/auth/supabaseConfig.ts` на `true` і перевипусти frontend. Apple вимагає
+   перевипускати OAuth client secret приблизно **кожні 6 місяців**; заплануй
+   ротацію, інакше вхід перестане працювати. Повна інструкція та генератор
+   secret є в [офіційній документації Supabase](https://supabase.com/docs/guides/auth/social-login/auth-apple).
 
 Свідомі межі поточної реалізації:
 

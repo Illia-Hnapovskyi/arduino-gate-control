@@ -94,9 +94,10 @@ test("Space Defender formatters use the selected locale and remapped controls", 
 });
 
 test("the profile UI is account-only and never touches an access code", async () => {
-  const [statsPanel, accountPanel, page, css] = await Promise.all([
+  const [statsPanel, accountPanel, authErrors, page, css] = await Promise.all([
     readFile(path.join(projectRoot, "app/PlayerStatsPanel.tsx"), "utf8"),
     readFile(path.join(projectRoot, "app/AccountPanel.tsx"), "utf8"),
+    readFile(path.join(projectRoot, "app/auth/errors.ts"), "utf8"),
     readFile(path.join(projectRoot, "app/page.tsx"), "utf8"),
     readFile(path.join(projectRoot, "app/globals.css"), "utf8"),
   ]);
@@ -120,9 +121,10 @@ test("the profile UI is account-only and never touches an access code", async ()
   assert.match(statsPanel, /stats\.hasOrphanedProfiles &&/);
   assert.match(statsPanel, /copy\.accountCodeRetiredNotice/);
 
-  // The Google provider is not configured yet, so its failure must read as
-  // "unavailable" instead of surfacing the provider's own error.
-  assert.match(accountPanel, /copy\.accountProviderUnavailable/);
+  // Provider failures map to translated allow-listed messages instead of
+  // exposing the provider's raw error. The live project may enable Google.
+  assert.match(accountPanel, /showAuthFailure\(result, "accountProviderUnavailable"\)/);
+  assert.match(authErrors, /errorKey = "accountProviderUnavailable"/);
 
   // Sessions and the consent choice stay in localStorage; nothing sets cookies.
   for (const source of [statsPanel, accountPanel, page]) {
@@ -436,14 +438,17 @@ test("a session never inherits a profile that belongs to another account", async
     readFile(path.join(projectRoot, "app/GamePanel.tsx"), "utf8"),
   ]);
 
-  // The server resolved this profile from the account link for this very
-  // token, so the verified owner must be recorded. Dropping it leaves every
+  // The server resolved this profile from the account link for the token sent
+  // with this request. Capture its subject before the async request: a cross-tab
+  // account switch must not bind the response to the new render's user.
+  assert.match(accountPanel, /const ownerId = token \? readAccessTokenSubject\(token\) : null/);
+  // Recording the verified owner matters for old code-era profiles. Dropping it leaves every
   // profile the code-era build stored (code, publicId, no owner) looking
   // orphaned to its own account: it can never sync, and the panel would offer
   // the destructive force-forget beside a "your code no longer works" notice.
   assert.match(
     accountPanel,
-    /stats\.adoptSessionProfile\(session\.body, auth\.sessionUserId\)/,
+    /stats\.adoptSessionProfile\(session\.body, session\.ownerId\)/,
   );
 
   // The hook can only tell this account's vault entry from one another account
@@ -476,17 +481,19 @@ test("the passkey UI degrades gracefully and never lists on mount", async () => 
     /window\.confirm\(copy\.accountPasskeyDeleteConfirm\)/,
   );
 
-  // The list is one network call behind a disclosure: it must be requested when
-  // the section is first opened, never while the panel mounts.
+  // List calls are limited to opening the disclosure and an explicit retry;
+  // neither runs while the panel mounts.
   assert.equal(
     [...accountPanel.matchAll(/auth\.listPasskeys\(\)/g)].length,
-    1,
-    "the passkey list has exactly one call site",
+    2,
+    "the passkey list has only disclosure and retry call sites",
   );
   assert.match(
     accountPanel,
     /passkeysRequestedRef\.current = true;\s*void auth\.listPasskeys\(\)/,
   );
+  assert.match(accountPanel, /onClick=\{\(\) => void handlePasskeyRefresh\(\)\}/);
+  assert.match(accountPanel, /auth\.passkeysRefreshFailed &&/);
 });
 
 test("Space Defender overlays and compact HUD keep their accessibility contract", async () => {
@@ -522,8 +529,10 @@ test("Space Defender overlays and compact HUD keep their accessibility contract"
   assert.match(hud, /copy\.hud\.shield/);
   assert.match(
     menu,
-    /disabled=\{hasResume \|\| hasUnsavedResult \|\| !connected \|\| !hasProfile\}/,
+    /disabled=\{checkpointError \|\| hasResume \|\| hasUnsavedResult \|\| !connected \|\| !hasProfile\}/,
   );
+  assert.match(panel, /activeResumeSnapshot \|\|\s*checkpointError \|\|/,
+    "checkpoint cleanup failure must block the launch handler as well as its button");
   assert.match(css, /data-reduced-motion="true"/);
   // A choice overlay must have room to be read on a phone. That used to be done
   // by stretching the canvas box to fit it, which also grew the stage on every

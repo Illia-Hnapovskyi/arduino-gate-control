@@ -45,7 +45,9 @@ a {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
-select:focus-visible {
+select:focus-visible,
+summary:focus-visible,
+[data-controller-focus="true"] {
   outline: 3px solid var(--orange);
   outline-offset: 3px;
 }
@@ -294,7 +296,7 @@ select:focus-visible {
   transition: transform 160ms ease, background 160ms ease;
 }
 
-.button:hover {
+.button:hover:not(:disabled) {
   transform: translateY(-2px);
 }
 
@@ -304,7 +306,7 @@ select:focus-visible {
   color: white;
 }
 
-.button.primary:hover {
+.button.primary:hover:not(:disabled) {
   background: var(--teal-dark);
 }
 
@@ -312,6 +314,19 @@ select:focus-visible {
   background: transparent;
   border: 1px solid rgba(23, 32, 29, 0.3);
   color: var(--ink);
+}
+
+.button.danger {
+  background: #a62d20;
+  border: 1px solid #a62d20;
+  color: white;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: none;
+  transform: none;
 }
 
 .browser-note,
@@ -4421,6 +4436,18 @@ kbd {
   font-weight: 700;
 }
 
+.space-settings-panel > label select {
+  background: #0d2730;
+  border: 1px solid var(--space-line);
+  border-radius: 10px;
+  color: var(--space-ink);
+  grid-column: 2 / -1;
+  min-height: 44px;
+  min-width: 0;
+  padding: 10px 12px;
+  width: 100%;
+}
+
 .space-settings-panel output {
   color: var(--acid);
   font-size: 12px;
@@ -4763,6 +4790,14 @@ kbd {
   z-index: 12;
 }
 
+/* On short touch screens the dialog is fixed to the viewport, while its
+   canvas parent normally sits below the HUD in the stage stacking order.
+   Lift that parent only while a dialog exists so the title and actions cannot
+   end up hidden behind the HUD. */
+.space-canvas-wrap:has(> .space-game-overlay) {
+  z-index: 8;
+}
+
 .space-game-overlay:focus {
   outline: none;
 }
@@ -4896,6 +4931,12 @@ kbd {
   margin: 0;
 }
 
+.space-result-details {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .space-result-grid > div {
   background: rgba(255, 255, 255, 0.045);
   border-radius: 12px;
@@ -4965,17 +5006,22 @@ kbd {
 }
 
 .space-result-achievements ul {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px 14px;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 8px;
   list-style: none;
-  padding: 6px 0 0;
+  padding: 10px 0 0;
 }
 
 .space-result-achievements li {
+  align-content: center;
+  background: rgba(215, 245, 90, 0.07);
+  border-radius: 8px;
   color: #eaffaa;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
 }
 
 .space-checkpoint-error {
@@ -5542,20 +5588,31 @@ body:has(.space-game-root.is-immersive) {
   padding: 11px 14px;
 }
 
-/* .button.secondary paints itself with --ink, the near-black of the light page.
-   On these dark surfaces that is the background colour: measured at 1.18:1 in
-   the stage toolbar and 1.04:1 on the result card, where 4.5:1 is the minimum.
-   The buttons were legible only as silhouettes. */
+/* .button.secondary uses dark ink for the light page. These controls sit on
+   dark game surfaces, so give them a visible foreground and border. */
 .space-stage-toolbar .button.secondary,
-.space-overlay-card .button.secondary {
+.space-overlay-card .button.secondary,
+.space-menu-panel > .statistics-source-control .button.secondary,
+.leaderboard-card .statistics-source-control .button.secondary {
   border-color: rgba(126, 243, 220, 0.4);
   color: #effffb;
 }
 
-.space-stage-toolbar .button.secondary:hover,
-.space-overlay-card .button.secondary:hover {
+.space-stage-toolbar .button.secondary:hover:not(:disabled),
+.space-overlay-card .button.secondary:hover:not(:disabled),
+.space-menu-panel > .statistics-source-control .button.secondary:hover:not(:disabled),
+.leaderboard-card .statistics-source-control .button.secondary:hover:not(:disabled) {
   background: rgba(126, 243, 220, 0.12);
   border-color: rgba(126, 243, 220, 0.6);
+}
+
+.space-game-root [data-controller-focus="true"] {
+  outline: 3px solid var(--acid);
+  outline-offset: 3px;
+}
+
+.space-game-root .player-profile-card [data-controller-focus="true"] {
+  outline-color: var(--teal-dark);
 }
 
 .space-stage-toolbar > span {
@@ -5828,7 +5885,8 @@ body:has(.space-game-root.is-immersive) {
     grid-template-columns: 1fr 46px;
   }
 
-  .space-settings-panel > label input[type="range"] {
+  .space-settings-panel > label input[type="range"],
+  .space-settings-panel > label select {
     grid-column: 1 / -1;
   }
 
@@ -6417,6 +6475,29 @@ body:has(.space-game-root.is-immersive) {
   font-size: 12px;
   min-height: 42px;
   padding: 0 16px;
+}
+
+.statistics-source-control {
+  margin-block: 16px;
+  min-width: 0;
+}
+
+.statistics-source-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.statistics-source-buttons .button {
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-height: 44px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.statistics-source-control .profile-setup-copy {
+  margin-block: 12px 0;
 }
 
 .consent-note {

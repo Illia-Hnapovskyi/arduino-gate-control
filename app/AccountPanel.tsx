@@ -18,10 +18,11 @@ import {
   type ProfileResponse,
 } from "../shared/gameStats";
 import { useAuthSession } from "./auth/useAuthSession";
+import type { AuthActionResult, AuthErrorKey } from "./auth/errors";
 import ConsentPanel from "./ConsentPanel";
 import { GAME_COPY } from "./i18n";
 import type { PlayerStatsCopy } from "./PlayerStatsPanel";
-import { GameStatsClientError } from "./useGameStats";
+import { GameStatsClientError, readAccessTokenSubject } from "./useGameStats";
 import type { UseGameStatsResult } from "./useGameStats";
 
 // ── Game-activity signal ──────────────────────────────────────────────────
@@ -234,8 +235,12 @@ export function AccountPanel({
   const [notice, setNotice] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [consentOpen, setConsentOpen] = useState(false);
+  const [sessionRetryAvailable, setSessionRetryAvailable] = useState(false);
   const sessionFlowUserRef = useRef<string | null>(null);
+  const sessionRequestRef = useRef(0);
+  const mountedRef = useRef(false);
   const passkeysRequestedRef = useRef(false);
+  const passkeySectionRevisionRef = useRef(0);
   const switchBlocked = useSyncExternalStore(
     subscribeToGameActivity,
     readGameActivityBlocked,
@@ -249,10 +254,23 @@ export function AccountPanel({
     setErrorText(null);
   }, []);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      sessionRequestRef.current += 1;
+      sessionFlowUserRef.current = null;
+      passkeySectionRevisionRef.current += 1;
+    };
+  }, []);
+
   const postAccountStats = useCallback(
     async (payload: Record<string, unknown>) => {
       const token = await auth.getAccessToken();
-      if (!token) return { status: 0, code: null as string | null, body: null };
+      const ownerId = token ? readAccessTokenSubject(token) : null;
+      if (!token || !ownerId) {
+        return { status: 401, code: null as string | null, body: null, ownerId: null };
+      }
       const response = await fetch(GAME_STATS_API_PATH, {
         body: JSON.stringify(payload),
         cache: "no-store",
@@ -262,6 +280,7 @@ export function AccountPanel({
           "content-type": "application/json",
         },
         method: "POST",
+        signal: AbortSignal.timeout(12_000),
       });
       let body: unknown = null;
       try {
@@ -269,7 +288,7 @@ export function AccountPanel({
       } catch {
         body = null;
       }
-      return { status: response.status, code: extractErrorCode(body), body };
+      return { status: response.status, code: extractErrorCode(body), body, ownerId };
     },
     [auth],
   );
@@ -278,38 +297,54 @@ export function AccountPanel({
   // already owns. A 404 means there is none yet; the profile panel then offers
   // the nickname prompt instead of creating one behind the player's back.
   const runSessionFlow = useCallback(async () => {
+    const requestId = ++sessionRequestRef.current;
+    const flowUserId = auth.sessionUserId;
+    sessionFlowUserRef.current = flowUserId;
+    const isCurrent = () => mountedRef.current &&
+      requestId === sessionRequestRef.current &&
+      flowUserId === sessionFlowUserRef.current;
     setBusyAction("session");
+    setSessionRetryAvailable(false);
     try {
       const session = await postAccountStats({ action: "session" });
+      if (!isCurrent()) return;
       if (session.status === 200 && isProfileResponseLike(session.body)) {
-        // The server resolved this profile from the account link for this very
-        // token, so recording the owner is server-verified. Dropping it would
-        // leave a profile the deployed code-era build stored with a code and no
-        // owner looking orphaned forever, and it could never sync again.
-        stats.adoptSessionProfile(session.body, auth.sessionUserId);
+        // Bind the profile to the bearer used for this request. A cross-tab
+        // account switch can update the SDK before this render's auth state.
+        stats.adoptSessionProfile(session.body, session.ownerId);
         return;
       }
       if (session.status === 401) {
         setErrorText(copy.accountSessionExpired);
+      } else if (session.status !== 404 || session.code !== "AUTH_NOT_LINKED") {
+        setErrorText(copy.accountAuthError);
+      }
+      if (session.status !== 404 || session.code !== "AUTH_NOT_LINKED") {
+        setSessionRetryAvailable(true);
       }
     } catch (flowError) {
+      if (!isCurrent()) return;
       if (flowError instanceof GameStatsClientError) {
         // The response arrived but was unusable (invalid_response) — that is a
         // real service error, not an offline tab. Report it and clear the guard
         // so the flow can run again instead of staying silently stuck.
         setErrorText(copy.accountAuthError);
         sessionFlowUserRef.current = null;
+      } else {
+        setErrorText(panelCopy.accountNetworkError);
       }
-      // Otherwise offline or interrupted — the queue keeps working locally and
-      // the flow reruns after the next sign-in event.
+      setSessionRetryAvailable(true);
     } finally {
-      setBusyAction(null);
+      if (mountedRef.current && requestId === sessionRequestRef.current) {
+        setBusyAction(null);
+      }
     }
   }, [
     auth.sessionUserId,
     copy.accountAuthError,
     copy.accountSessionExpired,
     postAccountStats,
+    panelCopy.accountNetworkError,
     stats,
   ]);
 
@@ -322,9 +357,10 @@ export function AccountPanel({
   }, [runSessionFlow]);
 
   useEffect(() => {
+    passkeysRequestedRef.current = false;
+    passkeySectionRevisionRef.current += 1;
     if (!auth.hasSession || !auth.sessionUserId) {
       sessionFlowUserRef.current = null;
-      passkeysRequestedRef.current = false;
       return;
     }
     if (sessionFlowUserRef.current === auth.sessionUserId) return;
@@ -333,6 +369,15 @@ export function AccountPanel({
   }, [auth.hasSession, auth.sessionUserId]);
 
   if (!auth.authAvailable) return null;
+
+  const showAuthFailure = (
+    result: AuthActionResult,
+    fallback: AuthErrorKey = "accountAuthError",
+  ) => {
+    const key = result.errorKey ?? fallback;
+    if (key === "accountPasskeyCancelled") setNotice(panelCopy[key]);
+    else setErrorText(panelCopy[key]);
+  };
 
   const handleConsentChoice = (choice: "local" | "account") => {
     auth.chooseConsent(choice);
@@ -356,7 +401,7 @@ export function AccountPanel({
     const result = await auth.signInEmail(email.trim(), password);
     setBusyAction(null);
     if (!result.ok) {
-      setErrorText(copy.accountAuthError);
+      showAuthFailure(result);
       return;
     }
     setPassword("");
@@ -394,7 +439,7 @@ export function AccountPanel({
     );
     setBusyAction(null);
     if (!result.ok) {
-      setErrorText(copy.accountAuthError);
+      showAuthFailure(result);
       return;
     }
     setPassword("");
@@ -413,7 +458,7 @@ export function AccountPanel({
     const result = await auth.resetPassword(email.trim());
     setBusyAction(null);
     if (!result.ok) {
-      setErrorText(copy.accountAuthError);
+      showAuthFailure(result);
       return;
     }
     setNotice(copy.accountResetSent);
@@ -432,7 +477,7 @@ export function AccountPanel({
     // The provider is rendered before the project has it configured, and that
     // failure looks identical to a rejected redirect — say it is unavailable
     // instead of surfacing the provider's own message.
-    if (!result.ok) setErrorText(copy.accountProviderUnavailable);
+    if (!result.ok) showAuthFailure(result, "accountProviderUnavailable");
   };
 
   // One action for both setting a first password and changing an existing one.
@@ -450,31 +495,31 @@ export function AccountPanel({
     const result = await auth.updatePassword(nextPassword);
     setBusyAction(null);
     if (!result.ok) {
-      setErrorText(copy.accountAuthError);
+      showAuthFailure(result);
       return false;
     }
     setNotice(panelCopy.accountPasswordSetSuccess);
     return true;
   };
 
-  // A passkey call resolves { ok: false } for three indistinguishable reasons:
-  // the player cancelled the browser prompt, the project has passkeys switched
-  // off (which raises passkeyUnavailable and swaps the button for a notice), or
-  // WebAuthn itself failed. None of them may become a raw error message.
+  // A dismissed browser prompt is neutral. Configuration, network and ceremony
+  // failures get actionable localized copy instead of disappearing silently.
   const handlePasskeySignIn = async () => {
     if (actionsDisabled) return;
     clearMessages();
     setBusyAction("passkey-signin");
-    await auth.signInWithPasskey();
+    const result = await auth.signInWithPasskey();
     setBusyAction(null);
+    if (!result.ok) showAuthFailure(result, "accountPasskeyFailed");
   };
 
   const handlePasskeyAdd = async () => {
     if (actionsDisabled) return;
     clearMessages();
     setBusyAction("passkey-add");
-    await auth.registerPasskey();
+    const result = await auth.registerPasskey();
     setBusyAction(null);
+    if (!result.ok) showAuthFailure(result, "accountPasskeyFailed");
   };
 
   const handlePasskeyDelete = async (passkeyId: string) => {
@@ -482,8 +527,9 @@ export function AccountPanel({
     if (!window.confirm(copy.accountPasskeyDeleteConfirm)) return;
     clearMessages();
     setBusyAction("passkey-delete");
-    await auth.deletePasskey(passkeyId);
+    const result = await auth.deletePasskey(passkeyId);
     setBusyAction(null);
+    if (!result.ok) showAuthFailure(result, "accountPasskeyFailed");
   };
 
   // The list is a network call, so it is requested when the section is first
@@ -494,10 +540,25 @@ export function AccountPanel({
   ) => {
     if (!event.currentTarget.open) return;
     if (passkeysRequestedRef.current) return;
+    const revision = passkeySectionRevisionRef.current;
     passkeysRequestedRef.current = true;
     void auth.listPasskeys().then((result) => {
-      if (!result.ok) passkeysRequestedRef.current = false;
+      if (revision !== passkeySectionRevisionRef.current) return;
+      if (!result.ok) {
+        passkeysRequestedRef.current = false;
+        showAuthFailure(result, "accountPasskeyFailed");
+      }
     });
+  };
+
+  const handlePasskeyRefresh = async () => {
+    if (actionsDisabled || auth.passkeysLoading) return;
+    clearMessages();
+    const revision = passkeySectionRevisionRef.current;
+    const result = await auth.listPasskeys();
+    if (revision !== passkeySectionRevisionRef.current) return;
+    passkeysRequestedRef.current = result.ok;
+    if (!result.ok) showAuthFailure(result, "accountPasskeyFailed");
   };
 
   const handleSignOut = async (scope: "local" | "global") => {
@@ -509,7 +570,7 @@ export function AccountPanel({
         ? await auth.signOutLocal()
         : await auth.signOutGlobal();
     setBusyAction(null);
-    if (!result.ok) setErrorText(copy.accountAuthError);
+    if (!result.ok) showAuthFailure(result);
   };
 
   const handleSwitchProfile = (profileId: string) => {
@@ -782,6 +843,7 @@ export function AccountPanel({
 
           <details
             className="account-passkeys"
+            key={auth.sessionUserId}
             onToggle={handlePasskeySectionToggle}
           >
             <summary>{copy.accountPasskeyTitle}</summary>
@@ -805,7 +867,7 @@ export function AccountPanel({
                   </button>
                 )}
                 <div aria-busy={auth.passkeysLoading} aria-live="polite">
-                  {auth.passkeys.length === 0 ? (
+                  {auth.passkeysRefreshFailed ? null : auth.passkeys.length === 0 ? (
                     <p className="account-passkey-note">
                       {copy.accountPasskeyEmpty}
                     </p>
@@ -837,6 +899,16 @@ export function AccountPanel({
                   )}
                 </div>
               </>
+            )}
+            {auth.passkeysRefreshFailed && (
+              <button
+                className="account-text-button"
+                disabled={actionsDisabled || auth.passkeysLoading}
+                onClick={() => void handlePasskeyRefresh()}
+                type="button"
+              >
+                {panelCopy.accountPasskeyRefreshAction}
+              </button>
             )}
           </details>
         </div>
@@ -888,6 +960,19 @@ export function AccountPanel({
         <p className="profile-error" role="alert">
           {errorText}
         </p>
+      )}
+      {auth.hasSession && sessionRetryAvailable && (
+        <button
+          className="account-text-button"
+          disabled={actionsDisabled}
+          onClick={() => {
+            clearMessages();
+            void runSessionFlow();
+          }}
+          type="button"
+        >
+          {panelCopy.syncRetry}
+        </button>
       )}
     </section>
   );

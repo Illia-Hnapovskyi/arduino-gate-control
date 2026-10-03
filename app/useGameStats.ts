@@ -3,6 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   GAME_ACHIEVEMENTS,
+  GAME_STATISTICS_SOURCES,
+  playerStatsSources,
+  playerStatsForSource,
+  playerProgressionSources,
+  playerProgressionForSource,
+  validPlayerStatsSources,
+  type GameStatisticsSource,
   GAME_STATS_API_PATH,
   MAX_GAME_SYNC_EVENTS,
   type ErrorResponse,
@@ -32,6 +39,7 @@ import {
 const STORAGE_KEY_V1 = "arduino-gate-game-stats:v1";
 const STORAGE_KEY_V2 = "arduino-gate-game-stats:v2";
 export const STORAGE_KEY_V3 = "arduino-gate-game-stats:v3";
+export const STORAGE_KEY_V4 = "arduino-gate-game-stats:v4";
 const STORAGE_VERSION_V2 = 2;
 const STORAGE_VERSION_V3 = 3;
 const MAX_REMEMBERED_RUN_IDS = 100;
@@ -112,6 +120,19 @@ export type StoredGameStatsV3 = {
   version: typeof STORAGE_VERSION_V3;
   activeProfileId: string | null;
   profiles: StoredProfileV3[];
+  // Internal normalized profile shape is shared with v3. Only v4 persists
+  // these receipts; old tabs must never see or rewrite source-aware events.
+  legacyV3Imports?: LegacyV3Imports;
+};
+
+type LegacyV3Imports = Record<string, {
+  eventIds: string[];
+  pendingNickname: string | null;
+}>;
+
+export type StoredGameStatsV4 = Omit<StoredGameStatsV3, "version" | "legacyV3Imports"> & {
+  version: 4;
+  legacyV3Imports: LegacyV3Imports;
 };
 
 export type GameStatsProfileSummary = {
@@ -146,6 +167,10 @@ export type GameRunRecordResult =
   | "storage-error";
 
 export type UseGameStatsResult = HookSnapshot & {
+  leaderboardStatus: GameStatsSyncStatus;
+  leaderboardError: GameStatsError | null;
+  statisticsSource: GameStatisticsSource;
+  selectStatisticsSource: (source: GameStatisticsSource) => void;
   status: GameStatsSyncStatus;
   error: GameStatsError | null;
   createAccountProfile: (nickname?: string) => Promise<GameStatsProfile>;
@@ -596,86 +621,184 @@ export function sanitizeStoredGameStatsV3(value: unknown): StoredGameStatsV3 {
   };
 }
 
+// v4 has its own key because deployed v3 clients strip unfamiliar event
+// fields while sanitizing storage. Never let them rewrite source-aware events.
+export function sanitizeStoredGameStatsV4(value: unknown): StoredGameStatsV3 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ...emptyStoredGameStatsV3(), legacyV3Imports: {} };
+  }
+  const raw = value as Partial<StoredGameStatsV4>;
+  if (raw.version !== 4) return { ...emptyStoredGameStatsV3(), legacyV3Imports: {} };
+  const store = sanitizeStoredGameStatsV3({ ...raw, version: STORAGE_VERSION_V3 });
+  const legacyV3Imports: LegacyV3Imports = {};
+  if (raw.legacyV3Imports && typeof raw.legacyV3Imports === "object") {
+    for (const [key, receipt] of Object.entries(raw.legacyV3Imports)) {
+      if (!receipt || typeof receipt !== "object") continue;
+      const nickname = receipt.pendingNickname === null
+        ? null
+        : validateNickname(receipt.pendingNickname);
+      if (nickname !== null && !nickname.ok) continue;
+      legacyV3Imports[key] = {
+        // Import receipts are deliberately not truncated to the 100 recent
+        // event IDs: a dormant old tab can replay its unchanged queue later.
+        eventIds: Array.isArray(receipt.eventIds)
+          ? [...new Set(receipt.eventIds.filter((id): id is string =>
+            typeof id === "string" && validateRun({ runId: id, score: 0, level: 1, durationMs: 0 }).ok,
+          ))].sort()
+          : [],
+        pendingNickname: nickname === null ? null : nickname.value,
+      };
+    }
+  }
+  return { ...store, legacyV3Imports };
+}
+
+function compatibleProfileOwners(left: StoredProfileV3, right: StoredProfileV3) {
+  return !(left.authUserId && right.authUserId && left.authUserId !== right.authUserId) &&
+    !(left.publicId && right.publicId && left.publicId !== right.publicId) &&
+    left.accessCode === right.accessCode;
+}
+
+export function importLegacyV3Store(
+  current: StoredGameStatsV3,
+  legacy: StoredGameStatsV3,
+): StoredGameStatsV3 {
+  const profiles = [...current.profiles];
+  const receipts = { ...current.legacyV3Imports };
+  let activeProfileId = current.activeProfileId;
+  for (const old of legacy.profiles) {
+    // Account ownership is part of the import identity. Even malformed old
+    // data that reuses a local ID cannot append to another account's queue.
+    const key = `${old.profileId}:${old.authUserId ?? old.checkpointOwnerId}`;
+    const receipt = receipts[key];
+    const index = profiles.findIndex((profile) => compatibleProfileOwners(profile, old) && (
+      profile.profileId === old.profileId ||
+      (old.publicId !== null && profile.publicId === old.publicId) ||
+      (old.authUserId !== null && profile.authUserId === old.authUserId)
+    ));
+    const existing = index < 0 ? null : profiles[index];
+    const imported = new Set([
+      ...(receipt?.eventIds ?? []),
+      ...(existing?.knownEventIds ?? []),
+      ...(existing?.pendingEvents.map((event) => event.eventId) ?? []),
+    ]);
+    const freshEvents = old.pendingEvents.filter((event) => !imported.has(event.eventId));
+    receipts[key] = {
+      eventIds: [...new Set([
+        ...(receipt?.eventIds ?? []), ...old.knownEventIds,
+        ...old.pendingEvents.map((event) => event.eventId),
+      ])].sort(),
+      pendingNickname: old.pendingNickname,
+    };
+    if (!existing) {
+      // A retained receipt is also the tombstone after forgetting a profile.
+      // Only genuinely new offline runs can make that old entry reappear.
+      if (receipt && freshEvents.length === 0) continue;
+      let profileId = old.profileId;
+      if (profiles.some((profile) => profile.profileId === profileId)) {
+        profileId = profileOwnerIdFromAccessCode(`legacy-v3:${key}`);
+      }
+      const importedProfile = { ...old, profileId, pendingEvents: receipt ? freshEvents : old.pendingEvents };
+      profiles.push(importedProfile);
+      if (activeProfileId === null && old.profileId === legacy.activeProfileId) activeProfileId = profileId;
+      continue;
+    }
+    const pendingNickname = existing.pendingNickname ?? (
+      old.pendingNickname !== receipt?.pendingNickname ? old.pendingNickname : null
+    );
+    const stats = addEventsToStats(existing.stats, freshEvents);
+    profiles[index] = {
+      ...existing,
+      pendingNickname,
+      stats: pendingNickname ? { ...stats, nickname: pendingNickname } : stats,
+      progression: freshEvents.length > 0
+        ? addEventsToProgression(
+          existing.progression ?? addEventsToProgression(null, existing.pendingEvents, existing.stats),
+          freshEvents,
+          stats,
+        )
+        : existing.progression,
+      pendingEvents: [...existing.pendingEvents, ...freshEvents],
+      knownEventIds: [...new Set([...existing.knownEventIds, ...freshEvents.map((event) => event.eventId)])].slice(-MAX_REMEMBERED_RUN_IDS),
+    };
+  }
+  profiles.sort((left, right) => left.profileId.localeCompare(right.profileId));
+  return { ...current, activeProfileId, profiles, legacyV3Imports: receipts };
+}
+
 type ReadStoredGameStatsResult = {
   store: StoredGameStatsV3;
   migrated: boolean;
 };
 
-function readStoredGameStats(): ReadStoredGameStatsResult {
-  if (typeof window === "undefined") {
-    return { store: emptyStoredGameStatsV3(), migrated: false };
-  }
-  let storedV3: string | null = null;
-  let storedV2: string | null = null;
-  let legacy: string | null = null;
+type StatsStorageReader = Pick<Storage, "getItem">;
+type StatsStorageWriter = Pick<Storage, "setItem">;
+
+function parseVault(raw: string | null, version: 3 | 4): StoredGameStatsV3 | null {
+  if (!raw) return null;
   try {
-    storedV3 = window.localStorage.getItem(STORAGE_KEY_V3);
-    storedV2 = window.localStorage.getItem(STORAGE_KEY_V2);
-    legacy = window.localStorage.getItem(STORAGE_KEY_V1);
+    const value = JSON.parse(raw) as { version?: unknown; profiles?: unknown };
+    if (value?.version !== version || !Array.isArray(value.profiles)) return null;
+    const sanitized = version === 4 ? sanitizeStoredGameStatsV4(value) : sanitizeStoredGameStatsV3(value);
+    return sanitized.profiles.length > 0 || value.profiles.length === 0 ? sanitized : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readStoredGameStats(
+  storage: StatsStorageReader | undefined = typeof window === "undefined" ? undefined : window.localStorage,
+): ReadStoredGameStatsResult {
+  if (!storage) return { store: emptyStoredGameStatsV3(), migrated: false };
+  let storedV4: string | null;
+  let storedV3: string | null;
+  let storedV2: string | null;
+  let legacy: string | null;
+  try {
+    storedV4 = storage.getItem(STORAGE_KEY_V4);
+    storedV3 = storage.getItem(STORAGE_KEY_V3);
+    storedV2 = storage.getItem(STORAGE_KEY_V2);
+    legacy = storage.getItem(STORAGE_KEY_V1);
   } catch {
     return { store: emptyStoredGameStatsV3(), migrated: false };
   }
-
-  if (storedV3) {
-    try {
-      const parsed = JSON.parse(storedV3) as unknown;
-      const sanitized = sanitizeStoredGameStatsV3(parsed);
-      const rawProfiles =
-        parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as { profiles?: unknown }).profiles
-          : undefined;
-      const explicitlyEmpty =
-        Array.isArray(rawProfiles) && rawProfiles.length === 0;
-      if (
-        sanitized.profiles.length > 0 ||
-        explicitlyEmpty ||
-        (!storedV2 && !legacy)
-      ) {
-        return { store: sanitized, migrated: false };
-      }
-      // A corrupted v3 value must not hide recoverable v2/v1 data.
-    } catch {
-      // Fall back to the retained v2/v1 values if the v3 write was interrupted.
-    }
-  } else if (!storedV2 && !legacy) {
-    return { store: emptyStoredGameStatsV3(), migrated: false };
+  const v4 = parseVault(storedV4, 4);
+  const v3 = parseVault(storedV3, 3);
+  if (v4) {
+    const store = v3 ? importLegacyV3Store(v4, v3) : v4;
+    return { store, migrated: JSON.stringify(store) !== JSON.stringify(v4) };
   }
+  if (v3) return { store: importLegacyV3Store(emptyStoredGameStatsV3(), v3), migrated: true };
+  if (!storedV2 && !legacy) return { store: emptyStoredGameStatsV3(), migrated: false };
 
-  // One-time migration; the v2 and v1 keys are read-only forever from here on.
+  // Retained v2/v1 values are one-time recovery inputs, never write targets.
   let v2Shape: StoredGameStatsV2 | null = null;
   if (storedV2) {
     try {
       const parsed = JSON.parse(storedV2) as unknown;
       const sanitized = sanitizeStoredGameStatsV2(parsed);
-      const rawProfile =
-        parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as { profile?: unknown }).profile
-          : undefined;
-      if (sanitized.profile || rawProfile === null || !legacy) {
-        v2Shape = sanitized;
-      }
-      // A version-two object with a malformed non-null profile must not hide a
-      // recoverable version-one profile and its pending runs.
-    } catch {
-      // Fall back to the retained v1 value if the v2 value was interrupted.
-    }
+      const rawProfile = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as { profile?: unknown }).profile : undefined;
+      if (sanitized.profile || rawProfile === null || !legacy) v2Shape = sanitized;
+    } catch { /* A corrupt newer value must not hide the recovery copy. */ }
   }
   if (!v2Shape && legacy) {
-    try {
-      v2Shape = migrateStoredGameStatsV1(JSON.parse(legacy) as unknown);
-    } catch {
-      v2Shape = null;
-    }
+    try { v2Shape = migrateStoredGameStatsV1(JSON.parse(legacy) as unknown); }
+    catch { v2Shape = null; }
   }
   return {
-    store: migrateStoredGameStatsV2ToV3(v2Shape ?? emptyStoredGameStats()),
+    store: importLegacyV3Store(emptyStoredGameStatsV3(), migrateStoredGameStatsV2ToV3(v2Shape ?? emptyStoredGameStats())),
     migrated: true,
   };
 }
 
-function writeStoredGameStatsV3(store: StoredGameStatsV3) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY_V3, JSON.stringify(store));
+export function writeStoredGameStatsV4(
+  store: StoredGameStatsV3,
+  storage: StatsStorageWriter | undefined = typeof window === "undefined" ? undefined : window.localStorage,
+) {
+  if (!storage) return;
+  const persisted: StoredGameStatsV4 = { ...store, version: 4, legacyV3Imports: store.legacyV3Imports ?? {} };
+  storage.setItem(STORAGE_KEY_V4, JSON.stringify(persisted));
 }
 
 function activeProfileOf(store: StoredGameStatsV3): StoredProfileV3 | null {
@@ -762,13 +885,27 @@ export function toHookSnapshot(
   };
 }
 
-function addRunToStats(
+export function addRunToStats(
   stats: PlayerStats,
-  run: ValidatedRun,
+  run: ValidatedRun & { statisticsSource?: GameStatisticsSource },
   updatedAt = new Date().toISOString(),
 ): PlayerStats {
+  const sources = playerStatsSources(stats);
+  const source = run.statisticsSource ?? "legacy";
+  const scoped = sources[source];
   return {
     ...stats,
+    sources: {
+      ...sources,
+      [source]: {
+        gamesPlayed: scoped.gamesPlayed + 1,
+        totalScore: scoped.totalScore + run.score,
+        highScore: Math.max(scoped.highScore, run.score),
+        highestLevel: Math.max(scoped.highestLevel, run.level),
+        totalDurationMs: scoped.totalDurationMs + run.durationMs,
+        updatedAt,
+      },
+    },
     gamesPlayed: stats.gamesPlayed + 1,
     totalScore: stats.totalScore + run.score,
     highScore: Math.max(stats.highScore, run.score),
@@ -821,10 +958,11 @@ function emptyProgression(): PlayerProgression {
   };
 }
 
-function addRunToProgression(
+export function addRunToProgression(
   progression: PlayerProgression,
   run: ValidatedRunSummary,
   playerStats: PlayerStats,
+  updateSources = true,
 ): PlayerProgression {
   const runAccuracy =
     run.shotsFired >= 10
@@ -944,7 +1082,14 @@ function addRunToProgression(
     }
   }
 
-  return { ...progression, totals, modes, powers, achievements, unlocks };
+  let sources = progression.sources;
+  if (updateSources) {
+    const previous = playerProgressionSources(progression);
+    const source = run.statisticsSource ?? "legacy";
+    const scoped = addRunToProgression({ ...progression, ...previous[source], sources: undefined }, run, playerStats, false);
+    sources = { ...previous, [source]: { totals: scoped.totals, modes: scoped.modes, powers: scoped.powers } };
+  }
+  return { ...progression, ...(sources ? { sources } : {}), totals, modes, powers, achievements, unlocks };
 }
 
 function addEventsToProgression(
@@ -1202,7 +1347,24 @@ export function mergeStoredGameStatsV3(
     version: STORAGE_VERSION_V3,
     activeProfileId,
     profiles: collapsed,
+    ...((current.legacyV3Imports || incoming.legacyV3Imports) ? {
+      legacyV3Imports: mergeLegacyV3Receipts(current.legacyV3Imports, incoming.legacyV3Imports),
+    } : {}),
   };
+}
+
+function mergeLegacyV3Receipts(
+  current: LegacyV3Imports = {},
+  incoming: LegacyV3Imports = {},
+): LegacyV3Imports {
+  const merged = { ...current };
+  for (const [key, receipt] of Object.entries(incoming)) {
+    merged[key] = {
+      pendingNickname: receipt.pendingNickname,
+      eventIds: [...new Set([...(current[key]?.eventIds ?? []), ...receipt.eventIds])].sort(),
+    };
+  }
+  return Object.fromEntries(Object.entries(merged).sort(([left], [right]) => left.localeCompare(right)));
 }
 
 export function upsertProfileInStore(
@@ -1215,6 +1377,7 @@ export function upsertProfileInStore(
     profile,
   ].sort((left, right) => left.profileId.localeCompare(right.profileId));
   return {
+    ...store,
     version: STORAGE_VERSION_V3,
     activeProfileId: activate ? profile.profileId : store.activeProfileId,
     profiles,
@@ -1226,6 +1389,7 @@ export function forgetActiveProfileInStore(
 ): StoredGameStatsV3 {
   if (store.activeProfileId === null) return store;
   return {
+    ...store,
     version: STORAGE_VERSION_V3,
     activeProfileId: null,
     profiles: store.profiles.filter(
@@ -1431,13 +1595,18 @@ async function fetchGameStats(
   );
 
   try {
-    return await fetch(GAME_STATS_API_PATH, {
+    const response = await fetch(GAME_STATS_API_PATH, {
       ...init,
       cache: "no-store",
       credentials: "omit",
       signal: controller.signal,
     });
+    if (!response.headers.get("content-type")?.includes("application/json")) {
+      throw new GameStatsClientError(operation, "API_NOT_AVAILABLE", "The statistics endpoint did not return JSON.");
+    }
+    return response;
   } catch (error) {
+    if (error instanceof GameStatsClientError) throw error;
     throw new GameStatsClientError(
       operation,
       controller.signal.aborted ? "request_timeout" : "network_error",
@@ -1452,7 +1621,7 @@ async function fetchGameStats(
   }
 }
 
-async function postProfile(
+export async function postProfile(
   request: GameStatsRequest,
   accessToken: string | null = null,
 ): Promise<AdoptableProfileResponse> {
@@ -1479,7 +1648,7 @@ async function postProfile(
   }
 
   const result = body as Partial<ProfileResponse> | null;
-  if (!result || !isPlayerStats(result.profile)) {
+  if (!result || !isPlayerStats(result.profile) || !validPlayerStatsSources(result.profile.sources)) {
     throw new GameStatsClientError(
       request.action,
       "invalid_response",
@@ -1528,10 +1697,21 @@ async function postProfile(
       "The statistics service returned an invalid link status.",
     );
   }
+  // Sync acknowledgements must survive this shared response decoder. Dropping
+  // them made a committed run look like invalid_response forever on every retry.
+  let results: SyncResponse["results"] | undefined;
+  if (request.action === "sync") {
+    const validated = validateGameSyncResults((body as Partial<SyncResponse>).results);
+    if (!validated.ok) {
+      throw new GameStatsClientError("sync", "invalid_response", "Invalid sync acknowledgements.");
+    }
+    results = validated.value;
+  }
   return {
     profile: result.profile,
     ...(result.recorded === undefined ? {} : { recorded: result.recorded }),
     ...(progression ? { progression } : {}),
+    ...(results ? { results } : {}),
     ...(profilePublicId ? { profilePublicId } : {}),
     ...(rawAccountLinked === undefined
       ? {}
@@ -1539,7 +1719,7 @@ async function postProfile(
   };
 }
 
-async function postSync(
+export async function postSync(
   events: GameSyncEvent[],
   accessToken: string,
 ): Promise<SyncResponse & { profilePublicId?: string }> {
@@ -1573,7 +1753,7 @@ async function postSync(
   };
 }
 
-async function getLeaderboard(): Promise<LeaderboardEntry[]> {
+async function getLeaderboard(): Promise<LeaderboardResponse> {
   const response = await fetchGameStats("leaderboard", { method: "GET" });
 
   const body = await readResponseBody(response);
@@ -1594,7 +1774,11 @@ async function getLeaderboard(): Promise<LeaderboardEntry[]> {
       "The leaderboard service returned an invalid response.",
     );
   }
-  return result.leaderboard.filter(isLeaderboardEntry);
+  if (result.sources !== undefined && (!result.sources || !GAME_STATISTICS_SOURCES.every((source) => Array.isArray(result.sources?.[source]) && result.sources[source].every(isLeaderboardEntry)))) {
+    throw new GameStatsClientError("leaderboard", "invalid_response", "Invalid source leaderboards.");
+  }
+  const leaderboard = result.leaderboard.filter(isLeaderboardEntry);
+  return { leaderboard, sources: result.sources ?? { demo: [], arduino: [], legacy: leaderboard } };
 }
 
 export function useGameStats({
@@ -1605,6 +1789,10 @@ export function useGameStats({
 }: UseGameStatsOptions): UseGameStatsResult {
   const storeRef = useRef<StoredGameStatsV3>(emptyStoredGameStatsV3());
   const leaderboardRef = useRef<LeaderboardEntry[]>([]);
+  const [leaderboardSources, setLeaderboardSources] = useState<NonNullable<LeaderboardResponse["sources"]>>({ demo: [], arduino: [], legacy: [] });
+  const [statisticsSource, selectStatisticsSource] = useState<GameStatisticsSource>("demo");
+  const [leaderboardStatus, setLeaderboardStatus] = useState<GameStatsSyncStatus>("loading");
+  const [leaderboardError, setLeaderboardError] = useState<GameStatsError | null>(null);
   const mountedRef = useRef(false);
   const languageRef = useRef(language);
   const getAccessTokenRef = useRef(getAccessToken);
@@ -1630,10 +1818,13 @@ export function useGameStats({
       update: (current: StoredGameStatsV3) => StoredGameStatsV3,
       persist = true,
     ) => {
-      const next = update(storeRef.current);
+      const base = persist
+        ? mergeStoredGameStatsV3(storeRef.current, readStoredGameStats().store)
+        : storeRef.current;
+      const next = update(base);
       if (persist) {
         try {
-          writeStoredGameStatsV3(next);
+          writeStoredGameStatsV4(next);
         } catch (storageError) {
           const clientError = new GameStatsClientError(
             "storage",
@@ -1664,7 +1855,9 @@ export function useGameStats({
     [],
   );
 
-  const publishLeaderboard = useCallback((leaderboard: LeaderboardEntry[]) => {
+  const publishLeaderboard = useCallback((response: LeaderboardResponse) => {
+    const leaderboard = response.leaderboard;
+    setLeaderboardSources(response.sources ?? { demo: [], arduino: [], legacy: leaderboard });
     leaderboardRef.current = leaderboard;
     if (mountedRef.current) {
       setSnapshot(
@@ -1900,9 +2093,6 @@ export function useGameStats({
         }
       }
 
-      // The public leaderboard carries no profile data, so it is still refreshed
-      // for a retired profile; only its own state is reported as an error.
-      publishLeaderboard(await getLeaderboard());
       if (mountedRef.current) {
         if (retired) {
           setError({
@@ -1926,7 +2116,22 @@ export function useGameStats({
       setError(nextError);
       setStatus(isOfflineError(syncError) ? "offline" : "error");
     }
-  }, [acquireAccessToken, publishLeaderboard, publishStore]);
+  }, [acquireAccessToken, publishStore]);
+
+  const refreshLeaderboard = useCallback(async () => {
+    if (mountedRef.current) setLeaderboardStatus("syncing");
+    try {
+      const response = await getLeaderboard();
+      if (!mountedRef.current) return;
+      publishLeaderboard(response);
+      setLeaderboardStatus("synced");
+      setLeaderboardError(null);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setLeaderboardStatus(isOfflineError(error) ? "offline" : "error");
+      setLeaderboardError(asGameStatsError(error, "leaderboard"));
+    }
+  }, [publishLeaderboard]);
 
   const retrySync = useCallback(async () => {
     if (syncPromiseRef.current) {
@@ -1938,6 +2143,9 @@ export function useGameStats({
       do {
         syncAgainRef.current = false;
         await runSyncPass();
+        // Public ranking availability is independent of profile/auth failures.
+        // Refresh after the queue pass so newly accepted runs are included.
+        await refreshLeaderboard();
       } while (syncAgainRef.current);
     })();
     syncPromiseRef.current = promise;
@@ -1946,7 +2154,7 @@ export function useGameStats({
     } finally {
       if (syncPromiseRef.current === promise) syncPromiseRef.current = null;
     }
-  }, [runSyncPass]);
+  }, [refreshLeaderboard, runSyncPass]);
 
   const requestSync = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -2092,8 +2300,8 @@ export function useGameStats({
       return;
     }
     try {
-      // Only the v3 vault changes; the retained v1/v2 values are never
-      // touched again — the empty v3 store is the durable tombstone.
+      // Only v4 changes. Import receipts keep the retained v3 copy from
+      // resurrecting the forgotten profile on the next reload.
       publishStore((current) => forgetActiveProfileInStore(current));
     } catch {
       return;
@@ -2259,7 +2467,7 @@ export function useGameStats({
     storeRef.current = store;
     if (migrated) {
       try {
-        writeStoredGameStatsV3(store);
+        writeStoredGameStatsV4(store);
       } catch {
         // Keep the migrated in-memory store and retry persistence later.
       }
@@ -2278,34 +2486,19 @@ export function useGameStats({
     const handleOnline = () => void retrySync();
     const handleOffline = () => setStatus("offline");
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY_V3) return;
+      if (event.key !== STORAGE_KEY_V4 && event.key !== STORAGE_KEY_V3 && event.key !== null) return;
       try {
-        // Read-modify-write: re-read localStorage for the freshest committed
-        // value instead of trusting the possibly stale event payload.
-        let onDisk: StoredGameStatsV3 | null = null;
-        try {
-          const raw = window.localStorage.getItem(STORAGE_KEY_V3);
-          onDisk = raw
-            ? sanitizeStoredGameStatsV3(JSON.parse(raw) as unknown)
-            : emptyStoredGameStatsV3();
-        } catch {
-          onDisk = null;
-        }
-        const incoming =
-          onDisk ??
-          (event.newValue
-            ? sanitizeStoredGameStatsV3(JSON.parse(event.newValue) as unknown)
-            : emptyStoredGameStatsV3());
+        // Always read the committed v4 value and the latest legacy queue.
+        // Only v4 is written, so an old tab cannot strip source provenance.
+        const { store: incoming, migrated } = readStoredGameStats();
         const merged = mergeStoredGameStatsV3(storeRef.current, incoming);
-        // Persist only when this tab contributes data the blob lacks;
-        // activeProfileId is per-tab state and must not ping-pong writes.
-        const shouldPersist =
-          JSON.stringify(merged.profiles) !==
-          JSON.stringify(incoming.profiles);
+        const shouldPersist = migrated ||
+          JSON.stringify([merged.profiles, merged.legacyV3Imports]) !==
+          JSON.stringify([incoming.profiles, incoming.legacyV3Imports]);
         publishStore(() => merged, shouldPersist);
         requestSync();
       } catch {
-        // Ignore malformed values written by another tab or an older build.
+        // Keep the in-memory queue if another tab writes a malformed value.
       }
     };
     window.addEventListener("online", handleOnline);
@@ -2323,6 +2516,13 @@ export function useGameStats({
 
   return {
     ...snapshot,
+    statisticsSource,
+    leaderboardStatus,
+    leaderboardError,
+    selectStatisticsSource,
+    profile: snapshot.profile ? playerStatsForSource(snapshot.profile, statisticsSource) : null,
+    progression: snapshot.progression ? playerProgressionForSource(snapshot.progression, statisticsSource) : null,
+    leaderboard: leaderboardSources[statisticsSource],
     status,
     error,
     createAccountProfile,

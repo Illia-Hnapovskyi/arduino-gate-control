@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import {
+  GAME_STATISTICS_SOURCES,
   type GameStatsLanguage,
   validateNickname,
 } from "../shared/gameStats";
@@ -21,6 +22,19 @@ import { useAuthSession } from "./auth/useAuthSession";
 import { authAvailable } from "./auth/supabaseConfig";
 
 export type PlayerStatsCopy = {
+  statisticsSourceLabel: string;
+  statisticsSourceDemo: string;
+  statisticsSourceArduino: string;
+  statisticsSourceLegacy: string;
+  statisticsSourceLegacyNotice: string;
+  syncApiUnavailable: string;
+  syncDatabaseUnavailable: string;
+  syncMigrationRequired: string;
+  syncStatisticsRejected: string;
+  syncEventConflict: string;
+  syncRateLimited: string;
+  syncStorageUnavailable: string;
+  syncTimeout: string;
   profileEyebrow: string;
   profileTitle: string;
   profileSetupExplanation: string;
@@ -133,6 +147,16 @@ function localizedError(error: GameStatsError, copy: PlayerStatsCopy) {
     return copy.randomNicknameError;
   }
   if (code === "CODE_LOGIN_RETIRED") return copy.accountCodeRetiredNotice;
+  if (code === "ACCESS_CODE_RETIRED") return copy.accountCodeRetiredNotice;
+  if (code === "API_NOT_AVAILABLE") return copy.syncApiUnavailable;
+  if (code === "DATABASE_NOT_CONFIGURED" || code === "DATABASE_UNAVAILABLE") return copy.syncDatabaseUnavailable;
+  if (code === "SCHEMA_MIGRATION_REQUIRED") return copy.syncMigrationRequired;
+  if (code === "STATISTICS_REJECTED" || code === "INVALID_SYNC_EVENTS" || code === "INVALID_RUN") return copy.syncStatisticsRejected;
+  if (code === "EVENT_ID_REUSED") return copy.syncEventConflict;
+  if (code === "RATE_LIMITED") return copy.syncRateLimited;
+  if (code === "STORAGE_UNAVAILABLE") return copy.syncStorageUnavailable;
+  if (code === "REQUEST_TIMEOUT") return copy.syncTimeout;
+  if (code.startsWith("AUTH_") || code === "AUTH_SESSION_MISSING" || code === "AUTH_SESSION_MISMATCH") return copy.accountSessionExpired;
   if (error.operation === "create" || error.operation === "rename") {
     return copy.nicknameSaveError;
   }
@@ -188,6 +212,21 @@ function localeFor(language: GameStatsLanguage) {
   return "en-GB";
 }
 
+export function StatisticsSourceSelector({ copy, stats }: Pick<PlayerStatsPanelProps, "copy" | "stats">) {
+  const labels = { demo: copy.statisticsSourceDemo, arduino: copy.statisticsSourceArduino, legacy: copy.statisticsSourceLegacy };
+  return (
+    <div className="statistics-source-control">
+      <div aria-label={copy.statisticsSourceLabel} className="statistics-source-buttons" role="group">
+        {GAME_STATISTICS_SOURCES.map((source) => (
+          <button aria-pressed={stats.statisticsSource === source} className={`button ${stats.statisticsSource === source ? "primary" : "secondary"}`} key={source}
+            onClick={() => stats.selectStatisticsSource(source)} type="button">{labels[source]}</button>
+        ))}
+      </div>
+      {stats.statisticsSource === "legacy" && <p className="profile-setup-copy">{copy.statisticsSourceLegacyNotice}</p>}
+    </div>
+  );
+}
+
 export function LeaderboardPanel({
   copy,
   language,
@@ -206,13 +245,21 @@ export function LeaderboardPanel({
         <h2>{copy.leaderboardTitle}</h2>
       </div>
 
+      <StatisticsSourceSelector copy={copy} stats={stats} />
+
+      {stats.leaderboardError && (
+        <div className="leaderboard-state">
+          <p className="profile-error" role="alert">{localizedError(stats.leaderboardError, copy)}</p>
+          <button className="button secondary" onClick={() => void stats.retrySync()} type="button">{copy.syncRetry}</button>
+        </div>
+      )}
       {stats.leaderboard.length === 0 &&
-      (stats.status === "loading" || stats.status === "syncing") ? (
+      (stats.leaderboardStatus === "loading" || stats.leaderboardStatus === "syncing") ? (
         <p aria-live="polite" className="leaderboard-state" role="status">
           {copy.leaderboardLoading}
         </p>
       ) : stats.leaderboard.length === 0 ? (
-        <p className="leaderboard-state">{copy.leaderboardEmpty}</p>
+        stats.leaderboardError ? null : <p className="leaderboard-state">{copy.leaderboardEmpty}</p>
       ) : (
         <ol className="leaderboard-list">
           {stats.leaderboard.map((entry) => {
@@ -465,6 +512,7 @@ export function PlayerStatsPanel({
               )}
             </div>
 
+            <StatisticsSourceSelector copy={copy} stats={stats} />
             <dl className="stats-grid">
               <div className="stats-primary">
                 <dt>{copy.statBestScore}</dt>

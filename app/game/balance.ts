@@ -18,6 +18,8 @@ import type {
 /** Matches the shared/API/SQL maximum until that contract is migrated. */
 export const MAX_RUN_DURATION_MS = 6 * 60 * 60 * 1000;
 export const CONTRACT_LEVEL_DURATION_MS = 22_000;
+/** A gentle density increase; health, speed, damage and combat time stay stable. */
+export const ENEMY_DENSITY_MULTIPLIER = 1.1;
 export const MAX_THREAT_LEVEL = 9;
 export const MAX_PLANNABLE_WAVES = Math.floor(
   MAX_RUN_DURATION_MS / CONTRACT_LEVEL_DURATION_MS,

@@ -96,8 +96,10 @@ export type GameInputKind =
   | "arduino"
   | "mixed";
 
-export type PlayerStats = {
-  nickname: string;
+export const GAME_STATISTICS_SOURCES = ["demo", "arduino", "legacy"] as const;
+export type GameStatisticsSource = (typeof GAME_STATISTICS_SOURCES)[number];
+
+export type PlayerSourceStats = {
   gamesPlayed: number;
   totalScore: number;
   highScore: number;
@@ -105,6 +107,46 @@ export type PlayerStats = {
   totalDurationMs: number;
   updatedAt: string;
 };
+
+export type PlayerStats = PlayerSourceStats & {
+  nickname: string;
+  // Additive storage/API extension. Missing data belongs to legacy, never demo.
+  sources?: Record<GameStatisticsSource, PlayerSourceStats>;
+};
+
+export function emptySourceStats(updatedAt: string): PlayerSourceStats {
+  return { gamesPlayed: 0, totalScore: 0, highScore: 0, highestLevel: 0, totalDurationMs: 0, updatedAt };
+}
+
+export function playerStatsSources(stats: PlayerStats): Record<GameStatisticsSource, PlayerSourceStats> {
+  const legacy: PlayerSourceStats = { gamesPlayed: stats.gamesPlayed, totalScore: stats.totalScore,
+    highScore: stats.highScore, highestLevel: stats.highestLevel, totalDurationMs: stats.totalDurationMs, updatedAt: stats.updatedAt };
+  return (validPlayerStatsSources(stats.sources) ? stats.sources : undefined) ?? {
+    demo: emptySourceStats(stats.updatedAt),
+    arduino: emptySourceStats(stats.updatedAt),
+    legacy,
+  };
+}
+
+export function playerStatsForSource<T extends PlayerStats>(stats: T, source: GameStatisticsSource): T {
+  const sources = playerStatsSources(stats);
+  return { ...stats, ...sources[source], sources };
+}
+
+export function isPlayerSourceStats(value: unknown): value is PlayerSourceStats {
+  if (!value || typeof value !== "object") return false;
+  const stats = value as PlayerSourceStats;
+  return [stats.gamesPlayed, stats.totalScore, stats.highScore, stats.highestLevel, stats.totalDurationMs]
+    .every((number) => Number.isSafeInteger(number) && number >= 0) &&
+    stats.highScore <= 100_000_000 && stats.highestLevel <= 9 &&
+    typeof stats.updatedAt === "string" && !Number.isNaN(new Date(stats.updatedAt).getTime());
+}
+
+export function validPlayerStatsSources(value: unknown): value is PlayerStats["sources"] {
+  if (value === undefined) return true;
+  return value !== null && typeof value === "object" &&
+    GAME_STATISTICS_SOURCES.every((source) => isPlayerSourceStats((value as Record<string, unknown>)[source]));
+}
 
 export type LeaderboardEntry = PlayerStats & {
   rank: number;
@@ -146,6 +188,7 @@ export type GameRunSectorSummary = {
 };
 
 export type GameRunSummaryInput = ValidatedRun & {
+  statisticsSource?: GameStatisticsSource;
   modeId?: GameModeId;
   difficultyId?: GameDifficultyId;
   highestWave?: number;
@@ -166,6 +209,8 @@ export type GameRunSummaryInput = ValidatedRun & {
 };
 
 export type ValidatedRunSummary = ValidatedRun & {
+  // Leave absent on historical events so their canonical ledger hashes survive.
+  statisticsSource?: GameStatisticsSource;
   modeId: GameModeId;
   difficultyId: GameDifficultyId;
   highestWave: number;
@@ -295,10 +340,36 @@ export type PlayerProgression = {
   achievements: PlayerAchievementProgress[];
   unlocks: PlayerUnlock[];
   settings: PlayerGameSettings;
+  sources?: Record<GameStatisticsSource, PlayerSourceProgression>;
 };
+
+export type PlayerSourceProgression = Pick<PlayerProgression, "totals" | "modes" | "powers">;
+
+export function emptySourceProgression(): PlayerSourceProgression {
+  return {
+    totals: { enemiesDestroyed: 0, bossesDefeated: 0, shotsFired: 0, shotsHit: 0,
+      longestCombo: 0, powerupsCollected: 0, longestRunMs: 0, wins: 0,
+      arduinoRuns: 0, bestAccuracyPermille: 0 },
+    modes: [], powers: [],
+  };
+}
+
+export function playerProgressionSources(progression: PlayerProgression): Record<GameStatisticsSource, PlayerSourceProgression> {
+  return progression.sources ?? {
+    demo: emptySourceProgression(),
+    arduino: emptySourceProgression(),
+    legacy: { totals: progression.totals, modes: progression.modes, powers: progression.powers },
+  };
+}
+
+export function playerProgressionForSource(progression: PlayerProgression, source: GameStatisticsSource): PlayerProgression {
+  const sources = playerProgressionSources(progression);
+  return { ...progression, ...sources[source], sources };
+}
 
 export type LeaderboardResponse = {
   leaderboard: LeaderboardEntry[];
+  sources?: Record<GameStatisticsSource, LeaderboardEntry[]>;
 };
 
 export type ProfileResponse = {
@@ -642,6 +713,12 @@ export function validateRunSummary(
     "Mode",
   );
   if (!modeId.ok) return modeId;
+  if (
+    candidate.statisticsSource !== undefined &&
+    !GAME_STATISTICS_SOURCES.includes(candidate.statisticsSource as GameStatisticsSource)
+  ) {
+    return { ok: false, error: "Statistics source is invalid." };
+  }
   const difficultyId = validateEnumValue(
     candidate.difficultyId,
     GAME_DIFFICULTY_IDS,
@@ -953,6 +1030,9 @@ export function validateRunSummary(
       livesLost: counters.livesLost.value,
       won,
       inputKind: inputKind.value,
+      ...(candidate.statisticsSource === undefined ? {} : {
+        statisticsSource: candidate.statisticsSource as GameStatisticsSource,
+      }),
       endedReason,
       clientEndedAt,
       powers: powers.sort((left, right) =>
@@ -1271,9 +1351,31 @@ export function validatePlayerProgression(
     return { ok: false, error: "Player settings flags are invalid." };
   }
 
+  let sources: PlayerProgression["sources"];
+  if (candidate.sources !== undefined) {
+    if (!candidate.sources || typeof candidate.sources !== "object" || Array.isArray(candidate.sources)) {
+      return { ok: false, error: "Statistics source progression is invalid." };
+    }
+    sources = {} as NonNullable<PlayerProgression["sources"]>;
+    for (const source of GAME_STATISTICS_SOURCES) {
+      const raw = (candidate.sources as Record<string, unknown>)[source];
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return { ok: false, error: "Statistics source progression is missing." };
+      }
+      const scoped = raw as Record<string, unknown>;
+      const validated = validatePlayerProgression({
+        ...candidate, totals: scoped.totals, modes: scoped.modes, powers: scoped.powers,
+        sources: undefined,
+      });
+      if (!validated.ok) return validated;
+      sources[source] = { totals: validated.value.totals, modes: validated.value.modes, powers: validated.value.powers };
+    }
+  }
+
   return {
     ok: true,
     value: {
+      ...(sources ? { sources } : {}),
       schemaVersion: 2,
       serverRevision: serverRevision.value,
       totals,

@@ -2,6 +2,7 @@ import {
   BOSS_BALANCE,
   DIFFICULTY_BALANCE,
   ENEMY_BALANCE,
+  ENEMY_DENSITY_MULTIPLIER,
   MAX_PLANNABLE_WAVES,
   MODE_BALANCE,
   SECTOR_BALANCE,
@@ -213,7 +214,8 @@ export function createWavePlan({
     1,
     Math.round(
       (modeConfig.threatBase + modeConfig.threatGrowth * (wave - 1)) *
-        DIFFICULTY_BALANCE[difficulty].spawnBudgetMultiplier,
+        DIFFICULTY_BALANCE[difficulty].spawnBudgetMultiplier *
+        ENEMY_DENSITY_MULTIPLIER,
     ),
   );
   const spawns = createEnemySpawns(

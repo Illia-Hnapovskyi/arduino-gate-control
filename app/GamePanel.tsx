@@ -12,7 +12,10 @@ import {
 import {
   GAME_ACHIEVEMENTS,
   generateRunId,
+  playerStatsSources,
+  playerProgressionSources,
   type GameAchievementId,
+  type GameRunSummaryInput,
   type PlayerProgression,
   type PlayerStats,
 } from "../shared/gameStats";
@@ -24,7 +27,7 @@ import {
 } from "./auth/client";
 import { useAuthSession } from "./auth/useAuthSession";
 import { isGameRunActive, setGameRunActive } from "./AccountPanel";
-import { LeaderboardPanel, PlayerStatsPanel } from "./PlayerStatsPanel";
+import { LeaderboardPanel, PlayerStatsPanel, StatisticsSourceSelector } from "./PlayerStatsPanel";
 import { useGameStats } from "./useGameStats";
 import type { GameRunRecordResult } from "./useGameStats";
 import {
@@ -68,6 +71,7 @@ import {
   resolveGameInput,
 } from "./game/input";
 import { useImmersiveStage } from "./game/useImmersiveStage";
+import { useControllerNavigation } from "./game/useControllerNavigation";
 import {
   canResumeRun,
   clearRunSnapshot,
@@ -206,26 +210,30 @@ function createAchievementBaseline(
         : null,
     };
   }
-  const usedPowers = (progression?.powers ?? [])
+  // Unlock history is account-wide, matching the server ledger. Only the
+  // displayed career totals and high-score comparison use the selected source.
+  const profiles = profile ? Object.values(playerStatsSources(profile)) : [];
+  const progressions = progression ? Object.values(playerProgressionSources(progression)) : [];
+  const usedPowers = [...new Set(progressions.flatMap((source) => source.powers)
     .filter((power) => power.activatedCount > 0)
     .map((power) => power.powerId)
-    .filter((id): id is PowerUpId => POWER_UP_IDS.includes(id as PowerUpId));
+    .filter((id): id is PowerUpId => POWER_UP_IDS.includes(id as PowerUpId)))];
   return {
     progress,
     stats: {
       ...EMPTY_ACHIEVEMENT_STATS,
-      gamesPlayed: profile?.gamesPlayed ?? 0,
-      enemiesDestroyed: progression?.totals.enemiesDestroyed ?? 0,
-      bossesDefeated: progression?.totals.bossesDefeated ?? 0,
-      longestRunMs: progression?.totals.longestRunMs ?? 0,
+      gamesPlayed: profiles.reduce((total, source) => total + source.gamesPlayed, 0),
+      enemiesDestroyed: progressions.reduce((total, source) => total + source.totals.enemiesDestroyed, 0),
+      bossesDefeated: progressions.reduce((total, source) => total + source.totals.bossesDefeated, 0),
+      longestRunMs: Math.max(0, ...progressions.map((source) => source.totals.longestRunMs)),
       flawlessSectors: progress.flawless_sector?.progress ?? 0,
-      longestCombo: progression?.totals.longestCombo ?? 0,
-      highScore: profile?.highScore ?? 0,
-      arduinoRuns: progression?.totals.arduinoRuns ?? 0,
+      longestCombo: Math.max(0, ...progressions.map((source) => source.totals.longestCombo)),
+      highScore: Math.max(0, ...profiles.map((source) => source.highScore)),
+      arduinoRuns: progressions.reduce((total, source) => total + source.totals.arduinoRuns, 0),
       powerUpsUsed: usedPowers,
-      maxThreatLevel: profile?.highestLevel ?? 0,
+      maxThreatLevel: Math.max(0, ...profiles.map((source) => source.highestLevel)),
       bestAccuracyPermille:
-        progression?.totals.bestAccuracyPermille ?? 0,
+        Math.max(0, ...progressions.map((source) => source.totals.bestAccuracyPermille)),
     },
   };
 }
@@ -380,6 +388,7 @@ export default function GamePanel({
     sessionUserId,
     isRunActive: isGameRunActive,
   });
+  const selectStatisticsSource = gameStats.selectStatisticsSource;
   const connected = isPlayableConnection(connection);
   // Where a redirect leaves the player. The account panel both renders the
   // redirect notice and IS the profile, and it exists only while the profile
@@ -471,10 +480,12 @@ export default function GamePanel({
   const joystickCentreRef = useRef({ x: 512, y: 512 });
   const physicalPressStartedRef = useRef<number | null>(null);
   const physicalPowerTriggeredRef = useRef(false);
+  const physicalReleaseRequiredRef = useRef(false);
   const commandRef = useRef(onCommand);
   const recordRunRef = useRef(gameStats.recordRun);
   const previousHighScoreRef = useRef(0);
   const recordedRunIdsRef = useRef(new Set<string>());
+  const finalizedRunRef = useRef<GameRunSummaryInput | null>(null);
   const toastTimersRef = useRef(new Map<string, number>());
   const preferencesRef = useRef(preferences);
   const reducedMotionRef = useRef(false);
@@ -593,6 +604,14 @@ export default function GamePanel({
     );
   }, [connection, preferences.effectsVolume, preferences.musicVolume]);
 
+  useEffect(() => {
+    if (connection !== "connected" || uiStatus !== "menu") return;
+    // Menu clicks need the same 50 ms telemetry as combat. Pausing game mode
+    // gives that rate without movement, music, or a new firmware command.
+    commandRef.current("GAME:1");
+    commandRef.current("GAME:PAUSE");
+  }, [connection, uiStatus]);
+
   const addToast = useCallback((toast: Omit<GameToast, "id">) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setToasts((current) => [...current.slice(-3), { ...toast, id }]);
@@ -690,6 +709,7 @@ export default function GamePanel({
     setVirtualJoystick(centred);
     physicalPressStartedRef.current = null;
     physicalPowerTriggeredRef.current = false;
+    physicalReleaseRequiredRef.current = joystickRef.current.pressed;
   }, []);
 
   // Only the active profile's own checkpoint may gate the menu. A run parked by
@@ -754,8 +774,13 @@ export default function GamePanel({
       if (recordedRunIdsRef.current.has(gameResult.runId)) return;
       resetControls();
       const unlockedAchievements = finalizeRunAchievements(gameResult);
+      // A failed local save may be retried or exported later. Keep the original
+      // completion time and payload so the run's idempotency hash cannot change.
+      if (finalizedRunRef.current?.runId !== gameResult.runId) {
+        finalizedRunRef.current = gameResultToStatsInput(gameResult, endedReason);
+      }
       const recordStatus: GameRunRecordResult = recordRunRef.current(
-        gameResultToStatsInput(gameResult, endedReason),
+        finalizedRunRef.current,
         activeProfileOwnerRef.current,
       );
       const saved = recordStatus === "queued" || recordStatus === "duplicate";
@@ -767,7 +792,7 @@ export default function GamePanel({
         const resultView = resultToView(
           gameResult,
           previousHighScoreRef.current,
-          endedReason,
+          finalizedRunRef.current.endedReason ?? endedReason,
           recordStatus,
           unlockedAchievements,
         );
@@ -937,8 +962,10 @@ export default function GamePanel({
       lastFrameRef.current = timestamp;
 
       const joystick = joystickRef.current;
+      if (!joystick.pressed) physicalReleaseRequiredRef.current = false;
+      const physicalPressed = joystick.pressed && !physicalReleaseRequiredRef.current;
       let physicalPowerPulse = false;
-      if (connection === "connected" && joystick.pressed) {
+      if (connection === "connected" && physicalPressed) {
         if (physicalPressStartedRef.current === null) {
           physicalPressStartedRef.current = timestamp;
           physicalPowerTriggeredRef.current = false;
@@ -959,7 +986,7 @@ export default function GamePanel({
         invertY: preferencesRef.current.invertArduinoY,
         joystick: {
           connected: connection === "connected",
-          pressed: joystick.pressed,
+          pressed: physicalPressed,
           x: joystick.x,
           y: joystick.y,
         },
@@ -1010,11 +1037,12 @@ export default function GamePanel({
 
   const resumeGame = useCallback(() => {
     if (statusRef.current !== "paused") return;
+    resetControls();
     lastFrameRef.current = performance.now();
     statusRef.current = "playing";
     setUiStatus("playing");
     commandRef.current("GAME:RESUME");
-  }, []);
+  }, [resetControls]);
 
   useEffect(() => {
     immersiveRef.current = immersive;
@@ -1046,6 +1074,9 @@ export default function GamePanel({
       ) {
         if (statusRef.current === "playing") pauseGame();
         else if (statusRef.current === "paused") resumeGame();
+        else if (statusRef.current === "menu" && event.code === "Escape") {
+          stageRootRef.current?.querySelector(".space-menu-shell")?.dispatchEvent(new Event("game-controller-back"));
+        }
         if (statusRef.current !== "menu") event.preventDefault();
         return;
       }
@@ -1085,6 +1116,7 @@ export default function GamePanel({
       !gameStats.profileOwnerId ||
       !isPlayableConnection(connection) ||
       activeResumeSnapshot ||
+      checkpointError ||
       (result && !result.saved)
     ) return;
     // The redirect's section request is spent the moment the player starts
@@ -1093,20 +1125,27 @@ export default function GamePanel({
     // profile section after every single game.
     forgetRedirectSection();
     const runId = generateRunId();
+    const statisticsSource = connection === "connected" ? "arduino" : "demo";
+    selectStatisticsSource(statisticsSource);
+    const sourceProfile = { ...gameStats.profile, ...playerStatsSources(gameStats.profile)[statisticsSource] };
+    const sourceProgression = gameStats.progression
+      ? { ...gameStats.progression, ...playerProgressionSources(gameStats.progression)[statisticsSource] }
+      : null;
     const world = createGameWorld(
       runId,
       mode,
       difficulty,
       `${runId}:${Date.now()}`,
+      statisticsSource,
     );
-    previousHighScoreRef.current = gameStats.profile.highScore;
+    previousHighScoreRef.current = sourceProfile.highScore;
     achievementBaselineRef.current = createAchievementBaseline(
-      gameStats.profile,
-      gameStats.progression,
+      sourceProfile,
+      sourceProgression,
     );
     runAchievementIdsRef.current.clear();
     knownAchievementsRef.current = new Set(
-      gameStats.progression?.achievements
+      sourceProgression?.achievements
         .filter((achievement) => achievement.unlockedAt !== null)
         .map((achievement) => achievement.achievementId) ?? [],
     );
@@ -1145,12 +1184,14 @@ export default function GamePanel({
   }, [
     activeResumeSnapshot,
     connection,
+    checkpointError,
     forgetRedirectSection,
     difficulty,
     drawWorld,
     gameStats.profile,
     gameStats.profileOwnerId,
     gameStats.progression,
+    selectStatisticsSource,
     mode,
     resetControls,
     result,
@@ -1166,14 +1207,20 @@ export default function GamePanel({
     ) return;
     forgetRedirectSection();
     const world = restoreGameWorld(activeResumeSnapshot);
-    previousHighScoreRef.current = gameStats.profile.highScore;
+    const statisticsSource = world.statisticsSource;
+    selectStatisticsSource(statisticsSource);
+    const sourceProfile = { ...gameStats.profile, ...playerStatsSources(gameStats.profile)[statisticsSource] };
+    const sourceProgression = gameStats.progression
+      ? { ...gameStats.progression, ...playerProgressionSources(gameStats.progression)[statisticsSource] }
+      : null;
+    previousHighScoreRef.current = sourceProfile.highScore;
     achievementBaselineRef.current = createAchievementBaseline(
-      gameStats.profile,
-      gameStats.progression,
+      sourceProfile,
+      sourceProgression,
     );
     runAchievementIdsRef.current.clear();
     knownAchievementsRef.current = new Set(
-      gameStats.progression?.achievements
+      sourceProgression?.achievements
         .filter((achievement) => achievement.unlockedAt !== null)
         .map((achievement) => achievement.achievementId) ?? [],
     );
@@ -1200,6 +1247,7 @@ export default function GamePanel({
     gameStats.profile,
     gameStats.profileOwnerId,
     gameStats.progression,
+    selectStatisticsSource,
     resetControls,
   ]);
 
@@ -1251,16 +1299,23 @@ export default function GamePanel({
     commandRef.current("GAME:0");
   }, [resetControls, result]);
 
+  const pauseToMenu = useCallback(() => {
+    const world = worldRef.current;
+    if (!world || statusRef.current !== "paused") return;
+    finishActiveRun("stopped");
+    // Queue writes are synchronous. Never leave a failed save behind a menu.
+    if (recordedRunIdsRef.current.has(world.runId)) backToMenu();
+  }, [backToMenu, finishActiveRun]);
+
   const exportUnsavedResult = useCallback(() => {
     const world = worldRef.current;
     if (!world || !result || result.saved) return;
     const recovery = {
       exportedAt: new Date().toISOString(),
       kind: "space-defender-run-recovery",
-      run: gameResultToStatsInput(
-        snapshotGameSummary(world),
-        result.endedReason,
-      ),
+      run: finalizedRunRef.current?.runId === world.runId
+        ? finalizedRunRef.current
+        : gameResultToStatsInput(snapshotGameSummary(world), result.endedReason),
       version: 1,
     };
     const url = URL.createObjectURL(
@@ -1303,6 +1358,33 @@ export default function GamePanel({
     statusRef.current = "menu";
     setUiStatus("menu");
   }, []);
+
+  const controllerBack = useCallback(() => {
+    if (statusRef.current === "paused") resumeGame();
+    else if (statusRef.current === "over") backToMenu();
+    else if (statusRef.current === "upgrade") {
+      if (saveSafeCheckpoint()) {
+        resetControls();
+        parkCheckpointInMenu();
+        commandRef.current("GAME:0");
+      }
+    } else {
+      stageRootRef.current?.querySelector(".space-menu-shell")?.dispatchEvent(new Event("game-controller-back"));
+    }
+  }, [backToMenu, parkCheckpointInMenu, resetControls, resumeGame, saveSafeCheckpoint]);
+
+  useControllerNavigation({
+    rootRef: stageRootRef,
+    connected: connection === "connected",
+    screen: uiStatus,
+    x: joystickX,
+    y: joystickY,
+    pressed: joystickPressed,
+    centre: joystickCentre,
+    invertY: preferences.invertArduinoY,
+    onBack: controllerBack,
+    onPause: pauseGame,
+  });
 
   useEffect(() => {
     if (
@@ -1784,11 +1866,14 @@ export default function GamePanel({
               )}
               startingPowers={[copy.powers.shield.name]}
               statisticsPanel={(
-                <CareerStats
-                  copy={copy}
-                  modes={gameStats.progression?.modes ?? []}
-                  stats={careerStats}
-                />
+                <>
+                  <StatisticsSourceSelector copy={legacyCopy} stats={gameStats} />
+                  <CareerStats
+                    copy={copy}
+                    modes={gameStats.progression?.modes ?? []}
+                    stats={careerStats}
+                  />
+                </>
               )}
             />
           </>
@@ -1840,6 +1925,7 @@ export default function GamePanel({
                   onExportRecovery={exportUnsavedResult}
                   onFinish={() => finishActiveRun("stopped")}
                   onManageSave={manageUnsavedResult}
+                  onPauseToMenu={pauseToMenu}
                   onPlayAgain={startGame}
                   onRetryCheckpoint={() => saveSafeCheckpoint()}
                   onRetrySave={retryResultSave}

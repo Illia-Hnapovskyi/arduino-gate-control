@@ -1,6 +1,9 @@
 export const GAME_PREFERENCES_STORAGE_KEY =
   "arduino-gate-space-defender-preferences:v1";
 
+export const MUSIC_SELECTIONS = ["auto", "off", "space", "neon", "boss", "joy", "elise", "bells", "anthem"] as const;
+export type MusicSelection = (typeof MUSIC_SELECTIONS)[number];
+
 export const GAME_ACTIONS = [
   "moveUp",
   "moveDown",
@@ -18,6 +21,7 @@ export type GamePreferences = {
   effectsVolume: number;
   invertArduinoY: boolean;
   musicVolume: number;
+  musicSelection: MusicSelection;
   reducedMotion: boolean;
   screenShake: boolean;
   keyBindings: GameKeyBindings;
@@ -36,6 +40,7 @@ export const DEFAULT_GAME_PREFERENCES: GamePreferences = {
   effectsVolume: 28,
   invertArduinoY: true,
   musicVolume: 42,
+  musicSelection: "auto",
   reducedMotion: false,
   screenShake: true,
   keyBindings: DEFAULT_GAME_KEY_BINDINGS,
@@ -112,6 +117,9 @@ export function sanitizeGamePreferences(value: unknown): GamePreferences {
       candidate.musicVolume,
       DEFAULT_GAME_PREFERENCES.musicVolume,
     ),
+    musicSelection: MUSIC_SELECTIONS.includes(candidate.musicSelection as MusicSelection)
+      ? candidate.musicSelection as MusicSelection
+      : "auto",
     reducedMotion:
       typeof candidate.reducedMotion === "boolean"
         ? candidate.reducedMotion

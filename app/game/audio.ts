@@ -1,4 +1,5 @@
 import type { SectorId } from "./types";
+import type { MusicSelection } from "./preferences";
 
 export type TrackId =
   | "space"
@@ -434,6 +435,15 @@ export function getTrack(trackId: TrackId): ChiptuneTrack {
     CHIPTUNE_TRACKS.find((track) => track.id === trackId) ??
     CHIPTUNE_TRACKS[0]
   );
+}
+
+/** Manual tracks keep their own tempo; auto keeps the sector arrangement. */
+export function getSelectedMusic(sector: SectorId, selection: MusicSelection) {
+  if (selection === "off") return null;
+  const profile = getSectorAudio(sector);
+  return selection === "auto"
+    ? profile
+    : { ...profile, trackId: selection, tempoMultiplier: 1 };
 }
 
 export function isGameSfxId(value: string): value is GameSfxId {

@@ -18,6 +18,7 @@ export function checkpointGameWorld(
     profileOwnerId,
     run: {
       runId: world.runId,
+      statisticsSource: world.statisticsSource,
       mode: world.mode,
       difficulty: world.difficulty,
       seed: world.seed,
@@ -63,7 +64,7 @@ export function checkpointGameWorld(
 
 export function restoreGameWorld(snapshot: RunSnapshot) {
   const run = snapshot.run;
-  const world = createGameWorld(run.runId, run.mode, run.difficulty, 0);
+  const world = createGameWorld(run.runId, run.mode, run.difficulty, 0, run.statisticsSource ?? "legacy");
   world.seed = run.seed;
   world.rngState = run.rngState;
   world.nextEntityId = run.nextEntityId;

@@ -99,7 +99,7 @@ export function resolveGameInput({
   return {
     ...(controller ? { controller } : {}),
     fire:
-      joystick.pressed || keys.has(keyBindings.fire) || touch.has("fire"),
+      (joystick.connected && joystick.pressed) || keys.has(keyBindings.fire) || touch.has("fire"),
     moveX: Math.max(-1, Math.min(1, analogX + keyboardX + touchX)),
     moveY: Math.max(-1, Math.min(1, analogY + keyboardY + touchY)),
     power: keys.has(keyBindings.power) || touch.has("power"),

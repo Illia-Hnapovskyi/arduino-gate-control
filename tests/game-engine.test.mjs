@@ -10,6 +10,8 @@ import {
 } from "../app/game/achievements.ts";
 import {
   ENEMY_BALANCE,
+  ENEMY_DENSITY_MULTIPLIER,
+  DIFFICULTY_BALANCE,
   MAX_PLANNABLE_WAVES,
   MAX_RUN_DURATION_MS,
   MODE_BALANCE,
@@ -55,6 +57,26 @@ import {
   isBossWave,
   isFinalModeWave,
 } from "../app/game/waves.ts";
+
+test("density rises gently by ten percent without raising spawn, health or timing caps", () => {
+  assert.equal(ENEMY_DENSITY_MULTIPLIER, 1.1);
+  let oldTotal = 0;
+  let newTotal = 0;
+  for (const mode of GAME_MODE_IDS) for (const difficulty of DIFFICULTY_IDS) {
+    for (let wave = 1; wave <= 9; wave++) {
+      const config = MODE_BALANCE[mode];
+      const before = (config.threatBase + config.threatGrowth * (wave - 1)) * DIFFICULTY_BALANCE[difficulty].spawnBudgetMultiplier;
+      const plan = createWavePlan({ mode, difficulty, wave, seed: 42 });
+      assert.equal(plan.threatBudget, Math.round(before * 1.1));
+      assert.equal(plan.phases[1].durationMs, 22000);
+      assert.ok(plan.spawns.length <= 48);
+      assert.deepEqual(plan, createWavePlan({ mode, difficulty, wave, seed: 42 }));
+      oldTotal += Math.round(before);
+      newTotal += plan.threatBudget;
+    }
+  }
+  assert.ok(newTotal / oldTotal > 1.08 && newTotal / oldTotal < 1.12);
+});
 
 test("game balance exposes three modes, three difficulties, nine sectors, and ten enemies", () => {
   assert.deepEqual(GAME_MODE_IDS, ["expedition", "survival", "classic"]);

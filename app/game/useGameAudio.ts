@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   createBrowserAudioEngine,
   type GameSfxId,
-  getSectorAudio,
+  getSelectedMusic,
   getTrack,
   scheduleBrowserTrackStep,
 } from "./audio";
@@ -91,7 +91,8 @@ export function useGameAudio({
     const context = engine.ensureContext();
     if (!context || preferencesRef.current.musicVolume <= 0) return;
     void engine.resume();
-    const profile = getSectorAudio(activeSector);
+    const profile = getSelectedMusic(activeSector, preferencesRef.current.musicSelection);
+    if (!profile) return;
     const track = getTrack(profile.trackId);
     const bus = context.createGain();
     bus.gain.setValueAtTime(
@@ -123,11 +124,11 @@ export function useGameAudio({
 
   const startSerialMusic = useCallback((activeSector: SectorId) => {
     commandRef.current("TRACK:START");
-    if (preferencesRef.current.musicVolume <= 0) {
+    const profile = getSelectedMusic(activeSector, preferencesRef.current.musicSelection);
+    if (preferencesRef.current.musicVolume <= 0 || !profile) {
       commandRef.current("TRACK:STOP");
       return;
     }
-    const profile = getSectorAudio(activeSector);
     const track = getTrack(profile.trackId);
 
     const next = () => {
@@ -166,6 +167,7 @@ export function useGameAudio({
     connection,
     bossActive,
     preferences.musicVolume,
+    preferences.musicSelection,
     sector,
     startBrowserMusic,
     startSerialMusic,

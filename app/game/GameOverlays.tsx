@@ -33,6 +33,7 @@ type GameOverlayProps = {
   onExportRecovery: () => void;
   onFinish: () => void;
   onManageSave: () => void;
+  onPauseToMenu: () => void;
   onPlayAgain: () => void;
   onRetryCheckpoint: () => void;
   onRetrySave: () => void;
@@ -53,6 +54,7 @@ export function GameOverlay({
   onExportRecovery,
   onFinish,
   onManageSave,
+  onPauseToMenu,
   onPlayAgain,
   onRetryCheckpoint,
   onRetrySave,
@@ -91,7 +93,7 @@ export function GameOverlay({
     ].join(",");
     const focusables = () =>
       Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector)).filter(
-        (element) => !element.hasAttribute("hidden"),
+        (element) => element.getClientRects().length > 0 && !element.closest("[inert]"),
       );
     const initialFocus =
       dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]") ??
@@ -150,6 +152,7 @@ export function GameOverlay({
           <div className="space-overlay-actions">
             <button autoFocus className="button primary" data-dialog-initial-focus onClick={onResume} type="button">{copy.resume}</button>
             <button className="button secondary" onClick={onFinish} type="button">{copy.finishRun}</button>
+            <button className="button secondary" onClick={onPauseToMenu} type="button">{copy.backToMenu}</button>
           </div>
         </div>
       </div>
@@ -241,6 +244,7 @@ export function GameOverlay({
         </p>
         {result.newRecord && <div className="space-record-banner">{copy.newRecord}</div>}
         <strong className="space-result-score">{copy.formatNumber(result.score)}</strong>
+        <div className="space-result-details">
         <dl className="space-result-grid">
           <div><dt>{copy.hud.wave}</dt><dd>{copy.formatNumber(result.wave)}</dd></div>
           <div><dt>{copy.stats.enemies}</dt><dd>{copy.formatNumber(result.enemies)}</dd></div>
@@ -250,8 +254,8 @@ export function GameOverlay({
           <div><dt>{copy.stats.longestRun}</dt><dd>{copy.formatDuration(result.durationSeconds)}</dd></div>
         </dl>
         {result.unlockedAchievements.length > 0 && (
-          <section className="space-result-achievements">
-            <h3>{copy.achievementUnlocked}</h3>
+          <section aria-labelledby="space-result-achievements-heading" className="space-result-achievements">
+            <h3 id="space-result-achievements-heading">{copy.achievementUnlocked}</h3>
             <ul>
               {result.unlockedAchievements.map((id) => (
                 <li key={id}>{copy.achievements[id].name}</li>
@@ -259,6 +263,7 @@ export function GameOverlay({
             </ul>
           </section>
         )}
+        </div>
         <p
           className={`space-result-saved ${result.saved ? "is-saved" : "is-save-error"}`}
           id="space-result-save-status"

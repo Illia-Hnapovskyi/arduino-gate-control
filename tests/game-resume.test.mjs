@@ -10,14 +10,31 @@ import {
   runSnapshotStorageKey,
   saveRunSnapshot,
   serializeRunSnapshot,
+  sanitizeRunSnapshot,
 } from "../app/game/persistence.ts";
 import { checkpointGameWorld, restoreGameWorld } from "../app/game/resume.ts";
 import {
   createGameWorld,
   selectUpgrade,
   stepGameWorld,
+  snapshotGameSummary,
 } from "../app/game/runtime.ts";
 import { createWavePlan } from "../app/game/waves.ts";
+
+test("statistics source survives checkpoint and never changes when input controller changes", () => {
+  for (const source of ["demo", "arduino"]) {
+    const world = createGameWorld("source_run_12345", "expedition", "pilot", 42, source);
+    world.status = "upgrade";
+    const snapshot = checkpointGameWorld(world, Date.now());
+    const restored = restoreGameWorld(sanitizeRunSnapshot(snapshot));
+    restored.controller = source === "demo" ? "arduino" : "keyboard";
+    assert.equal(snapshotGameSummary(restored).statisticsSource, source);
+    delete snapshot.run.statisticsSource;
+    assert.equal(restoreGameWorld(sanitizeRunSnapshot(snapshot)).statisticsSource, "legacy");
+    snapshot.run.statisticsSource = "forged";
+    assert.equal(sanitizeRunSnapshot(snapshot), null);
+  }
+});
 
 test("safe checkpoints restore canonical deterministic state without rerolls or grants", () => {
   const world = createGameWorld(

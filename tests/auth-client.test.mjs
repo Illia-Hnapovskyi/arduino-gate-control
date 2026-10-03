@@ -127,6 +127,7 @@ test("the passkey surface matches the panel contract", async () => {
     "passkeyUnavailable: boolean;",
     "passkeys: PasskeySummary[];",
     "passkeysLoading: boolean;",
+    "passkeysRefreshFailed: boolean;",
     "registerPasskey: () => Promise<AuthActionResult>;",
     "signInWithPasskey: () => Promise<AuthActionResult>;",
     "listPasskeys: () => Promise<AuthActionResult>;",
@@ -174,7 +175,7 @@ test("a fetched passkey list never outlives the account it belongs to", async ()
   // while its own refresh is still in flight, or forever if that refresh fails.
   assert.match(
     source,
-    /useState<\{\s*ownerId: string \| null;\s*items: PasskeySummary\[\];\s*\}>\(\{ ownerId: null, items: \[\] \}\)/,
+    /useState<\{\s*ownerId: string \| null;\s*items: PasskeySummary\[\];\s*refreshFailed: boolean;\s*\}>\(\{ ownerId: null, items: \[\], refreshFailed: false \}\)/,
   );
   assert.match(
     source,
@@ -182,8 +183,8 @@ test("a fetched passkey list never outlives the account it belongs to", async ()
   );
   assert.doesNotMatch(source, /passkeys: hasSession \? passkeys : \[\]/);
 
-  // Only a successful list writes the pair, and it records who it was for.
-  assert.equal(countMatches(source, /setPasskeys\(/g), 1);
+  // Both successful and failed list reads remain scoped to their account.
+  assert.equal(countMatches(source, /setPasskeys\(/g), 3);
   assert.match(source, /setPasskeys\(\{\s*ownerId: sessionUserId,/);
 });
 

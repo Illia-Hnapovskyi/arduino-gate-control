@@ -21,6 +21,7 @@ import {
   type UpgradeStacks,
 } from "./types.ts";
 import { createWavePlan, getSectorIdForWave } from "./waves.ts";
+import type { GameStatisticsSource } from "../../shared/gameStats.ts";
 
 export const RUN_SNAPSHOT_STORAGE_KEY =
   "arduino-gate-space-defender-run:v2";
@@ -38,6 +39,7 @@ export type ResumablePlayerTimers = {
 
 export type ResumableRunState = {
   runId: string;
+  statisticsSource?: GameStatisticsSource;
   mode: GameModeId;
   difficulty: DifficultyId;
   seed: number;
@@ -503,9 +505,11 @@ function sanitizeRun(
     return null;
   }
   const normalizedController = controller as RunController;
+  if (source.statisticsSource !== undefined && source.statisticsSource !== "demo" && source.statisticsSource !== "arduino" && source.statisticsSource !== "legacy") return null;
 
   return {
     runId,
+    ...(source.statisticsSource === undefined ? {} : { statisticsSource: source.statisticsSource as GameStatisticsSource }),
     mode,
     difficulty,
     seed,

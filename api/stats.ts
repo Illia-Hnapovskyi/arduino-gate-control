@@ -8,6 +8,12 @@ import {
 } from "../server/authVerify.js";
 import {
   GAME_ACHIEVEMENTS,
+  GAME_STATISTICS_SOURCES,
+  emptySourceStats,
+  emptySourceProgression,
+  type GameStatisticsSource,
+  type PlayerSourceStats,
+  type PlayerSourceProgression,
   GAME_STATS_ACTIONS,
   canonicalJson,
   evaluateCredentialMatrix,
@@ -446,6 +452,11 @@ async function hasProgressionSchema(sql: SqlClient) {
   const rows = resultRows<Record<string, unknown>>(await sql`
     SELECT
       to_regclass('public.game_sync_events') IS NOT NULL
+      AND to_regclass('public.game_account_links') IS NOT NULL
+      AND to_regclass('public.game_player_source_stats') IS NOT NULL
+      AND to_regclass('public.game_player_source_totals') IS NOT NULL
+      AND to_regclass('public.game_player_source_mode_stats') IS NOT NULL
+      AND to_regclass('public.game_player_source_power_stats') IS NOT NULL
       AND EXISTS (
         SELECT 1
         FROM information_schema.columns
@@ -485,11 +496,43 @@ async function selectPlayerRecord(
   const row = rows[0];
   return row
     ? {
-        profile: playerFromRow(row),
+        profile: { ...playerFromRow(row), sources: await getPlayerSourceStats(sql, playerId, databaseDate(row.updatedAt)) },
         statsRevision: databaseInteger(row.statsRevision),
         publicId: databaseString(row.publicId),
       }
     : null;
+}
+
+async function getPlayerSourceProgression(sql: SqlClient, playerId: number) {
+  const sources = Object.fromEntries(GAME_STATISTICS_SOURCES.map((source) => [source, emptySourceProgression()])) as Record<GameStatisticsSource, PlayerSourceProgression>;
+  const [totalsRows, modeRows, powerRows] = await Promise.all([
+    sql`SELECT * FROM game_player_source_totals WHERE player_id = ${playerId}`,
+    sql`SELECT * FROM game_player_source_mode_stats WHERE player_id = ${playerId}`,
+    sql`SELECT * FROM game_player_source_power_stats WHERE player_id = ${playerId}`,
+  ]);
+  for (const row of resultRows<Record<string, unknown>>(totalsRows)) {
+    const totals = sources[databaseString(row.statistics_source) as GameStatisticsSource].totals;
+    for (const key of Object.keys(totals) as (keyof PlayerExtendedTotals)[]) {
+      totals[key] = databaseInteger(row[key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)]);
+    }
+  }
+  for (const row of resultRows<Record<string, unknown>>(modeRows)) {
+    sources[databaseString(row.statistics_source) as GameStatisticsSource].modes.push({
+      modeId: databaseString(row.mode_id) as PlayerModeStats["modeId"],
+      difficultyId: databaseString(row.difficulty_id) as PlayerModeStats["difficultyId"],
+      gamesPlayed: databaseInteger(row.games_played), totalScore: databaseInteger(row.total_score),
+      highScore: databaseInteger(row.high_score), highestWave: databaseInteger(row.highest_wave),
+      enemiesDestroyed: databaseInteger(row.enemies_destroyed), bossesDefeated: databaseInteger(row.bosses_defeated),
+      totalDurationMs: databaseInteger(row.total_duration_ms), wins: databaseInteger(row.wins),
+    });
+  }
+  for (const row of resultRows<Record<string, unknown>>(powerRows)) {
+    sources[databaseString(row.statistics_source) as GameStatisticsSource].powers.push({
+      powerId: databaseString(row.power_id) as PlayerPowerStats["powerId"],
+      collectedCount: databaseInteger(row.collected_count), activatedCount: databaseInteger(row.activated_count),
+    });
+  }
+  return sources;
 }
 
 async function getPlayerProgression(
@@ -651,6 +694,7 @@ async function getPlayerProgression(
   return {
     schemaVersion: 2,
     serverRevision,
+    sources: await getPlayerSourceProgression(sql, playerId),
     totals,
     modes,
     powers,
@@ -680,31 +724,33 @@ async function selectPlayerSnapshot(sql: SqlClient, playerId: number) {
   );
 }
 
-async function getLeaderboard(sql: SqlClient) {
+async function getPlayerSourceStats(sql: SqlClient, playerId: number, updatedAt: string) {
+  const sources = Object.fromEntries(GAME_STATISTICS_SOURCES.map((source) => [source, emptySourceStats(updatedAt)])) as Record<GameStatisticsSource, PlayerSourceStats>;
+  const rows = resultRows<Record<string, unknown>>(await sql`
+    SELECT statistics_source AS source, games_played AS "gamesPlayed", total_score AS "totalScore",
+      high_score AS "highScore", highest_level AS "highestLevel", total_duration_ms AS "totalDurationMs", updated_at AS "updatedAt"
+    FROM game_player_source_stats WHERE player_id = ${playerId}
+  `);
+  for (const row of rows) {
+    const stats = playerFromRow({ ...row, nickname: "Source" } as DatabaseRow);
+    sources[databaseString(row.source) as GameStatisticsSource] = {
+      gamesPlayed: stats.gamesPlayed, totalScore: stats.totalScore, highScore: stats.highScore,
+      highestLevel: stats.highestLevel, totalDurationMs: stats.totalDurationMs, updatedAt: stats.updatedAt,
+    };
+  }
+  return sources;
+}
+
+async function getLeaderboard(sql: SqlClient, source: GameStatisticsSource) {
   const rows = rowsFromResult(await sql`
-    SELECT
-      nickname,
-      LEAST(games_played, ${MAX_SAFE_DATABASE_INTEGER}) AS "gamesPlayed",
-      LEAST(total_score, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalScore",
-      high_score AS "highScore",
-      highest_level AS "highestLevel",
-      LEAST(total_duration_ms, ${MAX_SAFE_DATABASE_INTEGER}) AS "totalDurationMs",
-      updated_at AS "updatedAt"
-    FROM game_players
-    WHERE games_played > 0
-    ORDER BY
-      high_score DESC,
-      total_score DESC,
-      highest_level DESC,
-      updated_at ASC,
-      nickname ASC
+    SELECT p.nickname, s.games_played AS "gamesPlayed", s.total_score AS "totalScore",
+      s.high_score AS "highScore", s.highest_level AS "highestLevel", s.total_duration_ms AS "totalDurationMs", s.updated_at AS "updatedAt"
+    FROM game_player_source_stats s JOIN game_players p ON p.id = s.player_id
+    WHERE s.games_played > 0 AND s.statistics_source = ${source}
+    ORDER BY s.high_score DESC, s.total_score DESC, s.highest_level DESC, s.updated_at ASC, p.nickname ASC
     LIMIT ${LEADERBOARD_LIMIT}
   `);
-
-  return rows.map<LeaderboardEntry>((row, index) => ({
-    rank: index + 1,
-    ...playerFromRow(row),
-  }));
+  return rows.map<LeaderboardEntry>((row, index) => ({ rank: index + 1, ...playerFromRow(row) }));
 }
 
 // Renaming changes the only public identity a profile has, so it carries the
@@ -737,7 +783,7 @@ async function renamePlayer(
         return errorResponse(404, "PROFILE_NOT_FOUND", "Profile was not found.");
       }
       return jsonResponse({
-        profile: playerFromRow(rows[0]),
+        profile: { ...playerFromRow(rows[0]), sources: await getPlayerSourceStats(tx, playerId, databaseDate(rows[0].updatedAt)) },
       } satisfies ProfileResponse);
     });
   } catch (error) {
@@ -912,7 +958,7 @@ async function applyRunSummary(
       run_version, mode_id, difficulty_id, highest_wave, final_sector_id,
       enemies_destroyed, bosses_defeated, shots_fired, shots_hit,
       longest_combo, powerups_collected, lives_lost, won, input_kind,
-      ended_reason, client_ended_at
+      ended_reason, client_ended_at, statistics_source
     ) VALUES (
       ${playerId}, ${syncEventId}, ${run.runId}, ${run.score}, ${run.level},
       ${run.durationMs}, 2, ${run.modeId}, ${run.difficultyId},
@@ -920,7 +966,7 @@ async function applyRunSummary(
       ${run.bossesDefeated}, ${run.shotsFired}, ${run.shotsHit},
       ${run.longestCombo}, ${run.powerupsCollected}, ${run.livesLost},
       ${run.won}, ${run.inputKind}, ${run.endedReason},
-      ${run.clientEndedAt ? new Date(run.clientEndedAt) : null}
+      ${run.clientEndedAt ? new Date(run.clientEndedAt) : null}, ${run.statisticsSource ?? "legacy"}
     )
     RETURNING id
   `);
@@ -934,9 +980,7 @@ async function applyRunSummary(
       activated_count: power.activatedCount,
     }));
     await sql`
-      INSERT INTO game_run_power_stats (
-        run_id, power_id, collected_count, activated_count
-      ) ${sql(powerRows, "run_id", "power_id", "collected_count", "activated_count")}
+      INSERT INTO game_run_power_stats ${sql(powerRows, "run_id", "power_id", "collected_count", "activated_count")}
     `;
   }
   if (run.sectors.length > 0) {
@@ -949,9 +993,7 @@ async function applyRunSummary(
       duration_ms: sector.durationMs,
     }));
     await sql`
-      INSERT INTO game_run_sector_stats (
-        run_id, sector_index, sector_id, completed, lives_lost, duration_ms
-      ) ${sql(
+      INSERT INTO game_run_sector_stats ${sql(
         sectorRows,
         "run_id",
         "sector_index",
@@ -1090,9 +1132,7 @@ async function applyRunSummary(
       updated_at: new Date(),
     }));
     await sql`
-      INSERT INTO game_player_power_stats (
-        player_id, power_id, collected_count, activated_count, updated_at
-      ) ${sql(
+      INSERT INTO game_player_power_stats ${sql(
         playerPowerRows,
         "player_id",
         "power_id",
@@ -1389,7 +1429,7 @@ async function createAccountPlayer(
           VALUES (${playerId}, ${auth.userId}, 'create')
         `;
         return jsonResponse({
-          profile: playerFromRow(rows[0]),
+          profile: { ...playerFromRow(rows[0]), sources: await getPlayerSourceStats(tx, playerId, databaseDate(rows[0].updatedAt)) },
           progression: await getPlayerProgression(
             tx,
             playerId,
@@ -1502,6 +1542,9 @@ async function resolvePlayerId(
   sql: SqlClient,
   auth: VerifiedAuth,
 ): Promise<number | Response> {
+  if (!(await hasProgressionSchema(sql))) {
+    return errorResponse(503, "SCHEMA_MIGRATION_REQUIRED", "Apply statistics migrations 0001–0006 before using this API.");
+  }
   const playerId = await resolveLinkedPlayerId(sql, auth.userId);
   return (
     playerId ??
@@ -1758,7 +1801,11 @@ async function handleRequest(request: Request): Promise<Response> {
 
   try {
     if (request.method === "GET") {
-      return jsonResponse({ leaderboard: await getLeaderboard(sql) });
+      if (!(await hasProgressionSchema(sql))) {
+        return errorResponse(503, "SCHEMA_MIGRATION_REQUIRED", "Apply statistics migrations 0001–0006 before using this API.");
+      }
+      const sources = Object.fromEntries(await Promise.all(GAME_STATISTICS_SOURCES.map(async (source) => [source, await getLeaderboard(sql, source)])));
+      return jsonResponse({ leaderboard: sources.demo, sources });
     }
     return await handlePost(request, sql);
   } catch (error) {

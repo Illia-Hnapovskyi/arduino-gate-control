@@ -10,7 +10,7 @@
 - **Контракт** — типи, баланс чи формат даних уже визначені, але не кожен візуальний або UX-аспект підключений до активної гри.
 - **Наступний етап** — узгоджений напрям, якого ще не слід вважати наявною можливістю.
 
-Детерміноване ядро, runtime, renderer, меню, HUD, input/audio/preferences і persistence-модулі розміщені в `app/game/`, під'єднані активним `app/GamePanel.tsx` та перевіряються окремими тестами. Це опис стану source tree, а не твердження про вже виконаний production deploy: v2 API потребує попередньо застосованої `db/migrations/0002_game_progression.sql`, а фізичний Arduino й live Supabase перевіряються окремо.
+Детерміноване ядро, runtime, renderer, меню, HUD, input/audio/preferences і persistence-модулі розміщені в `app/game/`, під'єднані активним `app/GamePanel.tsx` та перевіряються окремими тестами. Це опис стану source tree, а не твердження про вже виконаний production deploy: source-aware API потребує попередньо застосованої `db/migrations/0006_statistics_sources.sql` після `0001`–`0005`, а фізичний Arduino й live Supabase перевіряються окремо.
 
 Головні джерела правди:
 
@@ -92,11 +92,14 @@ Space Defender — короткий процедурний arcade survival shoot
 Формула бюджету:
 
 ```text
-round((threatBase + threatGrowth × (wave - 1)) × spawnBudgetMultiplier)
+round((threatBase + threatGrowth × (wave - 1)) × spawnBudgetMultiplier × 1,1)
 ```
 
 Правила генерації:
 
+- коефіцієнт щільності `ENEMY_DENSITY_MULTIPLIER = 1.1` додає приблизно 10%
+  до бюджету звичайних загроз; HP, швидкість, таймінг хвилі та hard caps
+  залишилися незмінними;
 - тип доступний лише від своєї `unlockWave`;
 - його вартість має вміщатися в залишок бюджету;
 - preferred-вороги сектора отримують вагу ×1,9;
@@ -122,7 +125,7 @@ Runtime додатково обмежує одночасно активні су
 | `dark` | темні тіні | `limited-light` | mines, hunters, gunners | vignette світла; швидкість ворогів і ворожих снарядів ×1,12 |
 | `boss` | червона арена | `boss-arena` | support, gunners | босова арена; окрема фонова небезпека не додається |
 
-Для кожного сектора визначено accent, два кольори фону, стиль частинок і музичний стан `calm`, `drive`, `danger` або `boss` (`app/game/balance.ts`). `app/game/rendering.ts` процедурно малює ці палітри, частинки та hazard overlays, а `app/game/useGameAudio.ts` перемикає sector track/tempo між Web Audio у demo mode та `TRACK:TONE` з Arduino. Кількість ефектів обмежена, а `prefers-reduced-motion` зменшує рух і вимикає shake.
+Для кожного сектора визначено accent, два кольори фону, стиль частинок і музичний стан `calm`, `drive`, `danger` або `boss` (`app/game/balance.ts`). `app/game/rendering.ts` процедурно малює ці палітри, частинки та hazard overlays, а `app/game/useGameAudio.ts` перемикає sector track/tempo між Web Audio у demo mode та `TRACK:TONE` з Arduino. У налаштуваннях гри можна лишити автоматичний вибір за сектором, вибрати одну із семи наявних композицій або вимкнути музику. Цей вибір зберігається лише локально й не вимикає короткі SFX. Кількість ефектів обмежена, а `prefers-reduced-motion` зменшує рух і вимикає shake.
 
 ## 7. Вороги
 
@@ -305,7 +308,7 @@ Onboarding у перші 30 секунд:
 - перша пауза або menu card пояснює demo mode та фізичний joystick;
 - Cadet рекомендований новому гравцю, Pilot — стандартний вибір.
 
-Pause зупиняє active clock і аудіо-стан. Втрата фокуса вкладки ставить гру на паузу, а terminal lifecycle захищений локальним recorded-ID set, offline queue та серверним event ledger від подвійного запису одного run.
+Pause зупиняє active clock і аудіо-стан. У паузі є видимі «Продовжити», «Завершити» та «До головного меню»; остання дія записує поточний результат локально перед виходом. На екрані завершення вже існуюча кнопка повернення до меню залишається активною лише після успішного запису. Втрата фокуса вкладки ставить гру на паузу, а terminal lifecycle захищений локальним recorded-ID set, offline queue та серверним event ledger від подвійного запису одного run.
 
 ## 15. Керування, доступність і платформи
 
@@ -320,15 +323,25 @@ Pause зупиняє active clock і аудіо-стан. Втрата фоку�
 
 Touch має окремий virtual joystick і доступні fire/power controls. Фізичний Arduino joystick зберігає рух та fire через наявний Serial-протокол; browser-side long press приблизно 650 мс активує power. Коротке натискання й усі старі firmware-команди залишаються сумісними, піни та обладнання не змінені.
 
+Поза боєм Arduino-джойстик переводить видимий focus між доступними
+інтерактивними елементами меню, вкладок і діалогів; коротке натискання
+активує вибране, а окрема дія повертає назад. Це працює також у паузі,
+виборі покращення та на екрані результату. Browser-клавіатура й touch
+залишаються паралельними способами керування. Фізичну ергономіку та
+Web Serial timing треба перевіряти на платі окремо.
+
 Accessibility contract:
 
 - music/effects volume 0–100;
 - вимкнення screen shake;
 - user reduced-motion, який логічно об'єднується з OS `prefers-reduced-motion`;
-- видимий keyboard focus і семантичні назви меню;
+- видимий keyboard/controller focus і семантичні назви меню;
 - live-region для коротких статусів, які не перекривають гру;
-- достатній контраст HUD;
-- адаптивний layout для приблизно 1440 px і 390 px;
+- достатній контраст HUD та станів primary/secondary/danger/disabled;
+  неактивні перемикачі джерела статистики на темних панелях мають
+  читабельний текст, а недоступна кнопка виглядає відмінно від активної;
+- адаптивний layout, перевірений у локальному браузері на 390×844,
+  844×390, 820×1180 і 1366×768 без горизонтального overflow;
 - demo mode без Web Serial залишається повноцінним способом гри.
 
 Screen reader може керувати меню й отримувати статуси, але real-time canvas shooter сам по собі не є еквівалентно доступним без зору; не слід заявляти повну accessibility гри без окремої альтернативної механіки.
@@ -346,7 +359,10 @@ Snapshot v2 містить:
   controller sources;
 - upgrade stacks і вже показаний набір upgrade choices;
 - equipped power, активний стан/cooldown усіх сил і player timers;
-- run metrics.
+- run metrics;
+- джерело статистики `demo` або `arduino`, зафіксоване на старті. Старий
+  checkpoint без цього поля відновлюється як `legacy`, без здогадок за
+  input kind.
 
 Loader відхиляє прострочені, пошкоджені або несумісні дані, обмежує stacks/cooldown і мігрує v1 та старі power aliases. Він не обіцяє відновлення позицій ворогів або середини бою (`app/game/persistence.ts`).
 
@@ -381,14 +397,22 @@ Shared/API модель підтримує:
 
 Завершення створює idempotent подію `run.completed` v2 зі стабільним event ID, рівним `runId`. Налаштування використовують `settings.updated` v1. Offline queue зберігає події до синхронізації; за один запит передається не більше п'яти game events (`shared/gameStats.ts`, `app/useGameStats.ts`, `api/stats.ts`). Повтор того самого retained event/run ID не повинен вдруге збільшувати агрегати.
 
-Якщо deployment тимчасово випередив ручну `0002`, API read-only визначає v1
-schema: базові profile/leaderboard операції залишаються доступними, а `sync`
-повертає `SCHEMA_MIGRATION_REQUIRED`. Клієнт не викидає подію й повторює її
-після міграції; DDL під час запиту не запускається.
+Source-aware API потребує `0006` до deploy. Якщо міграція відсутня, API
+повертає `SCHEMA_MIGRATION_REQUIRED`, а клієнт не викидає queued event і
+повторює її після усунення проблеми. DDL під час запиту не запускається.
 
 Runtime накопичує точні per-power collection/activation counts, cumulative `livesLost` (включно з ушкодженнями, які пізніше компенсувала repair-сила) та фактичні duration/loss facts кожної хвилі. Adapter передає останні 64 sector facts у v2 event; для забігів довших за 64 хвилі старіші деталізовані записи відсікаються, але загальні lifetime totals залишаються точними.
 
 Міграція `0002` backfill-ить тільки `first_run`, `score_10000`, `max_level` і `veteran_10`, які можна довести зі старих v1 aggregates, та створює їхні unlock rows. Точний історичний час невідомий, тому `unlocked_at` дорівнює часу міграції. Інші досягнення починають накопичуватися з v2 run facts. Revisioned `settings.updated` підтримується shared/API/SQL, але поточний UI зберігає preferences device-local і ще не ставить settings events в offline queue.
+
+Міграція `0006` додає до `game_runs` джерело `demo`, `arduino` або `legacy` і
+чотири набори джерельних агрегатів: основні показники, бойові totals,
+mode+difficulty та power usage. Старі run rows, загальні агрегати, локальні
+події й checkpoint-и без source лишаються `legacy`; `inputKind` не доводить,
+що Arduino був підключений. Існуючі загальні агрегати й unlock history
+зберігаються для сумісності, але профіль, кар'єра й рейтинг показують вибране
+джерело окремо. Нове джерело фіксується один раз у момент старту і не
+змінюється під час забігу.
 
 Не збираються і не мають збиратися координати кожного кадру, сирі значення joystick, raw IP, email, JWT або інші персональні дані. Ідентичність гравця — це акаунт Supabase Auth; 20-символьний access code скасовано, і сервер його не приймає. Rate-limit scopes псевдонімізуються HMAC на сервері, тому в БД не потрапляє ні raw IP, ні raw auth user id.
 

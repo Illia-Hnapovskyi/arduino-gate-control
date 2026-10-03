@@ -5,6 +5,7 @@ import type { SpaceDefenderCopy } from "../i18n";
 import type { PowerUpId, UpgradeId } from "./types";
 import {
   DEFAULT_GAME_KEY_BINDINGS,
+  MUSIC_SELECTIONS,
   rebindGameAction,
   type GameAction,
   type GamePreferences,
@@ -156,10 +157,22 @@ export function GameMenu({
   const section = chosenSection ?? requestedSection ?? "play";
   const [bindingAction, setBindingAction] = useState<GameAction | null>(null);
   const menuTitleRef = useRef<HTMLHeadingElement | null>(null);
+  const menuRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     menuTitleRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    const menu = menuRef.current;
+    const back = () => {
+      if (bindingAction) setBindingAction(null);
+      else setChosenSection("play");
+      menu?.querySelector<HTMLElement>(".space-menu-nav button")?.focus();
+    };
+    menu?.addEventListener("game-controller-back", back);
+    return () => menu?.removeEventListener("game-controller-back", back);
+  }, [bindingAction]);
 
   useEffect(() => {
     if (!bindingAction) return;
@@ -203,7 +216,7 @@ export function GameMenu({
     : startingPowers;
 
   return (
-    <section aria-labelledby="space-defender-menu-title" className="space-menu-shell">
+    <section aria-labelledby="space-defender-menu-title" className="space-menu-shell" ref={menuRef}>
       <header className="space-menu-header">
         <div>
           <span className="game-kicker">{copy.menuKicker}</span>
@@ -211,6 +224,7 @@ export function GameMenu({
             {copy.menuTitle}
           </h2>
           <p>{copy.menuSubtitle}</p>
+          <p className="space-controller-hint">{copy.joystickNavigation}</p>
         </div>
         <span className={`space-controller-badge ${connected ? "is-online" : ""}`}>
           <i aria-hidden="true" /> {connectionLabel}
@@ -350,7 +364,7 @@ export function GameMenu({
                 )}
                 <button
                   className="button game-start"
-                  disabled={hasResume || hasUnsavedResult || !connected || !hasProfile}
+                  disabled={checkpointError || hasResume || hasUnsavedResult || !connected || !hasProfile}
                   onClick={() => {
                     onConfirm();
                     onStart();
@@ -372,6 +386,12 @@ export function GameMenu({
         {section === "settings" && (
           <div className="space-settings-panel">
             <h3>{copy.settingsTitle}</h3>
+            <label>
+              <span>{copy.musicSelection}</span>
+              <select value={preferences.musicSelection} onChange={(event) => updatePreference("musicSelection", event.target.value as GamePreferences["musicSelection"])}>
+                {MUSIC_SELECTIONS.map((selection) => <option key={selection} value={selection}>{copy.musicSelections[selection]}</option>)}
+              </select>
+            </label>
             <label>
               <span>{copy.musicVolume}</span>
               <output>{preferences.musicVolume}%</output>
@@ -451,7 +471,7 @@ export function GameMenu({
         {section === "controls" && (
           <article className="space-info-panel">
             <span aria-hidden="true" className="space-info-icon">⌁</span>
-            <div><h3>{copy.controlsTitle}</h3><p>{controlsSummary}</p></div>
+            <div><h3>{copy.controlsTitle}</h3><p>{controlsSummary}</p><p>{copy.joystickNavigation}</p></div>
           </article>
         )}
 

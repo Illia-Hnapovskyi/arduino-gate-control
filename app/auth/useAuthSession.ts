@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { PasskeyListItem, Session } from "@supabase/supabase-js";
 import {
+  checkOAuthProvider,
   completeAuthRedirect,
   getSupabaseAccessToken,
   getSupabaseClient,
@@ -14,11 +15,11 @@ import {
   type ConsentChoice,
 } from "./client";
 import { APPLE_ENABLED, authAvailable } from "./supabaseConfig";
+import { authFailure, type AuthActionResult } from "./errors";
 
-export type AuthActionResult = { ok: boolean };
+export type { AuthActionResult } from "./errors";
 
-export type AuthSignUpResult = {
-  ok: boolean;
+export type AuthSignUpResult = AuthActionResult & {
   needsConfirmation: boolean;
 };
 
@@ -57,6 +58,7 @@ export type UseAuthSessionResult = {
   passkeyUnavailable: boolean;
   passkeys: PasskeySummary[];
   passkeysLoading: boolean;
+  passkeysRefreshFailed: boolean;
   registerPasskey: () => Promise<AuthActionResult>;
   signInWithPasskey: () => Promise<AuthActionResult>;
   listPasskeys: () => Promise<AuthActionResult>;
@@ -203,6 +205,8 @@ export function useAuthSession(): UseAuthSessionResult {
     serverPasskeySupportSnapshot,
   );
   const [session, setSession] = useState<Session | null>(null);
+  const sessionIdentityRef = useRef(session?.user?.id ?? null);
+  const passkeyRequestRef = useRef(0);
   const [passkeyUnavailable, setPasskeyUnavailable] = useState(false);
   // A fetched list belongs to exactly one account, so it is stored with the
   // owner it was fetched for. Nothing here unmounts on sign-out, so without the
@@ -210,7 +214,8 @@ export function useAuthSession(): UseAuthSessionResult {
   const [passkeys, setPasskeys] = useState<{
     ownerId: string | null;
     items: PasskeySummary[];
-  }>({ ownerId: null, items: [] });
+    refreshFailed: boolean;
+  }>({ ownerId: null, items: [], refreshFailed: false });
   const [passkeysLoading, setPasskeysLoading] = useState(false);
   const redirectOutcome = useSyncExternalStore(
     subscribeToRedirectNotice,
@@ -223,11 +228,18 @@ export function useAuthSession(): UseAuthSessionResult {
     const client = getSupabaseClient();
     if (!client) return;
     let disposed = false;
+    let sessionRevision = 0;
     // Every arriving session goes through here, so a sign-in by any route —
     // this redirect, the e-mail form, a passkey — retires the notice with it.
     const applySession = (next: Session | null) => {
       if (next) retireRedirectNotice();
       setSession(next);
+      const nextId = next?.user?.id ?? null;
+      if (sessionIdentityRef.current !== nextId) {
+        sessionIdentityRef.current = nextId;
+        passkeyRequestRef.current += 1;
+        setPasskeysLoading(false);
+      }
     };
     const settleRedirect = async () => {
       // Finish any provider redirect before reading the session: on the way
@@ -241,11 +253,12 @@ export function useAuthSession(): UseAuthSessionResult {
         // only guards the history rewrite. Either way the session read below is
         // what decides whether the player is signed in.
       }
+      const readRevision = sessionRevision;
       try {
         const { data } = await client.auth.getSession();
-        if (!disposed) applySession(data.session);
+        if (!disposed && readRevision === sessionRevision) applySession(data.session);
       } catch {
-        if (!disposed) applySession(null);
+        if (!disposed && readRevision === sessionRevision) applySession(null);
       }
       // Published only once the session is known: a stale callback opened by a
       // player who is already signed in reports "failed", and that notice must
@@ -255,11 +268,14 @@ export function useAuthSession(): UseAuthSessionResult {
     void settleRedirect();
     const { data: subscription } = client.auth.onAuthStateChange(
       (_event, nextSession) => {
+        sessionRevision += 1;
         if (!disposed) applySession(nextSession);
       },
     );
     return () => {
       disposed = true;
+      sessionIdentityRef.current = null;
+      passkeyRequestRef.current += 1;
       subscription.subscription.unsubscribe();
     };
   }, [consent]);
@@ -296,10 +312,10 @@ export function useAuthSession(): UseAuthSessionResult {
             data: { nickname },
           },
         });
-        if (error) return { ok: false, needsConfirmation: false };
+        if (error) return { ...authFailure(error), needsConfirmation: false };
         return { ok: true, needsConfirmation: data.session === null };
-      } catch {
-        return { ok: false, needsConfirmation: false };
+      } catch (error) {
+        return { ...authFailure(error), needsConfirmation: false };
       }
     },
     [],
@@ -314,9 +330,9 @@ export function useAuthSession(): UseAuthSessionResult {
           email,
           password,
         });
-        return { ok: !error };
-      } catch {
-        return { ok: false };
+        return error ? authFailure(error) : { ok: true };
+      } catch (error) {
+        return authFailure(error);
       }
     },
     [],
@@ -324,16 +340,21 @@ export function useAuthSession(): UseAuthSessionResult {
 
   const signInWithProvider = useCallback(
     async (provider: "google" | "apple"): Promise<AuthActionResult> => {
+      if (provider === "apple" && !APPLE_ENABLED) {
+        return { ok: false, errorKey: "accountProviderUnavailable" };
+      }
       const client = getSupabaseClient();
       if (!client) return { ok: false };
       try {
+        const availability = await checkOAuthProvider(provider);
+        if (!availability.ok) return availability;
         const { error } = await client.auth.signInWithOAuth({
           provider,
           options: { redirectTo: authRedirectTarget() },
         });
-        return { ok: !error };
-      } catch {
-        return { ok: false };
+        return error ? authFailure(error, "accountProviderUnavailable") : { ok: true };
+      } catch (error) {
+        return authFailure(error, "accountProviderUnavailable");
       }
     },
     [],
@@ -356,9 +377,9 @@ export function useAuthSession(): UseAuthSessionResult {
         const { error } = await client.auth.resetPasswordForEmail(email, {
           redirectTo: authRedirectTarget({ reset: "1" }),
         });
-        return { ok: !error };
-      } catch {
-        return { ok: false };
+        return error ? authFailure(error) : { ok: true };
+      } catch (error) {
+        return authFailure(error);
       }
     },
     [],
@@ -372,9 +393,9 @@ export function useAuthSession(): UseAuthSessionResult {
         const { error } = await client.auth.updateUser({
           password: newPassword,
         });
-        return { ok: !error };
-      } catch {
-        return { ok: false };
+        return error ? authFailure(error) : { ok: true };
+      } catch (error) {
+        return authFailure(error);
       }
     },
     [],
@@ -386,9 +407,9 @@ export function useAuthSession(): UseAuthSessionResult {
       if (!client) return { ok: false };
       try {
         const { error } = await client.auth.signOut({ scope });
-        return { ok: !error };
-      } catch {
-        return { ok: false };
+        return error ? authFailure(error) : { ok: true };
+      } catch (error) {
+        return authFailure(error);
       }
     },
     [],
@@ -409,22 +430,52 @@ export function useAuthSession(): UseAuthSessionResult {
   const listPasskeys = useCallback(async (): Promise<AuthActionResult> => {
     const client = getSupabaseClient();
     if (!client || !hasSession) return { ok: false };
+    // A mutation begun for a previous account can finish after another account
+    // has started its own list read. Its old callback must not advance the
+    // request counter and cancel that newer read.
+    if (sessionIdentityRef.current !== sessionUserId || readConsentChoice() !== "account") {
+      return { ok: true };
+    }
+    const requestId = ++passkeyRequestRef.current;
+    const isCurrent = () => requestId === passkeyRequestRef.current &&
+      sessionIdentityRef.current === sessionUserId && readConsentChoice() === "account";
     setPasskeysLoading(true);
     try {
+      // The SDK reads its own session for this request. The rendered session
+      // may lag a cross-tab change, so check both sides of the list read.
+      const before = await client.auth.getSession();
+      if (!isCurrent()) return { ok: true };
+      if (before.error) throw before.error;
+      if (before.data.session?.user.id !== sessionUserId) {
+        throw { code: "session_not_found" };
+      }
       const { data, error } = await client.auth.passkey.list();
+      if (!isCurrent()) return { ok: true };
+      const after = await client.auth.getSession();
+      if (!isCurrent()) return { ok: true };
+      if (after.error) throw after.error;
+      if (after.data.session?.user.id !== sessionUserId) {
+        throw { code: "session_not_found" };
+      }
       if (error) {
+        setPasskeys({ ownerId: sessionUserId, items: [], refreshFailed: true });
         if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
-        return { ok: false };
+        return authFailure(error, "accountPasskeyFailed");
       }
       setPasskeys({
         ownerId: sessionUserId,
         items: (data ?? []).map(toPasskeySummary),
+        refreshFailed: false,
       });
       return { ok: true };
-    } catch {
-      return { ok: false };
+    } catch (error) {
+      // An older read must never replace a newer list or report its failure
+      // above the new account. Superseded reads have no UI outcome.
+      if (!isCurrent()) return { ok: true };
+      setPasskeys({ ownerId: sessionUserId, items: [], refreshFailed: true });
+      return authFailure(error, "accountPasskeyFailed");
     } finally {
-      setPasskeysLoading(false);
+      if (requestId === passkeyRequestRef.current) setPasskeysLoading(false);
     }
   }, [hasSession, sessionUserId]);
 
@@ -435,13 +486,13 @@ export function useAuthSession(): UseAuthSessionResult {
       const { error } = await client.auth.registerPasskey();
       if (error) {
         if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
-        return { ok: false };
+        return authFailure(error, "accountPasskeyFailed");
       }
-    } catch {
-      return { ok: false };
+    } catch (error) {
+      return authFailure(error, "accountPasskeyFailed");
     }
-    await listPasskeys();
-    return { ok: true };
+    const refreshed = await listPasskeys();
+    return refreshed.ok ? refreshed : { ok: false, errorKey: "accountPasskeyRefreshFailed" };
   }, [hasSession, listPasskeys]);
 
   // A discoverable credential carries the account, so this is the one passkey
@@ -453,11 +504,11 @@ export function useAuthSession(): UseAuthSessionResult {
       const { error } = await client.auth.signInWithPasskey();
       if (error) {
         if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
-        return { ok: false };
+        return authFailure(error, "accountPasskeyFailed");
       }
       return { ok: true };
-    } catch {
-      return { ok: false };
+    } catch (error) {
+      return authFailure(error, "accountPasskeyFailed");
     }
   }, []);
 
@@ -469,13 +520,13 @@ export function useAuthSession(): UseAuthSessionResult {
         const { error } = await client.auth.passkey.delete({ passkeyId });
         if (error) {
           if (isPasskeyDisabled(error)) setPasskeyUnavailable(true);
-          return { ok: false };
+          return authFailure(error, "accountPasskeyFailed");
         }
-      } catch {
-        return { ok: false };
+      } catch (error) {
+        return authFailure(error, "accountPasskeyFailed");
       }
-      await listPasskeys();
-      return { ok: true };
+      const refreshed = await listPasskeys();
+      return refreshed.ok ? refreshed : { ok: false, errorKey: "accountPasskeyRefreshFailed" };
     },
     [hasSession, listPasskeys],
   );
@@ -507,6 +558,7 @@ export function useAuthSession(): UseAuthSessionResult {
     // account it was fetched for.
     passkeys: passkeys.ownerId === sessionUserId ? passkeys.items : [],
     passkeysLoading,
+    passkeysRefreshFailed: passkeys.ownerId === sessionUserId && passkeys.refreshFailed,
     registerPasskey,
     signInWithPasskey,
     listPasskeys,

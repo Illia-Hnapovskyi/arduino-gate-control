@@ -22,9 +22,10 @@ the user-facing setup guide.
 - Production schema setup is ordered: apply `0001_game_stats.sql`, then
   `0002_game_progression.sql` before deploying the matching v2 API, then the
   privilege-only `0003_base_table_grants.sql`, then the additive
-  `0004_account_links.sql`, then `0005_account_only_identity.sql`. Both `0004`
-  and `0005` were applied to production 2026-08-04; `0005` must be applied
-  before the account-only API deploy.
+  `0004_account_links.sql`, then `0005_account_only_identity.sql`, then
+  `0006_statistics_sources.sql`. Both `0004` and `0005` were applied to
+  production 2026-08-04; `0006` was applied and verified in production
+  2026-10-03 before the source-aware API/frontend deployment.
 - A Supabase Auth account (email/password, optionally a passkey or Google) is now
   the ONLY identity. The 20-character access code is retired: the API accepts no
   `accessCode`, mints none, and returns none. `SUPABASE_PUBLISHABLE_KEY` in
@@ -57,7 +58,7 @@ The active production shape is:
 ```text
 Browser (React 19 + Vite)
   ├─ Web Serial at 115200 baud ── Arduino UNO firmware
-  ├─ localStorage ─────────────── language, profile vault (v3), offline event
+  ├─ localStorage ─────────────── language, profile vault (v4), offline event
   │                               queue, device preferences, safe wave
   │                               checkpoint, consent choice, auth session
   ├─ Supabase Auth (PKCE) ─────── https://vullhduhswcnlpgnlrtp.supabase.co/auth/v1
@@ -128,7 +129,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `app/PlayerStatsPanel.tsx` | Account-gated profile UI: nickname prompt, rename, personal stats, leaderboard, retired-code notice. No access-code input exists. |
 | `app/AccountPanel.tsx` | Sign up / sign in / sign out / password reset UI over `useAuthSession`, plus the set-password form for a signed-in player, the dismissible failed/cancelled redirect notice, the passkey section and the gracefully degrading Google button. |
 | `app/ConsentPanel.tsx` | First-visit consent choice (`local` vs `account`) in localStorage; nothing Supabase is constructed before `account`. |
-| `app/useGameStats.ts` | Offline-first v3 multi-profile store, v1/v2 migration, optimistic totals, event queue, bearer-only sync, orphaned legacy profiles, reconnect and deduplication. |
+| `app/useGameStats.ts` | Offline-first v4 multi-profile store, read-only v3 queue bridge, v1/v2 migration, source-scoped optimistic totals, event queue, bearer-only sync, orphaned legacy profiles, reconnect and deduplication. |
 | `app/auth/supabaseConfig.ts` | Committed public Supabase URL, the PUBLIC publishable key, `authAvailable` and `APPLE_ENABLED` flags. There is no passkey flag: the server decides and the client discovers via `passkey_disabled`. |
 | `app/auth/client.ts`, `app/auth/useAuthSession.ts` | Lazy PKCE Supabase Auth client (constructed only under account consent, with the experimental passkey opt-in) and the session/sign-in/sign-out/reset/passkey hook. |
 | `server/authVerify.ts` | Supabase JWT verification via cached public JWKS (ES256/RS256, `node:crypto`, no new deps). Helpers must live outside `api/` — files there become endpoints. |
@@ -140,6 +141,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `app/game/powerUps.ts`, `app/game/achievements.ts` | Upgrade/power rules and pure achievement progression. |
 | `app/game/input.ts`, `app/game/preferences.ts` | Unified keyboard/touch/Arduino input and device-local remappable preferences. |
 | `app/game/audio.ts`, `app/game/useGameAudio.ts` | Browser Web Audio, sector music, and Arduino buzzer command routing. |
+| `app/game/controllerNavigation.ts`, `app/game/useControllerNavigation.ts` | Arduino joystick focus, activation and back navigation outside combat. |
 | `app/game/persistence.ts`, `app/game/resume.ts` | Validated seven-day v2 checkpoints and safe between-wave restoration. |
 | `app/game/statsAdapter.ts` | Converts a runtime result to the shared v2 statistics contract. |
 | `app/game/useImmersiveStage.ts` | Immersive stage mode: the CSS overlay class that works everywhere, the Fullscreen API layered on top where it exists (never on iPhone, which has none for non-`<video>` elements), scroll save/restore, `inert` on everything outside the overlay so the Tab order cannot walk out of it, and the generation counter that keeps an async request honest. |
@@ -153,6 +155,7 @@ Active stack snapshot (keep `package.json` and the lockfile authoritative):
 | `db/migrations/0003_base_table_grants.sql` | Privilege-only migration revoking the Data API roles from the three `0001` base tables and their sequences. |
 | `db/migrations/0004_account_links.sql` | Additive `game_players.public_id`, private `game_account_links` 1:1 mapping, and the extended seven-bucket rate-limit allowlist. Applied to production 2026-08-04. |
 | `db/migrations/0005_account_only_identity.sql` | Retires the access code: `access_code_hash` becomes NULLABLE (column kept for rollback), adds `game_players_reachable_check`, widens `profile_schema_version` to 1-3, purges the `profile_record`/`profile_rename` counters. Applied to production 2026-08-04. |
+| `db/migrations/0006_statistics_sources.sql` | Adds `game_runs.statistics_source`, four source aggregate tables, historical `legacy` backfill, invoker triggers, RLS and grants. Applied and verified in production 2026-10-03 before source-aware deployment. |
 | `db/backups/` | Gitignored (public repo). Holds the pre-account-only export `2026-08-04-pre-account-only.json`; never commit it. |
 | `GAME_DESIGN.md` | Implemented game loop, balance, validation invariants, known gaps, and test contract. |
 | `SUPABASE_SETUP.md` | Ukrainian step-by-step Supabase/Vercel provisioning, verification, troubleshooting, and rollback guide. |
@@ -268,9 +271,10 @@ Language state:
 
 Game profile state:
 
-- active localStorage key: `arduino-gate-game-stats:v3`; the v2 AND v1 keys are
-  never deleted and never written to — they remain rollback fallbacks;
-- the v3 object is a multi-profile vault: `activeProfileId` plus an array of
+- active localStorage key: `arduino-gate-game-stats:v4`; v3, v2 and v1 keys are
+  never deleted or written to — they remain rollback fallbacks;
+- the v4 object is a multi-profile vault (the normalized in-memory types retain
+  their V3 names): `activeProfileId` plus an array of
   profiles, each with local `profileId`, immutable `checkpointOwnerId`,
   `accessCode`, server `publicId`, `authUserId`, `accountLinked`, pending
   nickname, stats, optional progression, pending `run.completed` events, and up
@@ -296,7 +300,7 @@ Game profile state:
   random. It is never derived from `publicId` or any server state; the hook
   exposes it as `profileOwnerId` so `GamePanel` and `persistence.ts` need no
   changes;
-- migration runs exactly once on first load (v2 → v3, else v1 → v2 shape → v3)
+- initial migration uses v3, else v2, else v1 → v2 shape → v3 shape → v4
   and preserves access code, pending nickname, `remoteConfirmed`, stats,
   progression, every pending event, and known event IDs byte-for-byte;
 - cross-tab merges are a union by `profileId` — a profile the incoming blob
@@ -309,6 +313,17 @@ Game profile state:
 - same-profile `storage` events merge and persist the union of pending run
   events, so simultaneous offline runs in two tabs converge instead of letting
   the last `localStorage` writer discard the other tab's queue;
+- new runs freeze `demo` or `arduino` provenance at launch and preserve it in
+  checkpoints. An older run/event/checkpoint without the field stays `legacy`;
+  do not infer Arduino connection from keyboard/touch/joystick input kind;
+- v4 isolates source-aware events from deployed v3 clients, whose sanitizer
+  strips unknown fields. New builds read v3 changes without ever writing that
+  key. Import receipts (`legacyV3Imports`) retain event IDs beyond the 100 recent
+  IDs so acknowledged old queues cannot return, and retain a tombstone after
+  forgetting a migrated profile. Late v3 offline runs import as legacy once;
+  ownership conflicts never join another account's queue. v1/v2 remain one-time
+  recovery inputs. Profile, career and leaderboard UI select one source at a
+  time; overall totals and achievement unlock history remain for compatibility;
 - a profile can be opened on another device only by signing into the account it
   belongs to; the client then adopts the `session` response;
 - “forget profile” removes only this browser’s local copy. It does not delete
@@ -335,8 +350,8 @@ Other game-local state:
   into the scoped key only when it names that same owner — another profile's
   checkpoint is never read, adopted, or deleted;
 - game volumes, screen shake, reduced-motion override, and remapped keyboard
-  controls use the key exported by `app/game/preferences.ts` and stay
-  device-local in the current UI;
+  controls, plus automatic/off/fixed-track music choice, use the key exported
+  by `app/game/preferences.ts` and stay device-local in the current UI;
 - the API/schema define revisioned `settings.updated` events, but
   `useGameStats` currently queues completed-run events only. Do not claim that
   UI preferences already synchronize across devices.
@@ -356,6 +371,9 @@ contains:
 - deterministic seeded wave plans with `telegraph` → `combat` → `rest` phases;
   active combat is 22 seconds, while boss waves can continue until the boss is
   defeated;
+- the ordinary-threat budget is multiplied by `ENEMY_DENSITY_MULTIPLIER = 1.1`
+  before rounding. HP, speed, wave timing and the 48 planned-spawn cap are
+  unchanged; keep the deterministic planner and server plausibility aligned;
 - a finite nine-wave Expedition, looping Survival, and score-focused Classic
   without bosses or upgrade cards;
 - three initial lives, shield and energy resources, combo scoring, a base
@@ -367,7 +385,9 @@ contains:
   bounded entity/effect counts for mobile stability;
 - keyboard, touch/virtual joystick, Arduino joystick, and mixed controller
   classification; a long Arduino-switch hold activates the equipped power
-  without changing the firmware pin map.
+  without changing the firmware pin map. Outside combat, joystick navigation
+  moves visible focus through menu tabs/buttons/overlays, activates with a
+  short press and supports back. Keep keyboard and touch paths working.
 
 The world is a fixed 900x540 — `GAME_WORLD_WIDTH` and `GAME_WORLD_HEIGHT` in
 `app/game/runtime.ts` — and `app/game/rendering.ts` draws in world coordinates.
@@ -471,7 +491,9 @@ Access codes are historical only:
 
 Public API at `/api/stats`:
 
-- `GET`: returns the top 25 leaderboard entries, excluding zero-game profiles;
+- `GET`: returns top-25 leaderboards per `demo`, `arduino`, and `legacy` source,
+  excluding zero-game profiles; top-level `leaderboard` aliases `demo` for
+  response-shape compatibility;
 - `POST { action: "create", nickname?, language }` — bearer only; inserts the
   profile with `access_code_hash NULL` and `profile_schema_version 3`, plus its
   `game_account_links` row (`link_method 'create'`) in the same transaction. A
@@ -560,6 +582,13 @@ Profile responses retain the original public aggregates and may add a
 - total active duration;
 - last update timestamp.
 
+The response may also include `sources` with separate stats for `demo`,
+`arduino`, and `legacy`. The old base aggregate remains for compatibility but
+must not be shown as a mixed-source game total in the source selector. A new
+run's `statisticsSource` is captured at launch; old events omit that optional
+field byte-for-byte so the permanent event hash remains valid, and the server
+stores/counts them as `legacy`.
+
 Progression schema version 2 adds:
 
 - enemies/bosses, shots and best accuracy, longest combo/run, collected powers,
@@ -624,6 +653,14 @@ Apply the imperative migrations in filename order:
    no table and deletes no profile or run. Apply it BEFORE deploying the
    account-only API: that API inserts profiles without a digest and would fail
    the old `NOT NULL`.
+6. `0006_statistics_sources.sql` adds `game_runs.statistics_source TEXT NOT NULL
+   DEFAULT 'legacy'`, four source aggregate tables, and a one-time `legacy`
+   backfill from existing aggregates. `SECURITY INVOKER` triggers update source
+   run/power totals atomically even when an older API inserts during rollout.
+   The new tables have RLS enabled without policies and no Data API grants;
+   trigger-function EXECUTE is revoked from public roles. Re-running skips the
+   initial backfill, preserving newer source totals. Applied and verified in
+   production 2026-10-03; new environments need it BEFORE source-aware deploy.
 
 The v2 event ledger is the permanent idempotency source. Do not reintroduce the
 old newest-512-run cleanup: pruning ledger rows would allow an old event to be
@@ -843,7 +880,8 @@ Production prerequisites managed outside Git:
   applied at any point because it only revokes privileges, plus
   `0004_account_links.sql` before the account-linking API and
   `0005_account_only_identity.sql` before the account-only API (both applied to
-  production 2026-08-04);
+  production 2026-08-04), plus `0006_statistics_sources.sql` before the
+  source-aware API/frontend (applied to production 2026-10-03);
 - a redeploy after environment changes.
 
 ### Supabase Auth rollout facts
@@ -981,7 +1019,7 @@ fallback was deleted with the access code: an account-only profile is defined by
 `profile_schema_version = 3` (a column `0002` adds) plus a `game_account_links`
 row, so on a base without the v2 tables no profile can be created or resolved at
 all. The API still checks the schema with the same read-only catalog query, and
-on a `0002`-less base the outcome is:
+on a `0002`-less base the outcome for that pre-`0006` account-only API is:
 
 | request | result |
 |---|---|
@@ -997,9 +1035,13 @@ player through `game_account_links` and inserts profiles with a NULL digest, so 
 base missing either migration fails outright rather than degrading. `0005` cannot
 even be applied without `0002`, because its reachable CHECK references
 `profile_schema_version`.
+The current source-aware API additionally requires `0006`; its GET and POST
+paths return `503 SCHEMA_MIGRATION_REQUIRED` without the four source tables.
+Apply `0006` before deploying that API. The old API may run briefly after the
+migration because invoker triggers count its new inserts as `legacy`.
 
 For database/API changes, perform at least one real integration pass against an
-empty disposable Supabase project with all five migrations applied:
+empty disposable Supabase project with all six migrations applied:
 
 1. GET an empty leaderboard;
 2. sign up an account and create a profile with its bearer token;
@@ -1012,6 +1054,8 @@ empty disposable Supabase project with all five migrations applied:
    increment once;
 7. confirm the same event ID with changed data returns `EVENT_ID_REUSED`;
 8. rename, re-fetch through `session`, and verify progression plus leaderboard;
+   verify separate demo/Arduino/legacy source stats and leaderboard and that
+   an old event without `statisticsSource` remains legacy on retry;
 9. verify that a body carrying `accessCode` returns 400 `ACCESS_CODE_RETIRED`
    and that `connect`/`link`/`unlink` return 400 `INVALID_ACTION`;
 10. verify invalid data, settings revision conflicts, and rate limiting;
@@ -1148,6 +1192,23 @@ a recoverable retry trap, not an autonomous React loop. With no session
 available the pass stops before the network with `auth_session_missing` and
 nothing is dropped.
 
+The 2026-09 audit found a concrete decoder bug: `postProfile()` omitted
+`results` from a successful `sync` response, so `postSync()` rejected the
+acknowledgement as `invalid_response` although the server had applied the run.
+The decoder now preserves and validates per-event acknowledgements; a duplicate
+acknowledgement after a retry drains the matching old queued event safely.
+Do not remove an event merely because the HTTP status is 200: its ID/result
+must match the requested batch.
+
+The 2026-10-03 live disposable-Supabase pass found a second failure: three
+batch inserts placed `sql(rows, columns)` after an explicit column list.
+Postgres.js then selected its identifier builder at the preceding `(` and
+threw a TypeError before PostgreSQL received the statement. The dynamic insert
+helper supplies its own columns and VALUES; place it immediately after the
+table name. `tests/stats-sql-builder.test.mjs` executes those actual compiled
+tags through the installed builder, and the PGlite harness now reuses that
+serializer instead of approximating it.
+
 Never tell a user in this state to forget the profile: that can destroy the only
 copy of a queued result. The UI also hides that action while pending data is not
 synchronized. Deploy/fix the API, then hard-refresh if an old fetch is still
@@ -1178,10 +1239,12 @@ again the moment the owning account signs back in. `activeProfileId`, `profiles`
 and `hasOrphanedProfiles` still describe the whole vault, which is deliberately
 session-independent.
 
-The profile and leaderboard currently share one hook-level status. A create
-failure can therefore make an unrequested empty leaderboard look authoritative.
-Inspect the failing Network request and `stats.error.operation`; do not infer the
-failed operation from the leaderboard card alone.
+Profile sync and public leaderboard loading have independent hook-level
+status/error fields. A profile create or sync failure does not turn a failed
+leaderboard request into an authoritative empty ranking, and a leaderboard
+failure does not mark an already saved run as unsynchronized. Inspect
+`stats.error.operation` for profile operations and `stats.leaderboardError` for
+ranking requests; the leaderboard card displays its own loading/error state.
 
 ### Safe production probes
 
@@ -1359,23 +1422,21 @@ results, deployment prerequisites, and any external step you could not perform.
 - Repeated `create` calls for the same account preserve identity and statistics,
   but still consume mutation-rate counters. Avoid aggressive blind retry loops;
   `account_link` allows 10 account operations per hour and `ip_create` 30 per IP.
-- A mixed-version deploy window can strand events queued by an old tab. The v3
-  store reads the v2 key exactly once, at migration; a tab still running the old
-  build keeps queueing runs into `arduino-gate-game-stats:v2`, and anything it
-  writes after the new build migrated is not picked up until that tab reloads.
-  Nothing is lost — the v2 key is never deleted or overwritten — but such runs
-  stay invisible (and unsynced) meanwhile. After deploying a storage-version
-  change, reload every open tab.
-- Profile sync and leaderboard loading still share one hook status; a future UI
-  refactor should separate those states and display the failing operation/code.
+- v4 imports late v3 queues, but the older v2 key is still a one-time recovery
+  input. Reload any tab running a v2-era build; its later writes stay in v2 and
+  are not imported continuously. Never clear old browser storage to upgrade.
+- Profile sync and leaderboard loading use separate status/error fields.
+  Preserve that distinction: ranking availability must not change whether a
+  queued run has been acknowledged by the API.
 - A deterministically rejected event blocks the head of the queue. `useGameStats`
   always retries `pendingEvents[0]` first and never discards it, so a permanent
-  400 (`STATISTICS_REJECTED`) or 503 also stops every later run from syncing.
+  400 (`STATISTICS_REJECTED`, `INVALID_SYNC_EVENTS`, or `INVALID_RUN`) or 503
+  also stops every later run from syncing.
   That is deliberate — the alternative is silent data loss — but it means
   validation/SQL contract drift must be fixed, not waited out.
-- `STATISTICS_REJECTED` has no dedicated localized copy: `PlayerStatsPanel`
-  localizes only a few codes, so the player still sees the generic sync error.
-  That change improved the HTTP status and the server log, not the UI text.
+- `PlayerStatsPanel` maps `STATISTICS_REJECTED`, `INVALID_SYNC_EVENTS`, and
+  `INVALID_RUN` to dedicated Ukrainian, German, and English copy that says the
+  queue is preserved and game/server compatibility needs checking.
 - Runtime records cumulative hull losses (including losses later repaired) and
   exact per-wave sector duration/loss facts. The API adapter sends the latest
   64 sector facts to keep an event bounded; runs beyond that retain exact
@@ -1388,16 +1449,16 @@ results, deployment prerequisites, and any external step you could not perform.
 - `nebula` slows hostile projectiles to 82%, while `dark` accelerates hostile
   movement and projectiles to 112%; their mist/vignette rendering remains
   cosmetic and must not obscure essential telegraphs.
-- Passkeys are dormant until the Dashboard toggle is enabled, so nothing in this
-  repository can prove the WebAuthn ceremony end to end.
+- Passkeys are enabled in the live Dashboard as of 2026-08-22, but the unit
+  tests cannot prove a real WebAuthn ceremony end to end.
   `tests/auth-client.test.mjs` pins the source contract only; the browser flow
-  must be verified manually.
+  must be verified manually on a compatible device and account.
   Passkeys will also never work on Vercel preview deployments, whose per-deploy
   hostname is not a subdomain of the production Relying Party ID.
-- Automated tests do not execute React hook/UI interactions, physical Web
-  Serial, or a live Supabase database. Use the manual/real integration checks in
-  this guide for changes in those areas and never claim those passes unless they
-  were actually performed.
+- Auth and game lifecycle tests use isolated React hook harnesses with mocked
+  browser/transport boundaries. They do not prove physical Web Serial, a real
+  touch device, provider OAuth or WebAuthn. Use the manual/live integration checks
+  in this guide and never claim those passes unless actually performed.
 
 ## 16. Definition of done
 

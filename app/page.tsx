@@ -20,6 +20,7 @@ import {
 import ConsentPanel from "./ConsentPanel";
 import { completeAuthRedirect, type ConsentChoice } from "./auth/client";
 import { authAvailable } from "./auth/supabaseConfig";
+import type { AuthErrorKey } from "./auth/errors";
 import {
   useAuthSession,
   type AuthActionResult,
@@ -1734,7 +1735,7 @@ type PasswordResetCopy = Pick<
   | "accountPasswordTooShort"
   | "accountAuthError"
   | "cancelNicknameEdit"
->;
+> & Record<AuthErrorKey, string>;
 
 function PasswordResetDialog({
   copy,
@@ -1764,7 +1765,7 @@ function PasswordResetDialog({
     const result = await onSubmit(password);
     setBusy(false);
     if (!result.ok) {
-      setDialogError(copy.accountAuthError);
+      setDialogError(copy[result.errorKey ?? "accountAuthError"]);
       return;
     }
     setPassword("");

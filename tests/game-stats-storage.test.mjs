@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   authorizeBearerProfile,
+  addRunToStats,
   buildAdoptedProfile,
   canForgetProfile,
   emptyStoredGameStatsV3,
@@ -17,13 +18,18 @@ import {
   migrateStoredGameStatsV2ToV3,
   mintLocalProfileId,
   profileOwnerIdFromAccessCode,
+  readStoredGameStats,
   readAccessTokenSubject,
   sanitizeStoredGameStatsV2,
   sanitizeStoredGameStatsV3,
   shouldPersistMergedGameStats,
   toHookSnapshot,
   upsertProfileInStore,
+  writeStoredGameStatsV4,
+  STORAGE_KEY_V3,
+  STORAGE_KEY_V4,
 } from "../app/useGameStats.ts";
+import { canonicalJson, validateGameSyncEvent } from "../shared/gameStats.ts";
 
 const hookSource = readFileSync(
   new URL("../app/useGameStats.ts", import.meta.url),
@@ -168,6 +174,127 @@ function accountProfileFixture(overrides = {}) {
     ...overrides,
   };
 }
+
+function storageFixture(entries = {}) {
+  const values = new Map(Object.entries(entries));
+  const writes = [];
+  return {
+    values, writes,
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => { writes.push(key); values.set(key, value); },
+  };
+}
+
+function vaultWith(profile) {
+  return { version: 3, activeProfileId: profile.profileId, profiles: [profile] };
+}
+
+test("v4 migration preserves every profile, checkpoint owner and canonical queued event without rewriting v3", () => {
+  const old = upsertProfileInStore(
+    migrateStoredGameStatsV2ToV3(v2StoreWithEverything()),
+    accountProfileFixture(), false,
+  );
+  const raw = JSON.stringify(old);
+  const storage = storageFixture({ [STORAGE_KEY_V3]: raw });
+  const migrated = readStoredGameStats(storage);
+  assert.equal(migrated.migrated, true);
+  assert.deepEqual(migrated.store.profiles, [...old.profiles].sort((a, b) => a.profileId.localeCompare(b.profileId)));
+  assert.equal(migrated.store.activeProfileId, old.activeProfileId);
+  writeStoredGameStatsV4(migrated.store, storage);
+  assert.deepEqual(storage.writes, [STORAGE_KEY_V4]);
+  assert.equal(storage.getItem(STORAGE_KEY_V3), raw);
+  assert.equal(JSON.parse(storage.getItem(STORAGE_KEY_V4)).version, 4);
+  assert.equal(readStoredGameStats(storage).migrated, false);
+  assert.equal(canonicalJson(readStoredGameStats(storage).store.profiles.find(p => p.accessCode)?.pendingEvents[0]), canonicalJson(old.profiles.find(p => p.accessCode)?.pendingEvents[0]));
+});
+
+test("an old tab cannot strip v4 provenance; late v3 offline runs import once into legacy", () => {
+  const old = accountProfileFixture();
+  const storage = storageFixture({ [STORAGE_KEY_V3]: JSON.stringify(vaultWith(old)) });
+  let current = readStoredGameStats(storage).store;
+  const demo = validateGameSyncEvent({ eventId: "v4_demo_run_001", kind: "run.completed", version: 2, payload: { ...pendingRun, runId: "v4_demo_run_001", statisticsSource: "demo" } }).value;
+  current.profiles[0] = { ...current.profiles[0], stats: addRunToStats(old.stats, demo.payload), pendingEvents: [demo], knownEventIds: [demo.eventId] };
+  writeStoredGameStatsV4(current, storage);
+  const late = eventFor({ ...pendingRun, runId: "late_v3_run_001", score: 700 });
+  storage.setItem(STORAGE_KEY_V3, JSON.stringify(vaultWith({ ...old, stats: addRunToStats(old.stats, late.payload), pendingEvents: [late], knownEventIds: [late.eventId] })));
+  const imported = readStoredGameStats(storage);
+  assert.equal(imported.migrated, true);
+  const profile = imported.store.profiles[0];
+  assert.deepEqual(profile.pendingEvents.map(e => e.eventId), [demo.eventId, late.eventId]);
+  assert.equal(canonicalJson(profile.pendingEvents[0]), canonicalJson(demo));
+  assert.equal(Object.hasOwn(profile.pendingEvents[1].payload, "statisticsSource"), false);
+  assert.equal(profile.stats.sources.demo.totalScore, 500);
+  assert.equal(profile.stats.sources.legacy.totalScore, 1600);
+  writeStoredGameStatsV4(imported.store, storage);
+  assert.deepEqual(readStoredGameStats(storage).store, imported.store, "replaying the old queue never adds another optimistic run");
+});
+
+test("v3 import receipts prevent a dormant old queue from returning after acknowledgement and 100 newer runs", () => {
+  const queued = eventFor(pendingRun);
+  const old = accountProfileFixture({ pendingEvents: [queued], knownEventIds: [queued.eventId] });
+  const storage = storageFixture({ [STORAGE_KEY_V3]: JSON.stringify(vaultWith(old)) });
+  const imported = readStoredGameStats(storage).store;
+  imported.profiles[0] = { ...imported.profiles[0], pendingEvents: [], knownEventIds: Array.from({ length: 100 }, (_, i) => `newer_run_${String(i).padStart(4, "0")}`) };
+  writeStoredGameStatsV4(imported, storage);
+  const restored = readStoredGameStats(storage);
+  assert.equal(restored.store.profiles[0].pendingEvents.length, 0);
+  assert.equal(restored.store.profiles[0].stats.totalScore, old.stats.totalScore);
+  assert.equal(restored.migrated, false);
+});
+
+test("forgetting a migrated profile keeps its v3 fallback without resurrecting it; new old-tab runs remain recoverable", () => {
+  const old = accountProfileFixture();
+  const raw = JSON.stringify(vaultWith(old));
+  const storage = storageFixture({ [STORAGE_KEY_V3]: raw });
+  const forgotten = forgetActiveProfileInStore(readStoredGameStats(storage).store);
+  writeStoredGameStatsV4(forgotten, storage);
+  assert.equal(readStoredGameStats(storage).store.profiles.length, 0);
+  assert.equal(storage.getItem(STORAGE_KEY_V3), raw);
+  const late = eventFor({ ...pendingRun, runId: "late_after_forget" });
+  storage.setItem(STORAGE_KEY_V3, JSON.stringify(vaultWith({ ...old, pendingEvents: [late], knownEventIds: [late.eventId] })));
+  assert.deepEqual(readStoredGameStats(storage).store.profiles[0].pendingEvents, [late]);
+});
+
+test("a v3 entry reusing a local ID with a different owner never joins the active account queue", () => {
+  const current = accountProfileFixture();
+  const storage = storageFixture();
+  writeStoredGameStatsV4(vaultWith(current), storage);
+  const queued = eventFor(pendingRun);
+  const other = accountProfileFixture({ authUserId: otherAccountUserId, publicId: "bbbbaaaa-cccc-4ddd-8eee-ffff00001111", pendingEvents: [queued], knownEventIds: [queued.eventId] });
+  storage.setItem(STORAGE_KEY_V3, JSON.stringify(vaultWith(other)));
+  const restored = readStoredGameStats(storage).store;
+  assert.equal(restored.profiles.length, 2);
+  assert.equal(restored.activeProfileId, current.profileId);
+  assert.equal(restored.profiles.find(p => p.authUserId === accountUserId).pendingEvents.length, 0);
+  assert.deepEqual(restored.profiles.find(p => p.authUserId === otherAccountUserId).pendingEvents, [queued]);
+  assert.notEqual(restored.profiles[0].profileId, restored.profiles[1].profileId);
+});
+
+test("an unchanged old-tab rename cannot overwrite a newer v4 rename after reload", () => {
+  const old = accountProfileFixture({ pendingNickname: "Old Nick" });
+  const storage = storageFixture({ [STORAGE_KEY_V3]: JSON.stringify(vaultWith(old)) });
+  const imported = readStoredGameStats(storage).store;
+  imported.profiles[0] = { ...imported.profiles[0], pendingNickname: null, stats: { ...old.stats, nickname: "New Nick" } };
+  writeStoredGameStatsV4(imported, storage);
+  assert.equal(readStoredGameStats(storage).store.profiles[0].pendingNickname, null);
+  storage.setItem(STORAGE_KEY_V3, JSON.stringify(vaultWith({ ...old, pendingNickname: "Late Nick" })));
+  assert.equal(readStoredGameStats(storage).store.profiles[0].pendingNickname, "Late Nick");
+});
+
+test("an empty v4 tombstone does not re-import retained v1/v2 profiles", () => {
+  const storage = storageFixture({ "arduino-gate-game-stats:v2": JSON.stringify(v2StoreWithEverything()) });
+  const migrated = readStoredGameStats(storage).store;
+  assert.equal(migrated.profiles.length, 1);
+  writeStoredGameStatsV4(forgetActiveProfileInStore(migrated), storage);
+  assert.equal(readStoredGameStats(storage).store.profiles.length, 0);
+});
+
+test("corrupt v4 JSON recovers the untouched v3 queue", () => {
+  const queued = eventFor(pendingRun);
+  const old = accountProfileFixture({ pendingEvents: [queued], knownEventIds: [queued.eventId] });
+  const storage = storageFixture({ [STORAGE_KEY_V4]: "{interrupted", [STORAGE_KEY_V3]: JSON.stringify(vaultWith(old)) });
+  assert.deepEqual(readStoredGameStats(storage).store.profiles[0].pendingEvents, [queued]);
+});
 
 test("v1 migration preserves an unconfirmed profile and every valid pending run", () => {
   const legacy = {

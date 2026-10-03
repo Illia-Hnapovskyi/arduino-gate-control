@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getSelectedMusic } from "../app/game/audio.ts";
 
 import {
   DEFAULT_GAME_KEY_BINDINGS,
@@ -92,4 +93,19 @@ test("preference storage fails soft when browser persistence is blocked", () => 
     saveGamePreferences(blocked, sanitizeGamePreferences(null)),
     false,
   );
+});
+
+test("music choice survives reload, old preferences default to sectors and invalid IDs are ignored", () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  for (const musicSelection of ["auto", "off", "space", "neon", "boss", "joy", "elise", "bells", "anthem"]) {
+    saveGamePreferences(storage, sanitizeGamePreferences({ musicSelection }));
+    assert.equal(loadGamePreferences(storage).musicSelection, musicSelection);
+  }
+  assert.equal(sanitizeGamePreferences({ musicVolume: 65 }).musicSelection, "auto");
+  assert.equal(sanitizeGamePreferences({ musicSelection: "missing-track" }).musicSelection, "auto");
+  assert.equal(getSelectedMusic("boss", "off"), null);
+  assert.equal(getSelectedMusic("ice", "auto").trackId, "elise");
+  assert.equal(getSelectedMusic("boss", "joy").trackId, "joy");
+  assert.equal(getSelectedMusic("boss", "joy").tempoMultiplier, 1);
 });
