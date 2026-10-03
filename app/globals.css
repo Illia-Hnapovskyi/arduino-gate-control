@@ -6500,6 +6500,15 @@ body:has(.space-game-root.is-immersive) {
   margin-block: 12px 0;
 }
 
+.space-menu-panel > .statistics-source-control .profile-setup-copy,
+.leaderboard-card .statistics-source-control .profile-setup-copy {
+  color: var(--space-muted, #9db8b5);
+}
+
+.leaderboard-card .profile-error {
+  color: #ffc5b3;
+}
+
 .consent-note {
   color: var(--muted);
   font-size: 10px;
