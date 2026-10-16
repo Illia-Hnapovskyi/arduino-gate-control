@@ -838,6 +838,11 @@ physical Arduino pass.
 
 ## 11. UI, CSS, and localization rules
 
+- The live menu joystick is passed from `GamePanel` through `GameMenu`'s
+  `controllerPanel` slot into the command-deck header. Keep it inside that
+  interface across menu tabs; do not restore a detached card above the menu.
+  Its 156px pad preserves the existing 46px knob travel. The in-run touch deck
+  remains in the other lifecycle branch, so there is only one active pad.
 - `app/globals.css` is intentionally monolithic. Reuse existing variables,
   spacing, buttons, cards, and focus behavior before inventing a second system.
 - The stylesheet starts with `@import "tailwindcss"`, and PostCSS uses

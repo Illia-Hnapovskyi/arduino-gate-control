@@ -2651,16 +2651,29 @@ kbd {
 }
 
 .joystick-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 22px;
-  padding: 24px;
-  /* A cream surface in the Space Defender band, where the near-white
-     --space-ink is one ancestor away. Without this reset the heading and the
-     reading values — the descendants that name no colour of their own —
-     inherit near-white onto cream and vanish, exactly as the profile and
-     leaderboard cards below already had to fix. */
-  color: var(--ink);
+  align-items: center;
+  border-inline-start: 1px solid var(--space-line);
+  color: var(--space-ink);
+  display: grid;
+  flex: 0 0 292px;
+  gap: 10px 12px;
+  grid-template-columns: 156px minmax(0, 1fr);
+  min-width: 0;
+  padding-inline-start: 22px;
+}
+
+.joystick-card .game-card-heading,
+.joystick-card .virtual-joystick-hint {
+  grid-column: 1 / -1;
+}
+
+.joystick-card .game-card-heading h3 {
+  font-size: 15px;
+  margin: 4px 0 0;
+}
+
+.joystick-card .game-kicker {
+  color: #7edacb;
 }
 
 .chiptune-player-card {
@@ -2920,14 +2933,13 @@ kbd {
 
 .joystick-visual {
   background:
-    linear-gradient(rgba(8, 127, 120, 0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(8, 127, 120, 0.08) 1px, transparent 1px),
-    #e9ede4;
+    linear-gradient(rgba(126, 243, 220, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(126, 243, 220, 0.08) 1px, transparent 1px),
+    rgba(1, 12, 19, 0.5);
   background-size: 20px 20px;
-  border: 1px solid #d2d8cd;
-  border-radius: 20px;
-  height: 180px;
-  margin: 20px 0 14px;
+  border: 1px solid var(--space-line);
+  border-radius: 50%;
+  height: 156px;
   overflow: hidden;
   overscroll-behavior: contain;
   position: relative;
@@ -3001,13 +3013,14 @@ kbd {
 .joystick-readings {
   display: grid;
   gap: 6px;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr;
 }
 
 .joystick-readings span {
-  background: #edf0e9;
+  background: rgba(126, 243, 220, 0.06);
+  border: 1px solid var(--space-line);
   border-radius: 8px;
-  padding: 8px;
+  padding: 6px;
   text-align: center;
 }
 
@@ -3017,9 +3030,8 @@ kbd {
 }
 
 .joystick-readings small {
-  /* Darker than var(--muted), which only reached 4.32:1 on the #edf0e9 pad. */
-  color: #5d6763;
-  font-size: 7px;
+  color: var(--space-muted);
+  font-size: 9px;
 }
 
 .joystick-readings strong {
@@ -3049,15 +3061,10 @@ kbd {
 }
 
 .virtual-joystick-hint {
-  background: rgba(8, 127, 120, 0.08);
-  border: 1px solid rgba(8, 127, 120, 0.15);
-  border-radius: 9px;
-  color: var(--teal-dark);
-  font-size: 9px;
-  font-weight: 700;
+  color: var(--space-muted);
+  font-size: 11px;
   line-height: 1.45;
-  margin: 12px 0 0;
-  padding: 9px 10px;
+  margin: 0;
 }
 
 .invert-control {
@@ -4199,6 +4206,11 @@ kbd {
   margin: 5px 0 8px;
 }
 
+.space-menu-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .space-menu-header p {
   color: var(--space-muted);
   margin: 0;
@@ -4216,6 +4228,8 @@ kbd {
   font-weight: 800;
   gap: 8px;
   letter-spacing: 0.06em;
+  margin-top: 16px;
+  max-width: 100%;
   padding: 10px 14px;
   text-transform: uppercase;
 }
@@ -5336,14 +5350,6 @@ kbd {
   gap: 8px;
 }
 
-/* Placement only, so .joystick-card keeps its own look: the live joystick view
-   joins the connect/calibration band above the menu and stays a narrow column
-   instead of stretching the 180px stick across the whole 1320px shell. */
-.space-joystick-aside {
-  margin-bottom: 14px;
-  max-width: 340px;
-}
-
 .space-stage-shell {
   margin: 0 auto;
   max-width: 1120px;
@@ -5963,9 +5969,11 @@ body:has(.space-game-root.is-immersive) {
     display: grid;
   }
 
-  /* On a phone the stick is the control, not a thumbnail: let it fill the row. */
-  .space-joystick-aside {
-    max-width: none;
+  .joystick-card {
+    border-inline-start: 0;
+    border-top: 1px solid var(--space-line);
+    margin-top: 18px;
+    padding: 16px 0 0;
   }
 
   .space-connect-panel > div:last-child .button {

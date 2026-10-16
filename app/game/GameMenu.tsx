@@ -32,6 +32,7 @@ type GameMenuProps = {
   checkpointError: boolean;
   connected: boolean;
   connectionLabel: string;
+  controllerPanel: ReactNode;
   copy: SpaceDefenderCopy;
   difficulty: GameDifficultyId;
   hasProfile: boolean;
@@ -125,6 +126,7 @@ export function GameMenu({
   checkpointError,
   connected,
   connectionLabel,
+  controllerPanel,
   copy,
   difficulty,
   hasProfile,
@@ -218,17 +220,18 @@ export function GameMenu({
   return (
     <section aria-labelledby="space-defender-menu-title" className="space-menu-shell" ref={menuRef}>
       <header className="space-menu-header">
-        <div>
+        <div className="space-menu-heading">
           <span className="game-kicker">{copy.menuKicker}</span>
           <h2 id="space-defender-menu-title" ref={menuTitleRef} tabIndex={-1}>
             {copy.menuTitle}
           </h2>
           <p>{copy.menuSubtitle}</p>
           <p className="space-controller-hint">{copy.joystickNavigation}</p>
+          <span className={`space-controller-badge ${connected ? "is-online" : ""}`}>
+            <i aria-hidden="true" /> {connectionLabel}
+          </span>
         </div>
-        <span className={`space-controller-badge ${connected ? "is-online" : ""}`}>
-          <i aria-hidden="true" /> {connectionLabel}
-        </span>
+        {controllerPanel}
       </header>
 
       <nav aria-label={copy.menuTitle} className="space-menu-nav">

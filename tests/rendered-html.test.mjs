@@ -589,14 +589,18 @@ function renderedClassNames(source) {
   return literals.join(" ").replace(/\$\{[\s\S]*?\}/g, " ");
 }
 
-test("the live joystick card is rendered and its CSS carries no ballast", async () => {
-  const [panel, css] = await Promise.all([
+test("the live joystick is integrated into the menu and its CSS carries no ballast", async () => {
+  const [panel, menu, css] = await Promise.all([
     readFile(path.join(projectRoot, "app/GamePanel.tsx"), "utf8"),
+    readFile(path.join(projectRoot, "app/game/GameMenu.tsx"), "utf8"),
     readFile(path.join(projectRoot, "app/globals.css"), "utf8"),
   ]);
 
-  // The diagnostic card itself: heading, draggable stick, three readings, hint.
-  assert.match(panel, /className="joystick-card space-joystick-aside"/);
+  // Keep one live diagnostic control inside the command deck, not a detached
+  // sibling above it. It stays mounted when the player changes menu tabs.
+  assert.match(panel, /controllerPanel=\{\(/);
+  assert.match(menu, /<header className="space-menu-header">[\s\S]*?\{controllerPanel\}[\s\S]*?<\/header>/);
+  assert.match(panel, /className="joystick-card"/);
   assert.match(panel, /legacyCopy\.liveSignal/);
   assert.match(panel, /legacyCopy\.yourJoystick/);
   assert.match(panel, /joystick-link \$\{connection\}/);
@@ -633,8 +637,8 @@ test("the live joystick card is rendered and its CSS carries no ballast", async 
     [...panel.matchAll(/onClick=\{calibrateJoystick\}/g)].length === 2,
     "the card must not add a third calibrate button",
   );
-  // The cream card lives one ancestor away from the near-white --space-ink.
-  assert.match(css, /\.joystick-card \{[^}]*color: var\(--ink\);/);
+  // Its text now belongs to the dark command deck surface.
+  assert.match(css, /\.joystick-card \{[^}]*color: var\(--space-ink\);/);
 
   // Ballast guard: every joystick rule in the stylesheet must still be
   // RENDERED by a browser source — matched against className literals alone,

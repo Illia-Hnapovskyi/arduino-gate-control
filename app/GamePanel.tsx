@@ -1754,63 +1754,58 @@ export default function GamePanel({
               </aside>
             )}
 
-            {/* Live joystick view: the player watches the physical stick answer
-                before starting a run, and on a touch screen drags the knob to
-                check the same axes. Menu-only, so it shares the three virtual
-                handlers with the in-run .space-touch-deck without ever being a
-                second live control surface — the two sit in opposite branches of
-                the uiStatus ternary below. It stays mounted with no board
-                attached: the link dot and the readings then show the idle state.
-                No calibrate button here; the calibration aside above and the
-                stage toolbar already carry one each. */}
-            <aside className="joystick-card space-joystick-aside">
-              <div className="game-card-heading">
-                <div>
-                  <span className="game-kicker">{legacyCopy.liveSignal}</span>
-                  <h2>{legacyCopy.yourJoystick}</h2>
-                </div>
-                <span
-                  className={`joystick-link ${connection}`}
-                  title={connected ? legacyCopy.signalReceived : legacyCopy.noConnection}
-                />
-              </div>
-
-              <div
-                aria-label={legacyCopy.touchJoystickAria}
-                className={`joystick-visual ${virtualJoystick.active ? "dragging" : ""}`}
-                onLostPointerCapture={stopVirtualJoystick}
-                onPointerCancel={stopVirtualJoystick}
-                onPointerDown={startVirtualJoystick}
-                onPointerMove={updateVirtualJoystick}
-                onPointerUp={stopVirtualJoystick}
-                role="group"
-              >
-                <div className="joystick-crosshair" />
-                <div
-                  className={`joystick-knob ${
-                    joystickPressed || virtualJoystick.active ? "pressed" : ""
-                  }`}
-                  style={{
-                    transform: `translate(calc(-50% + ${knobX * 46}px), calc(-50% + ${knobY * 46}px))`,
-                  }}
-                >
-                  <span>SW</span>
-                </div>
-              </div>
-
-              <div className="joystick-readings">
-                <span><small>VRx · A0</small><strong>{readingX}</strong></span>
-                <span><small>VRy · A1</small><strong>{readingY}</strong></span>
-                <span>
-                  <small>SW · D4</small>
-                  <strong>{joystickPressed ? "CLICK" : "—"}</strong>
-                </span>
-              </div>
-
-              <p className="virtual-joystick-hint">{legacyCopy.touchJoystickHint}</p>
-            </aside>
-
             <GameMenu
+              controllerPanel={(
+                /* The same live control sits inside the menu header on every
+                   tab. The in-run touch deck is in the other uiStatus branch,
+                   so there is still only one active virtual control surface. */
+                <aside className="joystick-card" aria-label={legacyCopy.yourJoystick}>
+                  <div className="game-card-heading">
+                    <div>
+                      <span className="game-kicker">{legacyCopy.liveSignal}</span>
+                      <h3>{legacyCopy.yourJoystick}</h3>
+                    </div>
+                    <span
+                      className={`joystick-link ${connection}`}
+                      title={connected ? legacyCopy.signalReceived : legacyCopy.noConnection}
+                    />
+                  </div>
+
+                  <div
+                    aria-label={legacyCopy.touchJoystickAria}
+                    className={`joystick-visual ${virtualJoystick.active ? "dragging" : ""}`}
+                    onLostPointerCapture={stopVirtualJoystick}
+                    onPointerCancel={stopVirtualJoystick}
+                    onPointerDown={startVirtualJoystick}
+                    onPointerMove={updateVirtualJoystick}
+                    onPointerUp={stopVirtualJoystick}
+                    role="group"
+                  >
+                    <div className="joystick-crosshair" />
+                    <div
+                      className={`joystick-knob ${
+                        joystickPressed || virtualJoystick.active ? "pressed" : ""
+                      }`}
+                      style={{
+                        transform: `translate(calc(-50% + ${knobX * 46}px), calc(-50% + ${knobY * 46}px))`,
+                      }}
+                    >
+                      <span>SW</span>
+                    </div>
+                  </div>
+
+                  <div className="joystick-readings">
+                    <span><small>VRx · A0</small><strong>{readingX}</strong></span>
+                    <span><small>VRy · A1</small><strong>{readingY}</strong></span>
+                    <span>
+                      <small>SW · D4</small>
+                      <strong>{joystickPressed ? "CLICK" : "—"}</strong>
+                    </span>
+                  </div>
+
+                  <p className="virtual-joystick-hint">{legacyCopy.touchJoystickHint}</p>
+                </aside>
+              )}
               achievementsPanel={(
                 <AchievementGallery achievements={achievementViews} copy={copy} />
               )}
