@@ -2980,7 +2980,7 @@ kbd {
 .joystick-knob {
   align-items: center;
   background: radial-gradient(circle at 36% 30%, #50625e, #17201d 62%);
-  border: 7px solid #30413d;
+  border: 7px solid #5c9f93;
   border-radius: 50%;
   box-shadow:
     0 15px 22px rgba(23, 32, 29, 0.25),
